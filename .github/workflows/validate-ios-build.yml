@@ -51,6 +51,7 @@ jobs:
           set -euo pipefail
           xcrun swiftc \
             outputs/GRAIN/GRAIN/Models.swift \
+            outputs/GRAIN/GRAIN/CropProcessor.swift \
             outputs/GRAIN/GRAIN/ImageProcessor.swift \
             ci/raw-smoke-test/main.swift \
             -o ci/raw-smoke-test/raw-smoke-test
