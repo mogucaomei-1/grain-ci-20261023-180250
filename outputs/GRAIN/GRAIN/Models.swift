@@ -379,6 +379,46 @@ struct FilmSettings: Equatable, Codable, Sendable {
     var grain: Double
     var vignette: Double
     var sharpness: Double
+
+    /// 影调曲线：5 个等距控制点的输出亮度（0…1），默认恒等
+    var curve: [Double] = FilmSettings.identityCurve
+    /// 8 段 HSL：红/橙/黄/绿/青/蓝/紫/品红
+    var hueShift: [Double] = FilmSettings.neutralHSL
+    var saturationShift: [Double] = FilmSettings.neutralHSL
+    var luminanceShift: [Double] = FilmSettings.neutralHSL
+    /// 白平衡取样增益（线性空间，1 为不改变）
+    var whiteBalanceRed: Double = 1
+    var whiteBalanceGreen: Double = 1
+    var whiteBalanceBlue: Double = 1
+
+    static let hslBandCount = 8
+    static let identityCurve: [Double] = [0, 0.25, 0.5, 0.75, 1]
+    static let neutralHSL: [Double] = Array(repeating: 0, count: hslBandCount)
+
+    var hasCustomCurve: Bool {
+        guard curve.count == 5 else { return false }
+        for (lhs, rhs) in zip(curve, FilmSettings.identityCurve) where abs(lhs - rhs) > 0.002 {
+            return true
+        }
+        return false
+    }
+
+    var hasHSLAdjustment: Bool {
+        [hueShift, saturationShift, luminanceShift].contains { channel in
+            channel.count == FilmSettings.hslBandCount
+                && channel.contains { abs($0) > 0.4 }
+        }
+    }
+
+    var hasWhiteBalanceShift: Bool {
+        abs(whiteBalanceRed - 1) > 0.002
+            || abs(whiteBalanceGreen - 1) > 0.002
+            || abs(whiteBalanceBlue - 1) > 0.002
+    }
+
+    var hasAdvancedGrade: Bool {
+        hasCustomCurve || hasHSLAdjustment || hasWhiteBalanceShift
+    }
 }
 
 struct PresetClipboard: Codable, Sendable {
@@ -537,11 +577,41 @@ enum ExportFormat: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum ExportFrame: String, CaseIterable, Identifiable, Codable, Sendable {
+    case none
+    case thin
+    case wide
+    case instant
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .none: "无边框"
+        case .thin: "细边"
+        case .wide: "宽边"
+        case .instant: "拍立得"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .none: "照片铺满画布"
+        case .thin: "2% 米白边"
+        case .wide: "6% 影棚留白"
+        case .instant: "相纸白框"
+        }
+    }
+}
+
 struct ExportOptions: Equatable, Sendable {
     var format: ExportFormat = .heic
     var quality: Double = 1.0
     var keepLocation = true
     var keepCameraMetadata = true
+    var frame: ExportFrame = .none
+    var includeDateStamp = false
+    var watermark: String = ""
 }
 
 struct PhotoAsset: Identifiable, Equatable, Sendable {

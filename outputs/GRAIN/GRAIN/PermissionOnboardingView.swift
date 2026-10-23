@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreLocation
 import Photos
 import SwiftUI
 import UIKit
@@ -18,6 +19,7 @@ struct PermissionOnboardingView: View {
     @State private var cameraState: PermissionStepState = .idle
     @State private var microphoneState: PermissionStepState = .idle
     @State private var photoState: PermissionStepState = .idle
+    @State private var locationState: PermissionStepState = .idle
     @State private var isCheckingNetwork = false
 
     var body: some View {
@@ -65,6 +67,13 @@ struct PermissionOnboardingView: View {
                             detail: "读取和保存照片",
                             state: photoState,
                             action: requestPhotos
+                        )
+                        permissionRow(
+                            icon: "location.fill",
+                            title: "位置",
+                            detail: "为照片写入拍摄地点（可在设置中关闭）",
+                            state: locationState,
+                            action: requestLocation
                         )
                     }
 
@@ -188,6 +197,18 @@ struct PermissionOnboardingView: View {
         photoState = photoPermissionGranted(
             PHPhotoLibrary.authorizationStatus(for: .readWrite)
         ) ? .granted : .idle
+        refreshLocationState()
+    }
+
+    private func refreshLocationState() {
+        switch CaptureLocationProvider.shared.authorizationStatus {
+        case .authorizedWhenInUse, .authorizedAlways:
+            locationState = .granted
+        case .denied, .restricted:
+            locationState = .denied
+        default:
+            locationState = .idle
+        }
     }
 
     private func requestNetwork() {
@@ -264,6 +285,23 @@ struct PermissionOnboardingView: View {
         PHPhotoLibrary.requestAuthorization(for: .readWrite) { status in
             DispatchQueue.main.async {
                 photoState = photoPermissionGranted(status) ? .granted : .denied
+            }
+        }
+    }
+
+    private func requestLocation() {
+        guard locationState != .granted else { return }
+        if locationState == .denied {
+            openSystemSettings()
+            return
+        }
+        locationState = .requesting
+        CaptureLocationProvider.shared.requestAuthorization()
+        // 系统弹窗关闭后会回到 active，这里再补一次延迟刷新
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            refreshLocationState()
+            if CaptureLocationProvider.shared.authorizationStatus == .denied {
+                openSystemSettings()
             }
         }
     }

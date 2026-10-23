@@ -2057,9 +2057,23 @@ struct CameraView: View {
                         resolution == option ? GrainTheme.paper : Color.black.opacity(0.54),
                         in: Capsule()
                     )
-                    .opacity(is48MPAvailable || option != .high48 ? 1 : 0.42)
-                    .disabled(!is48MPAvailable && option == .high48)
+                    .opacity(
+                        livePhoto
+                            ? 0.38
+                            : (is48MPAvailable || option != .high48 ? 1 : 0.42)
+                    )
+                    .disabled(livePhoto || (!is48MPAvailable && option == .high48))
                     .buttonStyle(.plain)
+                }
+
+                // 实况照片固定 12MP（系统限制），明确标出来避免误以为设置未生效
+                if livePhoto {
+                    Text("实况 12MP")
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundStyle(GrainTheme.black)
+                        .padding(.horizontal, 7)
+                        .frame(height: 22)
+                        .background(GrainTheme.accent, in: Capsule())
                 }
 
                 Menu {

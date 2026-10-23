@@ -8,6 +8,7 @@ final class PhotoLibraryViewModel: NSObject, ObservableObject, PHPhotoLibraryCha
     @Published private(set) var isLoading = false
     @Published private(set) var accessDenied = false
     @Published private(set) var isDownloadingOriginal = false
+    @Published private(set) var formatLabels: [String: String] = [:]
     private var hasLoaded = false
 
     override init() {
@@ -49,6 +50,42 @@ final class PhotoLibraryViewModel: NSObject, ObservableObject, PHPhotoLibraryCha
             fetchedAssets.append(asset)
         }
         assets = fetchedAssets
+        refreshFormatLabels(for: fetchedAssets)
+    }
+
+    /// 缩略图格式徽标与「只看某种格式」都依赖资源类型，统一在后台算好
+    private func refreshFormatLabels(for assets: [PHAsset]) {
+        Task.detached(priority: .utility) { [weak self] in
+            var labels: [String: String] = [:]
+            labels.reserveCapacity(assets.count)
+            for asset in assets {
+                labels[asset.localIdentifier] = Self.formatLabel(for: asset)
+            }
+            await MainActor.run { [weak self] in
+                self?.formatLabels = labels
+            }
+        }
+    }
+
+    nonisolated static func formatLabel(for asset: PHAsset) -> String {
+        let resources = PHAssetResource.assetResources(for: asset)
+        let candidate = resources.first(where: { $0.type == .fullSizePhoto })
+            ?? resources.first(where: { $0.type == .photo })
+            ?? resources.first
+        guard let resource = candidate else { return "IMAGE" }
+        let identifier = resource.uniformTypeIdentifier.lowercased()
+        let filename = resource.originalFilename.lowercased()
+        if identifier.contains("raw") || ["arw", "dng", "srf", "sr2"]
+            .contains(where: { filename.hasSuffix(".\($0)") }) {
+            return "RAW"
+        }
+        if identifier.contains("heic") || identifier.contains("heif") {
+            return "HEIF"
+        }
+        if identifier.contains("png") { return "PNG" }
+        if identifier.contains("jpeg") || identifier.contains("jpg") { return "JPEG" }
+        if identifier.contains("tiff") || identifier.contains("tif") { return "TIFF" }
+        return "IMAGE"
     }
 
     func originalFileURL(for asset: PHAsset) async throws -> URL {
@@ -103,7 +140,7 @@ final class PhotoLibraryViewModel: NSObject, ObservableObject, PHPhotoLibraryCha
     private var originalRequestGeneration = 0
 }
 
-private enum PhotoLibraryAssetLoader {
+enum PhotoLibraryAssetLoader {
     enum LoadError: LocalizedError {
         case noResource
         case downloadFailed
@@ -168,9 +205,38 @@ private struct PhotoTileFramePreferenceKey: PreferenceKey {
     }
 }
 
+enum LibraryFormatFilter: String, CaseIterable, Identifiable {
+    case all
+    case raw
+    case heif
+    case png
+    case jpeg
+    case tiff
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: "全部"
+        case .raw: "RAW"
+        case .heif: "HEIF"
+        case .png: "PNG"
+        case .jpeg: "JPEG"
+        case .tiff: "TIFF"
+        }
+    }
+
+    func matches(_ label: String?) -> Bool {
+        guard self != .all else { return true }
+        guard let label else { return false }
+        return label == title
+    }
+}
+
 struct PhotoLibraryHome: View {
     @ObservedObject var library: PhotoLibraryViewModel
     let onSelect: (PHAsset) -> Void
+    @EnvironmentObject private var editor: EditorViewModel
     @Environment(\.openURL) private var openURL
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
     @State private var isSelecting = false
@@ -185,6 +251,12 @@ struct PhotoLibraryHome: View {
     @State private var deleteError: String?
     @State private var tileFrames: [String: CGRect] = [:]
     @State private var lastSelectionDragPoint: CGPoint?
+    @State private var formatFilter: LibraryFormatFilter = .all
+    @State private var sortAscending = false
+    @StateObject private var batch = BatchExportViewModel()
+    @State private var showBatchProgress = false
+    @State private var batchNotice: String?
+    @State private var batchError: String?
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 3), count: 3)
 
@@ -193,12 +265,55 @@ struct PhotoLibraryHome: View {
             if isSelecting {
                 selectionToolbar
             } else {
-                HStack {
-                    Spacer()
+                HStack(spacing: 8) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(LibraryFormatFilter.allCases) { filter in
+                                Button {
+                                    withAnimation(.easeOut(duration: 0.16)) {
+                                        formatFilter = filter
+                                    }
+                                } label: {
+                                    Text(filter.title)
+                                        .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                                        .foregroundStyle(
+                                            formatFilter == filter ? GrainTheme.black : GrainTheme.muted
+                                        )
+                                        .padding(.horizontal, 9)
+                                        .frame(height: 24)
+                                        .background(
+                                            formatFilter == filter
+                                                ? GrainTheme.paper
+                                                : GrainTheme.raised,
+                                            in: Capsule()
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                            }
+
+                            Button {
+                                sortAscending.toggle()
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: sortAscending ? "arrow.up" : "arrow.down")
+                                        .font(.system(size: 8, weight: .bold))
+                                    Text("时间")
+                                        .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                                }
+                                .foregroundStyle(GrainTheme.muted)
+                                .padding(.horizontal, 9)
+                                .frame(height: 24)
+                                .background(GrainTheme.raised, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
                     if !library.assets.isEmpty {
-                        Text("\(library.assets.count)")
+                        Text("\(visibleAssets.count)/\(library.assets.count)")
                             .font(.system(size: 9, weight: .semibold, design: .monospaced))
                             .foregroundStyle(GrainTheme.muted)
+                            .fixedSize()
                     }
                 }
                 .padding(.horizontal, 12)
@@ -211,7 +326,7 @@ struct PhotoLibraryHome: View {
             } else {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 2) {
-                        ForEach(library.assets, id: \.localIdentifier) { asset in
+                        ForEach(visibleAssets, id: \.localIdentifier) { asset in
                             libraryTile(asset)
                         }
                     }
@@ -293,6 +408,42 @@ struct PhotoLibraryHome: View {
             GrainShareSheet(items: shareURLs)
                 .ignoresSafeArea()
         }
+        .sheet(isPresented: $showBatchProgress, onDismiss: {
+            if batch.isRunning {
+                batch.cancel()
+            }
+            batch.clearSummary()
+        }) {
+            BatchProgressSheet(batch: batch)
+                .presentationDetents([.height(300)])
+                .presentationDragIndicator(.visible)
+        }
+        .alert(
+            "批量处理未完成",
+            isPresented: Binding(
+                get: { batchError != nil },
+                set: { if !$0 { batchError = nil } }
+            )
+        ) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(batchError ?? "")
+        }
+        .alert(
+            "已套用配方",
+            isPresented: Binding(
+                get: { batchNotice != nil },
+                set: { if !$0 { batchNotice = nil } }
+            )
+        ) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(batchNotice ?? "")
+        }
+        .onChange(of: batch.isRunning) { _, running in
+            guard !running, batch.summary != nil else { return }
+            Task { await library.refresh() }
+        }
     }
 
     private var selectionToolbar: some View {
@@ -309,6 +460,28 @@ struct PhotoLibraryHome: View {
                 .foregroundStyle(GrainTheme.accent)
 
             Spacer()
+
+            Menu {
+                Button("批量套用最近配方", systemImage: "paintbrush.pointed") {
+                    batchApplyRecipe()
+                }
+                Button("批量导出所选照片", systemImage: "square.and.arrow.up.on.square") {
+                    batchExportSelected()
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "square.stack.3d.down.right")
+                    Text("批量")
+                }
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(
+                    selectedIdentifiers.isEmpty ? GrainTheme.muted : GrainTheme.accent
+                )
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(GrainTheme.raised, in: Capsule())
+            }
+            .disabled(selectedIdentifiers.isEmpty || isDeleting || batch.isRunning)
 
             Button {
                 shareSelectedAssets()
@@ -351,6 +524,50 @@ struct PhotoLibraryHome: View {
         .padding(.bottom, 5)
     }
 
+    private var visibleAssets: [PHAsset] {
+        let filtered = library.assets.filter {
+            formatFilter.matches(library.formatLabels[$0.localIdentifier])
+        }
+        return sortAscending ? Array(filtered.reversed()) : filtered
+    }
+
+    private var selectedAssets: [PHAsset] {
+        let lookup = Dictionary(
+            library.assets.map { ($0.localIdentifier, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return selectionOrder.compactMap { lookup[$0] }
+    }
+
+    private var latestRecipe: PhotoRecipe? {
+        editor.currentRecipe ?? RecipeStore.shared.latest()
+    }
+
+    private func batchApplyRecipe() {
+        guard let recipe = latestRecipe else {
+            batchError = "还没有可用的调色配方。先在编辑页调整一张照片，再回来批量套用。"
+            return
+        }
+        let identities = selectedAssets.map {
+            RecipeIdentity.library($0.localIdentifier)
+        }
+        let count = RecipeStore.shared.apply(recipe, to: identities)
+        batchNotice = "已把「\(recipe.summary)」套用到 \(count) 张照片"
+        endSelection()
+    }
+
+    private func batchExportSelected() {
+        guard let recipe = latestRecipe else {
+            batchError = "还没有可用的调色配方。先在编辑页调整一张照片，再回来批量导出。"
+            return
+        }
+        let assets = selectedAssets
+        guard !assets.isEmpty else { return }
+        batch.start(assets: assets, recipe: recipe, options: editor.exportOptions)
+        showBatchProgress = true
+        endSelection()
+    }
+
     private var statusText: String {
         if isPreparingShare { return "正在准备分享" }
         if isDeleting { return "正在删除照片" }
@@ -366,9 +583,9 @@ struct PhotoLibraryHome: View {
                 .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
                 .id(asset.localIdentifier)
 
-            AssetFormatBadge(asset: asset)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(5)
+            AssetFormatBadge(label: library.formatLabels[asset.localIdentifier])
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(5)
 
             if isSelecting {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -599,24 +816,99 @@ struct PhotoLibraryHome: View {
     }
 }
 
-private struct AssetFormatBadge: View {
-    let asset: PHAsset
-    @State private var label: String?
+private struct BatchProgressSheet: View {
+    @ObservedObject var batch: BatchExportViewModel
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        Group {
-            if let label {
-                Text(label)
-                    .font(.system(size: 7.5, weight: .bold, design: .monospaced))
-                    .tracking(0.5)
-                    .foregroundStyle(GrainTheme.paper)
-                    .padding(.horizontal, 5)
-                    .frame(height: 15)
-                    .background(.black.opacity(0.56), in: Capsule())
+        ZStack {
+            GrainTheme.black.ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("批量导出")
+                            .font(.system(size: 22, weight: .bold, design: .serif))
+                            .foregroundStyle(GrainTheme.paper)
+                        Text(batch.isRunning ? "逐张套用配方并写回相册" : "处理结束")
+                            .font(.system(size: 9.5, design: .rounded))
+                            .foregroundStyle(GrainTheme.muted)
+                    }
+                    Spacer()
+                    if !batch.isRunning {
+                        Button { dismiss() } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 11, weight: .bold))
+                                .frame(width: 30, height: 30)
+                                .background(GrainTheme.raised, in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(GrainTheme.paper)
+                    }
+                }
+
+                if batch.isRunning {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ProgressView(value: batch.progress)
+                            .tint(GrainTheme.accent)
+                        HStack {
+                            Text(batch.currentName)
+                                .font(.system(size: 9, design: .rounded))
+                                .foregroundStyle(GrainTheme.muted)
+                                .lineLimit(1)
+                            Spacer()
+                            Text("\(batch.completed) / \(batch.total)")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(GrainTheme.paper)
+                        }
+                    }
+
+                    Button {
+                        batch.cancel()
+                    } label: {
+                        Text("取消")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(GrainTheme.paper)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 44)
+                            .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 13))
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Text(batch.summary ?? "没有处理任何照片")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(GrainTheme.paper)
+
+                    Button { dismiss() } label: {
+                        Text("完成")
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .foregroundStyle(GrainTheme.black)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 46)
+                            .background(GrainTheme.paper, in: RoundedRectangle(cornerRadius: 13))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Spacer(minLength: 0)
             }
+            .padding(20)
         }
-        .task(id: asset.localIdentifier) {
-            label = AssetFormat.label(for: asset)
+    }
+}
+
+private struct AssetFormatBadge: View {
+    let label: String?
+
+    var body: some View {
+        if let label {
+            Text(label)
+                .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                .tracking(0.5)
+                .foregroundStyle(GrainTheme.paper)
+                .padding(.horizontal, 5)
+                .frame(height: 15)
+                .background(.black.opacity(0.56), in: Capsule())
         }
     }
 }

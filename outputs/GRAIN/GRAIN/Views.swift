@@ -95,7 +95,7 @@ struct RootView: View {
         .sheet(isPresented: $showExportSheet) {
             ExportSettingsSheet()
                 .environmentObject(editor)
-                .presentationDetents([.height(470)])
+                .presentationDetents([.height(660)])
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showInfoSheet) {
@@ -224,9 +224,9 @@ struct RootView: View {
                     return
                 }
                 editor.importPhoto(from: url)
-                editor.sourceAssetIdentifier = editor.photo == nil
-                    ? nil
-                    : asset.localIdentifier
+                if editor.photo != nil {
+                    editor.attachLibraryAssetIdentifier(asset.localIdentifier)
+                }
                 libraryImportTask = nil
             } catch is CancellationError {
                 guard generation == libraryImportGeneration else { return }
@@ -278,7 +278,7 @@ struct RootView: View {
         Task {
             do {
                 try await photoLibrary.deleteAssets(identifiers: [identifier])
-                editor.returnHome()
+                editor.returnHome(discardingRecipe: true)
             } catch {
                 editor.errorMessage = error.localizedDescription
             }
@@ -416,12 +416,15 @@ private struct EditorWorkspace: View {
     @State private var showMosaicEditor = false
     @State private var didSwipeBack = false
     @State private var editorToolPage: EditorToolPage = .film
+    @State private var showAdvancedGrade = false
+    @State private var isPickingWhiteBalance = false
 
     var body: some View {
         VStack(spacing: 0) {
             PhotoEditorCanvas(
                 showHistogram: showHistogram,
                 selectedTextID: $selectedTextID,
+                isPickingWhiteBalance: $isPickingWhiteBalance,
                 onSwitchPhoto: onSwitchPhoto
             ) { id in
                 editingTextID = id
@@ -434,6 +437,7 @@ private struct EditorWorkspace: View {
                 page: $editorToolPage,
                 onCrop: { showCropEditor = true },
                 onMosaic: { showMosaicEditor = true },
+                onAdvanced: { showAdvancedGrade = true },
                 onAddText: {
                     let id = editor.addTextOverlay()
                     editingTextID = id
@@ -451,6 +455,15 @@ private struct EditorWorkspace: View {
         .fullScreenCover(isPresented: $showMosaicEditor) {
             MosaicEditorView()
                 .environmentObject(editor)
+        }
+        .sheet(isPresented: $showAdvancedGrade) {
+            AdvancedGradeSheet {
+                showAdvancedGrade = false
+                isPickingWhiteBalance = true
+            }
+            .environmentObject(editor)
+            .presentationDetents([.fraction(0.86)])
+            .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showTextEditor, onDismiss: { editingTextID = nil }) {
             if let editingTextID {
@@ -493,6 +506,7 @@ private struct EditorToolsPager: View {
     @Binding var page: EditorToolPage
     let onCrop: () -> Void
     let onMosaic: () -> Void
+    let onAdvanced: () -> Void
     let onAddText: () -> Void
 
     var body: some View {
@@ -596,6 +610,7 @@ private struct EditorToolsPager: View {
                     AdjustPanel(
                         onCrop: onCrop,
                         onMosaic: onMosaic,
+                        onAdvanced: onAdvanced,
                         onAddText: onAddText
                     )
                     .transition(.opacity.combined(with: .move(edge: .trailing)))
@@ -633,10 +648,13 @@ private struct PhotoEditorCanvas: View {
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
     let showHistogram: Bool
     @Binding var selectedTextID: UUID?
+    @Binding var isPickingWhiteBalance: Bool
     let onSwitchPhoto: (Int) -> Void
     let onEditText: (UUID) -> Void
     @State private var showOriginal = false
     @State private var showFullscreen = false
+    @State private var compareFraction: CGFloat?
+    @State private var showLivePhoto = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -660,6 +678,27 @@ private struct PhotoEditorCanvas: View {
                 } else {
                     ProgressView()
                         .tint(GrainTheme.paper)
+                }
+
+                if let fraction = compareFraction,
+                   let original = editor.originalPreview,
+                   let edited = editor.editedPreview {
+                    Image(decorative: edited, scale: 1)
+                        .resizable()
+                        .frame(width: imageSize.width, height: imageSize.height)
+                        .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+                    Image(decorative: original, scale: 1)
+                        .resizable()
+                        .frame(width: imageSize.width, height: imageSize.height)
+                        .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+                        .mask(
+                            HStack(spacing: 0) {
+                                Rectangle()
+                                    .frame(width: max(imageSize.width * fraction, 1))
+                                Spacer(minLength: 0)
+                            }
+                            .frame(width: imageSize.width, height: imageSize.height)
+                        )
                 }
 
                 TextOverlayInteractionView(
@@ -688,6 +727,18 @@ private struct PhotoEditorCanvas: View {
                 )
                 .frame(width: imageSize.width, height: imageSize.height)
                 .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+
+                if let fraction = compareFraction {
+                    compareHandle(
+                        fraction: fraction,
+                        viewport: proxy.size,
+                        imageSize: imageSize
+                    )
+                }
+
+                if isPickingWhiteBalance {
+                    whiteBalancePicker(viewport: proxy.size, imageSize: imageSize)
+                }
 
                 VStack {
                     HStack(alignment: .top, spacing: 12) {
@@ -729,7 +780,37 @@ private struct PhotoEditorCanvas: View {
 
                         Spacer()
 
-                        Text("轻点全屏 · 按住看原片")
+                        if editor.hasLivePhoto {
+                            Button {
+                                showLivePhoto = true
+                            } label: {
+                                Image(systemName: "livephoto.play")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(GrainTheme.paper)
+                                    .frame(width: 30, height: 29)
+                                    .background(.black.opacity(0.52), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("播放实况照片")
+                        }
+
+                        Button {
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                compareFraction = compareFraction == nil ? 0.5 : nil
+                            }
+                        } label: {
+                            Image(systemName: "rectangle.lefthalf.inset.filled")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(
+                                    compareFraction == nil ? GrainTheme.paper : GrainTheme.accent
+                                )
+                                .frame(width: 30, height: 29)
+                                .background(.black.opacity(0.52), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(compareFraction == nil ? "开启前后对比" : "关闭前后对比")
+
+                        Text(compareFraction == nil ? "按住看原片" : "拖动分割线对比")
                             .font(.system(size: 9, weight: .semibold, design: .rounded))
                             .foregroundStyle(GrainTheme.paper)
                             .padding(.horizontal, 11)
@@ -764,13 +845,18 @@ private struct PhotoEditorCanvas: View {
             FullscreenPhotoView()
                 .environmentObject(editor)
         }
+        .fullScreenCover(isPresented: $showLivePhoto) {
+            if let asset = editor.currentPHAsset {
+                LivePhotoViewer(asset: asset)
+            }
+        }
     }
 
     /// 在照片上左右滑动切换图库里的相邻照片；左侧边缘右滑仍留给返回手势
     private var switchPhotoGesture: some Gesture {
         DragGesture(minimumDistance: 26)
             .onEnded { value in
-                guard selectedTextID == nil else { return }
+                guard selectedTextID == nil, compareFraction == nil else { return }
                 let horizontal = value.translation.width
                 let vertical = value.translation.height
                 guard abs(horizontal) > 68,
@@ -778,8 +864,85 @@ private struct PhotoEditorCanvas: View {
                 else { return }
                 if horizontal > 0, value.startLocation.x <= 40 { return }
                 GrainHaptics.selection(enabled: hapticsEnabled)
-                onSwitchPhoto(horizontal > 0 ? 1 : -1)
+                // 右滑回到时间线上的上一张，左滑前往下一张
+                onSwitchPhoto(horizontal > 0 ? -1 : 1)
             }
+    }
+
+    private func compareHandle(
+        fraction: CGFloat,
+        viewport: CGSize,
+        imageSize: CGSize
+    ) -> some View {
+        let leftEdge = (viewport.width - imageSize.width) / 2
+        return ZStack {
+            Color.clear
+            Rectangle()
+                .fill(GrainTheme.paper.opacity(0.9))
+                .frame(width: 1.5)
+            Image(systemName: "arrow.left.and.right")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(GrainTheme.black)
+                .frame(width: 30, height: 22)
+                .background(GrainTheme.paper, in: Capsule())
+        }
+        .frame(width: 44, height: imageSize.height)
+        .contentShape(Rectangle())
+        .position(
+            x: leftEdge + imageSize.width * fraction,
+            y: viewport.height / 2
+        )
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    let raw = (value.location.x - leftEdge) / max(imageSize.width, 1)
+                    compareFraction = min(max(raw, 0.02), 0.98)
+                }
+        )
+    }
+
+    private func whiteBalancePicker(viewport: CGSize, imageSize: CGSize) -> some View {
+        let leftEdge = (viewport.width - imageSize.width) / 2
+        let topEdge = (viewport.height - imageSize.height) / 2
+        return ZStack(alignment: .top) {
+            Color.clear
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onEnded { value in
+                            let x = (value.location.x - leftEdge) / max(imageSize.width, 1)
+                            let y = (value.location.y - topEdge) / max(imageSize.height, 1)
+                            guard (0...1).contains(x), (0...1).contains(y) else { return }
+                            editor.pickWhiteBalance(
+                                atNormalizedPoint: CGPoint(x: x, y: y)
+                            )
+                            isPickingWhiteBalance = false
+                        }
+                )
+
+            HStack(spacing: 7) {
+                Image(systemName: "eyedropper.halffull")
+                Text("点击画面取样白平衡")
+                Button {
+                    isPickingWhiteBalance = false
+                } label: {
+                    Text("取消")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(GrainTheme.black)
+                        .padding(.horizontal, 8)
+                        .frame(height: 20)
+                        .background(GrainTheme.paper, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+            .foregroundStyle(GrainTheme.paper)
+            .padding(.horizontal, 11)
+            .frame(height: 30)
+            .background(.black.opacity(0.64), in: Capsule())
+            .padding(.top, 44)
+        }
+        .frame(width: viewport.width, height: viewport.height)
     }
 
     private var imageAspect: CGFloat {
@@ -1294,6 +1457,7 @@ private struct AdjustPanel: View {
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
     let onCrop: () -> Void
     let onMosaic: () -> Void
+    let onAdvanced: () -> Void
     let onAddText: () -> Void
     @State private var selectedCategory: AdjustCategory = .light
     @State private var selectedTool: AdjustTool = .exposure
@@ -1324,6 +1488,20 @@ private struct AdjustPanel: View {
                     .buttonStyle(.plain)
                 }
                 Spacer()
+
+                Button(action: onAdvanced) {
+                    Image(systemName: "chart.line.uptrend.xyaxis")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(
+                            editor.settings.hasAdvancedGrade
+                                ? GrainTheme.accent
+                                : GrainTheme.paper
+                        )
+                        .frame(width: 30, height: 27)
+                        .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("曲线、HSL 与白平衡")
 
                 Button(action: onCrop) {
                     Image(systemName: "crop.rotate")
@@ -1677,6 +1855,66 @@ private struct ExportSettingsSheet: View {
                         .buttonStyle(.plain)
                     }
                 }
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("边框与标记")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(GrainTheme.muted)
+
+                    HStack(spacing: 7) {
+                        ForEach(ExportFrame.allCases) { frame in
+                            Button {
+                                editor.exportOptions.frame = frame
+                            } label: {
+                                VStack(spacing: 2) {
+                                    Text(frame.title)
+                                        .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                                    Text(frame.subtitle)
+                                        .font(.system(size: 7.5, design: .rounded))
+                                        .foregroundStyle(GrainTheme.muted)
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.7)
+                                }
+                                .foregroundStyle(GrainTheme.paper)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 42)
+                                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 11))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 11)
+                                        .stroke(
+                                            editor.exportOptions.frame == frame
+                                                ? GrainTheme.accent
+                                                : GrainTheme.line,
+                                            lineWidth: 1
+                                        )
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                VStack(spacing: 9) {
+                    Toggle(isOn: $editor.exportOptions.includeDateStamp) {
+                        Text("在照片上写入拍摄日期")
+                            .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    }
+                    .tint(GrainTheme.accent)
+
+                    HStack(spacing: 8) {
+                        Image(systemName: "signature")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(GrainTheme.muted)
+                        TextField("水印文字（留空则不添加）", text: $editor.exportOptions.watermark)
+                            .font(.system(size: 11, design: .rounded))
+                            .foregroundStyle(GrainTheme.paper)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 14))
 
                 Toggle(isOn: $editor.exportOptions.keepLocation) {
                     VStack(alignment: .leading, spacing: 2) {

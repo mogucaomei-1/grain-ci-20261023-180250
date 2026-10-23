@@ -560,7 +560,8 @@ struct AppSettingsView: View {
                         .tint(GrainTheme.accent)
                         .onChange(of: captureLocationEnabled) { _, enabled in
                             if enabled {
-                                CaptureLocationProvider.shared.start()
+                                // 用户在这里主动打开，才允许弹出系统授权
+                                CaptureLocationProvider.shared.requestAuthorization()
                             } else {
                                 CaptureLocationProvider.shared.stop()
                             }

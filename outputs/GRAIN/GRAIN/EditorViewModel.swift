@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import Photos
 import SwiftUI
 #if canImport(UIKit)
 import UIKit
@@ -30,9 +31,13 @@ final class EditorViewModel: ObservableObject {
     @Published var noticeMessage: String?
     /// 当前照片对应的系统相册标识；从文件导入时为 nil
     @Published var sourceAssetIdentifier: String?
+    /// 当前照片的相册资源，用于实况播放等能力判断
+    @Published private(set) var libraryAsset: PHAsset?
 
     private var previewTask: Task<Void, Never>?
     private var importTask: Task<Void, Never>?
+    private var recipeSaveTask: Task<Void, Never>?
+    private var recipeIdentity: String?
     private var noticeTask: Task<Void, Never>?
     private var sourcePreview: CGImage?
     private var previewNeedsUpdate = false
@@ -43,6 +48,79 @@ final class EditorViewModel: ObservableObject {
 
     var canExport: Bool {
         photo != nil && !isPreparing && !isExporting
+    }
+
+    /// 系统相册照片的稳定标识：接入后按它恢复上次编辑
+    func attachLibraryAssetIdentifier(_ identifier: String) {
+        sourceAssetIdentifier = identifier
+        libraryAsset = PHAsset.fetchAssets(
+            withLocalIdentifiers: [identifier],
+            options: nil
+        ).firstObject
+        let identity = RecipeIdentity.library(identifier)
+        guard identity != recipeIdentity else { return }
+        recipeIdentity = identity
+        restoreRecipe(identity: identity)
+        schedulePreview()
+    }
+
+    /// 当前照片对应的相册资源（文件导入时为 nil）
+    var currentPHAsset: PHAsset? {
+        libraryAsset
+    }
+
+    var hasLivePhoto: Bool {
+        libraryAsset?.mediaSubtypes.contains(.photoLive) == true
+    }
+
+    /// 当前编辑结果，供批量套用与批量导出使用
+    var currentRecipe: PhotoRecipe? {
+        guard photo != nil else { return nil }
+        return PhotoRecipe(
+            profile: selectedProfile,
+            settings: settings,
+            intensity: intensity,
+            crop: crop,
+            overlays: textOverlays,
+            mosaics: mosaicStrokes,
+            updatedAt: Date()
+        )
+    }
+
+    /// 用当前画面取样，把该点校成中性灰
+    func pickWhiteBalance(atNormalizedPoint point: CGPoint) {
+        guard let image = originalPreview ?? sourcePreview else { return }
+        guard let sample = AdvancedGrade.sampleColor(
+            from: image,
+            normalizedX: point.x,
+            normalizedY: point.y
+        ) else {
+            showNotice("取样区域太暗，换一个位置再试")
+            return
+        }
+        recordUndoSnapshot()
+        let gains = AdvancedGrade.whiteBalanceGains(forSample: sample)
+        settings.whiteBalanceRed = gains.red
+        settings.whiteBalanceGreen = gains.green
+        settings.whiteBalanceBlue = gains.blue
+        markManualAdjustment()
+        schedulePreview()
+        showNotice("已按取样点校正白平衡")
+    }
+
+    func resetAdvancedGrade() {
+        guard settings.hasAdvancedGrade else { return }
+        recordUndoSnapshot()
+        settings.curve = FilmSettings.identityCurve
+        settings.hueShift = FilmSettings.neutralHSL
+        settings.saturationShift = FilmSettings.neutralHSL
+        settings.luminanceShift = FilmSettings.neutralHSL
+        settings.whiteBalanceRed = 1
+        settings.whiteBalanceGreen = 1
+        settings.whiteBalanceBlue = 1
+        markManualAdjustment()
+        schedulePreview()
+        showNotice("已重置曲线、HSL 与取样白平衡")
     }
 
     func selectProfile(_ profile: FilmProfile) {
@@ -59,7 +137,17 @@ final class EditorViewModel: ObservableObject {
         schedulePreview()
     }
 
-    func returnHome() {
+    func returnHome(discardingRecipe: Bool = false) {
+        if discardingRecipe {
+            if let recipeIdentity {
+                RecipeStore.shared.remove(identity: recipeIdentity)
+            }
+        } else {
+            saveRecipeImmediately()
+        }
+        recipeSaveTask?.cancel()
+        recipeSaveTask = nil
+        recipeIdentity = nil
         previewTask?.cancel()
         importTask?.cancel()
         previewTask = nil
@@ -85,6 +173,7 @@ final class EditorViewModel: ObservableObject {
         adjustmentRecommendationBaseline = nil
         canUndo = false
         sourceAssetIdentifier = nil
+        libraryAsset = nil
     }
 
     func resetSelectedProfile() {
@@ -280,17 +369,20 @@ final class EditorViewModel: ObservableObject {
         guard let index = textOverlays.firstIndex(where: { $0.id == overlay.id }) else { return }
         recordUndoSnapshot()
         textOverlays[index] = overlay
+        scheduleRecipeSave()
     }
 
     func moveTextOverlay(id: UUID, x: Double, y: Double) {
         guard let index = textOverlays.firstIndex(where: { $0.id == id }) else { return }
         textOverlays[index].x = min(max(x, 0.04), 0.96)
         textOverlays[index].y = min(max(y, 0.04), 0.96)
+        scheduleRecipeSave()
     }
 
     func deleteTextOverlay(id: UUID) {
         recordUndoSnapshot()
         textOverlays.removeAll { $0.id == id }
+        scheduleRecipeSave()
     }
 
     func addMosaicStroke(_ stroke: MosaicStroke) {
@@ -346,6 +438,7 @@ final class EditorViewModel: ObservableObject {
     }
 
     func schedulePreview() {
+        scheduleRecipeSave()
         guard sourcePreview != nil else { return }
         previewNeedsUpdate = true
         guard previewTask == nil else { return }
@@ -444,6 +537,8 @@ final class EditorViewModel: ObservableObject {
             settings = FilmProfile.neutral.factorySettings
             intensity = 1
             photo = asset
+            recipeIdentity = RecipeIdentity.file(asset)
+            restoreRecipe(identity: recipeIdentity, notify: false)
             exportOptions.keepLocation = asset.hasLocation
             undoStack.removeAll()
             recommendationBaseline = nil
@@ -544,6 +639,40 @@ final class EditorViewModel: ObservableObject {
                 mosaicStrokes: mosaics
             )
         }.value
+    }
+
+    // MARK: - 编辑配方持久化
+
+    private func restoreRecipe(identity: String?, notify: Bool = true) {
+        guard let identity, let recipe = RecipeStore.shared.load(identity: identity) else { return }
+        selectedProfile = recipe.profile
+        settings = recipe.settings
+        intensity = recipe.intensity
+        crop = recipe.crop
+        textOverlays = recipe.overlays
+        mosaicStrokes = recipe.mosaics
+        isRecommendationApplied = false
+        isAdjustmentRecommendationApplied = false
+        recommendationBaseline = nil
+        adjustmentRecommendationBaseline = nil
+        if notify, recipe.profile != .neutral || recipe.settings.hasAdvancedGrade {
+            showNotice("已恢复上次编辑 · \(recipe.summary)")
+        }
+    }
+
+    private func scheduleRecipeSave() {
+        guard recipeIdentity != nil, photo != nil else { return }
+        recipeSaveTask?.cancel()
+        recipeSaveTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            self?.saveRecipeImmediately()
+        }
+    }
+
+    private func saveRecipeImmediately() {
+        guard let identity = recipeIdentity, let recipe = currentRecipe else { return }
+        RecipeStore.shared.save(recipe, identity: identity)
     }
 
     private func copyIntoLibrary(_ sourceURL: URL) throws -> URL {

@@ -1,6 +1,6 @@
 # GRAIN 1.1 — Sony RAW 胶片工作台
 
-GRAIN 是一个面向 iPhone 的 SwiftUI RAW 调色 App。主流程围绕 Sony ARW 导入、胶片色彩模拟、原尺寸高质量导出和 GPS 隐私开关设计。当前测试包为 1.1 (72)。
+GRAIN 是一个面向 iPhone 的 SwiftUI RAW 调色 App。主流程围绕 Sony ARW 导入、胶片色彩模拟、原尺寸高质量导出和 GPS 隐私开关设计。当前测试包为 1.1 (73)。
 
 ## 打开方式
 
@@ -68,7 +68,16 @@ GRAIN 是一个面向 iPhone 的 SwiftUI RAW 调色 App。主流程围绕 Sony A
 - 非 RAW 拍摄（HEIF/JPEG/PNG）会把 `AVCapturePhoto` 的 EXIF/TIFF/GPS 写入重编码文件，图片信息页可显示机型、镜头、拍摄时间与位置；TIFF 也加入导入支持。
 - 新增“位置信息”“机型与镜头参数”两个拍摄开关：关闭位置后不写入 GPS/相册位置，关闭机型后移除 TIFF Make/Model 与 EXIF 镜头字段；定位权限在首次开启位置开关（或进相机）时按需申请。
 - 编辑页照片格式标签按实际文件扩展名显示 RAW / HEIF / PNG / JPEG / TIFF，不再一律显示 RAW；主页图库缩略图左上角也会显示对应格式徽标。
-- 编辑页主画布支持左右滑动切换图库中的相邻照片（右滑下一张、左滑上一张），左侧边缘右滑仍保留返回图库手势。
+- 编辑页主画布支持左右滑动切换图库中的相邻照片（右滑上一张、左滑下一张），左侧边缘右滑仍保留返回图库手势。
+- 编辑配方持久化：每张照片（相册资源按 localIdentifier、文件按尺寸/大小/拍摄时间指纹）自动保存胶片、参数、裁剪、文字与马赛克，重新打开自动恢复，最多延迟 0.7 秒落盘。
+- 主页长按多选后新增“批量”菜单：可把最近一次配方一次性套用到所选照片，或按该配方批量导出并写回系统相册（逐张处理、显示进度、可取消）。
+- 进阶调色面板：5 点影调曲线、8 段 HSL（红/橙/黄/绿/青/蓝/紫/品红，各含色相/饱和度/明度）与白平衡取样吸管；曲线与 HSL 通过 `CIToneCurve` 与 32³ `CIColorCube` 实现。
+- 编辑画布新增前后对比分割线（可拖动）与实况照片播放按钮；实况播放使用 `PHLivePhotoView`，支持重播。
+- 导出面板新增胶片边框（无/细边/宽边/拍立得）、日期戳与水印文字，由 `ExportFrameRenderer` 在导出阶段绘制（无边框且无标记时直接返回原图，零额外开销）。
+- 主页图库新增格式筛选（全部/RAW/HEIF/PNG/JPEG/TIFF）与时间正倒序切换，格式标签在后台统一计算并缓存。
+- 位置权限移入首次启动的权限页，与相机、麦克风、图库并列；相机与设置只会在用户主动开启时才申请授权，使用过程中不再弹出定位弹窗。
+- 修复主页缩略图格式徽标不显示（改用后台预计算的标签，避免空视图上的 `.task` 不执行）与编辑页滑动方向相反的问题。
+- 实况照片按系统上限固定 12MP（iPhone 17 Pro 在 1× 下同样为 12MP），相机界面在开启实况时明确标注“实况 12MP”，并禁用无效的分辨率切换。
 ## 关键文件
 
 - `GRAIN/ImageProcessor.swift`：RAW 解码、预览、色彩管线、全尺寸导出和元数据策略。
@@ -76,6 +85,12 @@ GRAIN 是一个面向 iPhone 的 SwiftUI RAW 调色 App。主流程围绕 Sony A
 - `GRAIN/EditorViewModel.swift`：导入、后台预览、取消旧任务和导出状态。
 - `GRAIN/Views.swift`：无滚动单页编辑器、实时胶片横栏和紧凑导出面板。
 - `GRAIN/PhotosImporter.swift`：保留原始文件表示方式的照片图库导入器。
+- `GRAIN/AdvancedGrade.swift`：曲线参数、HSL 立方体与白平衡增益计算（纯函数）。
+- `GRAIN/AdvancedGradeView.swift`：曲线 / HSL / 白平衡进阶面板。
+- `GRAIN/RecipeStore.swift`：编辑配方的本地持久化、最近配方与批量套用。
+- `GRAIN/BatchExporter.swift`：批量导出的逐张处理、进度与相册写回。
+- `GRAIN/ExportFrameRenderer.swift`：边框、日期戳与水印绘制。
+- `GRAIN/LivePhotoPlayer.swift`：实况照片全屏播放。
 
 ## Sony RAW 兼容性
 

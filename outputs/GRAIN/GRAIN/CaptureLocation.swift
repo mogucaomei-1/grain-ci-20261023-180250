@@ -22,15 +22,30 @@ final class CaptureLocationProvider: NSObject, CLLocationManagerDelegate {
         return storedLocation
     }
 
-    func start() {
-        guard CLLocationManager.locationServicesEnabled() else { return }
-        isStarted = true
+    var authorizationStatus: CLAuthorizationStatus {
+        manager.authorizationStatus
+    }
+
+    /// 只在启动页或设置里由用户主动触发时申请，避免使用过程中弹出系统弹窗
+    func requestAuthorization() {
         switch manager.authorizationStatus {
         case .notDetermined:
             manager.requestWhenInUseAuthorization()
         case .authorizedWhenInUse, .authorizedAlways:
+            start()
+        default:
+            break
+        }
+    }
+
+    func start() {
+        guard CLLocationManager.locationServicesEnabled() else { return }
+        isStarted = true
+        switch manager.authorizationStatus {
+        case .authorizedWhenInUse, .authorizedAlways:
             manager.startUpdatingLocation()
         default:
+            // 未授权时保持静默：不申请、不弹窗，照片就不写位置
             break
         }
     }

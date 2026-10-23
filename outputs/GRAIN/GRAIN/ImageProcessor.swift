@@ -272,6 +272,11 @@ struct RawImageProcessor {
             let croppedImage = CropProcessor.apply(crop, to: gradedImage)
             let mosaickedImage = MosaicProcessor.apply(mosaicStrokes, to: croppedImage)
             let cgImage = TextOverlayRenderer.render(textOverlays, onto: mosaickedImage)
+            let framedImage = ExportFrameRenderer.render(
+                cgImage,
+                options: options,
+                dateText: Self.dateStampText(sourceAsset.capturedAt)
+            )
 
             var actualFormat = options.format
             var destination = CGImageDestinationCreateWithURL(
@@ -298,17 +303,17 @@ struct RawImageProcessor {
                     sourceURL: url,
                     keepLocation: options.keepLocation,
                     keepCameraMetadata: options.keepCameraMetadata,
-                    width: cgImage.width,
-                    height: cgImage.height,
+                    width: framedImage.width,
+                    height: framedImage.height,
                     quality: options.quality
                 )
-                CGImageDestinationAddImage(destination!, cgImage, properties as CFDictionary)
+                CGImageDestinationAddImage(destination!, framedImage, properties as CFDictionary)
                 guard CGImageDestinationFinalize(destination!) else {
                     throw ImageProcessorError.cannotWrite
                 }
                 return ExportResult(
                     url: fallbackURL,
-                    dimensions: "\(cgImage.width) × \(cgImage.height)",
+                    dimensions: "\(framedImage.width) × \(framedImage.height)",
                     format: actualFormat
                 )
             }
@@ -318,21 +323,29 @@ struct RawImageProcessor {
                 sourceURL: url,
                 keepLocation: options.keepLocation,
                 keepCameraMetadata: options.keepCameraMetadata,
-                width: cgImage.width,
-                height: cgImage.height,
+                width: framedImage.width,
+                height: framedImage.height,
                 quality: options.quality
             )
-            CGImageDestinationAddImage(destination, cgImage, properties as CFDictionary)
+            CGImageDestinationAddImage(destination, framedImage, properties as CFDictionary)
             guard CGImageDestinationFinalize(destination) else {
                 throw ImageProcessorError.cannotWrite
             }
 
             return ExportResult(
                 url: outputURL,
-                dimensions: "\(cgImage.width) × \(cgImage.height)",
+                dimensions: "\(framedImage.width) × \(framedImage.height)",
                 format: actualFormat
             )
         }
+    }
+
+    /// 日期戳：优先用拍摄时间，缺失时用当前时间
+    static func dateStampText(_ date: Date?) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy.MM.dd"
+        return formatter.string(from: date ?? Date())
     }
 
     private static func loadImage(from url: URL, draft: Bool) throws -> CIImage {
@@ -403,6 +416,9 @@ struct RawImageProcessor {
 
         var graded = blend(base: source, with: neutralize(source, profile: profile), amount: amount)
 
+        // 取样白平衡是手动校正，不受胶片强度影响
+        graded = AdvancedGrade.applyWhiteBalance(graded, settings: settings)
+
         graded = graded.applyingFilter("CIExposureAdjust", parameters: [
             kCIInputEVKey: settings.exposure * amount
         ])
@@ -440,6 +456,10 @@ struct RawImageProcessor {
         graded = graded.applyingFilter("CIVibrance", parameters: [
             kCIInputAmountKey: settings.vibrance / 100 * amount
         ])
+
+        // 8 段 HSL 与手动曲线：属于精细校正，按满强度应用
+        graded = AdvancedGrade.applyHSL(graded, settings: settings)
+        graded = AdvancedGrade.applyCurve(graded, settings: settings)
 
         let clarity = settings.clarity * amount
         if clarity > 0.2 {
