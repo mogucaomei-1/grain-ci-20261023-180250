@@ -54,8 +54,8 @@ struct PermissionOnboardingView: View {
                         )
                         permissionRow(
                             icon: "mic.fill",
-                            title: "录音",
-                            detail: "为实况照片录制声音",
+                            title: "麦克风",
+                            detail: "拍摄实况照片需要录制声音",
                             state: microphoneState,
                             action: requestMicrophone
                         )

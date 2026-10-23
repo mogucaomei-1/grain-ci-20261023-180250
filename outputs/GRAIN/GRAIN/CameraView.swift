@@ -230,9 +230,13 @@ final class CameraController: ObservableObject {
 
     private func replaceVideoInput(with device: AVCaptureDevice) -> Bool {
         do {
-            _ = promoteToHighestPhotoFormat(device)
             let newInput = try AVCaptureDeviceInput(device: device)
             session.beginConfiguration()
+            // ProRAW 与实况照片/其他镜头可能互斥，换镜头前先关闭，
+            // 由下一次 RAW 拍摄重新开启。
+            if photoOutput.isAppleProRAWEnabled {
+                photoOutput.isAppleProRAWEnabled = false
+            }
             if let videoInput {
                 session.removeInput(videoInput)
             }
@@ -241,14 +245,36 @@ final class CameraController: ObservableObject {
                 return false
             }
             session.addInput(newInput)
+            // 输入加入会话后再切格式，否则手动选择的格式会被会话重置
+            let promoted = promoteToHighestPhotoFormat(device)
+            let preferred = photoOutput.isLivePhotoCaptureEnabled
+                ? standardPhotoDimensions(for: device)
+                : (promoted ?? maximumPhotoDimensions(for: device))
+            if let preferred,
+               device.activeFormat.supportedMaxPhotoDimensions.contains(where: {
+                   $0.width == preferred.width && $0.height == preferred.height
+               }) {
+                // 输出上限必须跟随当前镜头，否则超广角会沿用主摄的 48MP
+                photoOutput.maxPhotoDimensions = preferred
+            }
             session.commitConfiguration()
             videoInput = newInput
             cameraDevice = device
+            supportsRawCapture = device.position == .back
+                && (
+                    photoOutput.isAppleProRAWSupported
+                    || !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty
+                )
             publishDeviceCapabilities(
                 device,
                 liveSupported: device.position == .back,
                 rawSupported: supportsRawCapture
             )
+            if let preferred {
+                DispatchQueue.main.async { [weak self] in
+                    self?.maxPhotoDimensions = preferred
+                }
+            }
             return true
         } catch {
             return false
@@ -352,6 +378,21 @@ final class CameraController: ObservableObject {
         }
     }
 
+    /// RAW 的实际可用尺寸：ProRAW 的 48MP 仅主摄 1× 支持，
+    /// 超广角、长焦、数码变焦与前置一律按 12MP 采集。
+    private func rawPhotoDimensions(
+        for resolution: CameraResolution,
+        device: AVCaptureDevice
+    ) -> CMVideoDimensions? {
+        let isMainCameraAt1x = device.position == .back
+            && device.deviceType == .builtInWideAngleCamera
+            && selectedZoom <= 1.05
+        guard isMainCameraAt1x else {
+            return standardPhotoDimensions(for: device)
+        }
+        return requestedPhotoDimensions(for: resolution, device: device)
+    }
+
     /// 选中支持最大照片尺寸的格式，并返回该格式实际支持的最大尺寸。
     /// 逐档尝试并在切换后回读，切换失败时会记录原因用于诊断。
     private func promoteToHighestPhotoFormat(_ device: AVCaptureDevice) -> CMVideoDimensions? {
@@ -441,10 +482,11 @@ final class CameraController: ObservableObject {
                     self.session.removeInput(audioInput)
                     self.audioInput = nil
                 }
-                self.photoOutput.isLivePhotoCaptureEnabled =
-                    enabled && hasAudio && self.photoOutput.isLivePhotoCaptureSupported
-                // 实况照片最高按 12MP 输出，其余情况回到主摄满分辨率；
-                // 两个档位都对 ProRAW 合法，不会触发尺寸校验异常。
+                // ProRAW 与实况照片互斥，必须先关掉 ProRAW 再开启实况照片
+                if enabled, self.photoOutput.isAppleProRAWEnabled {
+                    self.photoOutput.isAppleProRAWEnabled = false
+                }
+                // 实况照片最高按 12MP 输出，其余情况回到当前相机满分辨率
                 if let device = self.cameraDevice {
                     let target = enabled
                         ? self.standardPhotoDimensions(for: device)
@@ -456,8 +498,11 @@ final class CameraController: ObservableObject {
                         self.photoOutput.maxPhotoDimensions = target
                     }
                 }
+                self.photoOutput.isLivePhotoCaptureEnabled =
+                    enabled && hasAudio && self.photoOutput.isLivePhotoCaptureSupported
                 self.session.commitConfiguration()
                 let armed = enabled && hasAudio
+                    && self.photoOutput.isLivePhotoCaptureSupported
                 DispatchQueue.main.async {
                     self.isLivePhotoArmed = armed
                     continuation.resume(returning: armed)
@@ -475,28 +520,13 @@ final class CameraController: ObservableObject {
 
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            do {
-                let newInput = try AVCaptureDeviceInput(device: device)
-                self.session.beginConfiguration()
-                if let videoInput = self.videoInput {
-                    self.session.removeInput(videoInput)
+            if self.replaceVideoInput(with: device) {
+                DispatchQueue.main.async {
+                    self.isUsingFrontCamera = device.position == .front
                 }
-                guard self.session.canAddInput(newInput) else {
-                    self.session.commitConfiguration()
-                    throw CameraError.cannotConfigure
-                }
-                self.session.addInput(newInput)
-                self.session.commitConfiguration()
-                self.videoInput = newInput
-                self.cameraDevice = device
-                self.publishDeviceCapabilities(
-                    device,
-                    liveSupported: self.photoOutput.isLivePhotoCaptureSupported,
-                    rawSupported: !self.photoOutput.availableRawPhotoPixelFormatTypes.isEmpty
-                )
-            } catch {
+            } else {
                 DispatchQueue.main.async { [weak self] in
-                    self?.errorMessage = error.localizedDescription
+                    self?.errorMessage = "无法切换相机。"
                 }
             }
         }
@@ -577,9 +607,8 @@ final class CameraController: ObservableObject {
                }) {
                 photoOutput.maxPhotoDimensions = captureDimensions
             }
-            if photoOutput.isAppleProRAWSupported {
-                photoOutput.isAppleProRAWEnabled = true
-            }
+            // 不在会话建立时无条件开启 ProRAW：它与实况照片互斥，
+            // 开启后一旦切到实况照片就会抛异常闪退。改由每次拍摄按格式开启。
             supportsRawCapture = device.position == .back
                 && (
                     photoOutput.isAppleProRAWSupported
@@ -698,10 +727,11 @@ final class CameraController: ObservableObject {
         }
 
         let rawFormats = photoOutput.availableRawPhotoPixelFormatTypes
-        // ProRAW 才能给出主摄满分辨率 RAW；Bayer RAW 仅作为兜底。
-        let rawFormat = rawFormats.first(where: {
+        // 只接受 ProRAW：Bayer RAW 的容器/元数据无法保证被照片图库接受，
+        // 之前超广角 RAW 报 PHPhotosError 3302 就是这种情况。
+        let rawFormat = rawFormats.first {
             AVCapturePhotoOutput.isAppleProRAWPixelFormat($0)
-        }) ?? rawFormats.first
+        }
 
         if configuration.format == .raw {
             guard let rawFormat else {
@@ -726,9 +756,23 @@ final class CameraController: ObservableObject {
             photoOutputAttached = true
         }
         requestedResolution = configuration.resolution
-        photoOutput.isLivePhotoCaptureEnabled =
-            livePhoto && photoOutput.isLivePhotoCaptureSupported
-        // 实况照片按 12MP、普通照片按主摄满分辨率；两档都对 ProRAW 合法。
+
+        // ProRAW 与实况照片互斥：先按本次格式切换，避免两者同时开启抛异常。
+        let wantsRaw = configuration.format == .raw
+            && cameraDevice?.position == .back
+        if wantsRaw {
+            if photoOutput.isLivePhotoCaptureEnabled {
+                photoOutput.isLivePhotoCaptureEnabled = false
+            }
+            if photoOutput.isAppleProRAWSupported,
+               !photoOutput.isAppleProRAWEnabled {
+                photoOutput.isAppleProRAWEnabled = true
+            }
+        } else if photoOutput.isAppleProRAWEnabled {
+            photoOutput.isAppleProRAWEnabled = false
+        }
+
+        // 实况照片按 12MP、普通照片按当前相机满分辨率。
         if let device = cameraDevice {
             let target = livePhoto
                 ? standardPhotoDimensions(for: device)
@@ -742,11 +786,11 @@ final class CameraController: ObservableObject {
                 photoOutput.maxPhotoDimensions = target
             }
         }
-        // RAW 必须由 ProRAW 输出提供满分辨率 DNG
-        if configuration.format == .raw,
-           photoOutput.isAppleProRAWSupported,
-           !photoOutput.isAppleProRAWEnabled {
-            photoOutput.isAppleProRAWEnabled = true
+
+        // 尺寸与 ProRAW 状态就绪后再开实况照片
+        if !wantsRaw {
+            photoOutput.isLivePhotoCaptureEnabled =
+                livePhoto && photoOutput.isLivePhotoCaptureSupported
         }
         if let connection = photoOutput.connection(with: .video),
            connection.isVideoMirroringSupported {
@@ -779,7 +823,7 @@ final class CameraController: ObservableObject {
         settings.photoQualityPrioritization = .quality
         applyCommonSettings(settings, configuration: configuration)
         settings.livePhotoMovieFileURL = configuration.livePhoto
-            && photoOutput.isLivePhotoCaptureSupported
+            && photoOutput.isLivePhotoCaptureEnabled
             ? temporaryLivePhotoURL()
             : nil
         if settings.livePhotoMovieFileURL != nil {
@@ -799,7 +843,7 @@ final class CameraController: ObservableObject {
         // 不指定尺寸时 ProRAW 一律按 12MP 输出；必须在每张设置上写明，
         // 系统才会按所选 24MP/48MP 采集（不支持时会回落到可用档位）。
         if let device = cameraDevice,
-           let dimensions = requestedPhotoDimensions(
+           let dimensions = rawPhotoDimensions(
                for: configuration.resolution,
                device: device
            ) {
