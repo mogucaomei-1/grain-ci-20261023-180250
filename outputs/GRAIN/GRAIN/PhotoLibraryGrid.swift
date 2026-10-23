@@ -175,7 +175,11 @@ struct PhotoLibraryHome: View {
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
     @State private var isSelecting = false
     @State private var selectedIdentifiers = Set<String>()
+    @State private var selectionOrder: [String] = []
     @State private var showDeleteConfirmation = false
+    @State private var showCollageEditor = false
+    @State private var collageAssets: [PHAsset] = []
+    @State private var showSelectionLimitNotice = false
     @State private var isDeleting = false
     @State private var deleteError: String?
     @State private var tileFrames: [String: CGRect] = [:]
@@ -229,6 +233,7 @@ struct PhotoLibraryHome: View {
         }
         .onChange(of: library.assets.map(\.localIdentifier)) { _, identifiers in
             selectedIdentifiers.formIntersection(Set(identifiers))
+            selectionOrder = selectionOrder.filter(selectedIdentifiers.contains)
             if identifiers.isEmpty {
                 isSelecting = false
             }
@@ -269,6 +274,14 @@ struct PhotoLibraryHome: View {
         } message: {
             Text(deleteError ?? "")
         }
+        .alert("最多选择 10 张", isPresented: $showSelectionLimitNotice) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text("拼图数量上限为 10 张，请取消部分照片后再添加。")
+        }
+        .fullScreenCover(isPresented: $showCollageEditor) {
+            CollageEditorView(assets: collageAssets)
+        }
     }
 
     private var selectionToolbar: some View {
@@ -285,6 +298,32 @@ struct PhotoLibraryHome: View {
                 .foregroundStyle(GrainTheme.accent)
 
             Spacer()
+
+            Button {
+                prepareCollage()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "puzzlepiece.extension.fill")
+                    Text("拼图")
+                }
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(
+                    !selectedIdentifiers.isEmpty
+                        ? GrainTheme.paper
+                        : GrainTheme.muted
+                )
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(
+                    !selectedIdentifiers.isEmpty
+                        ? GrainTheme.accent.opacity(0.22)
+                        : GrainTheme.raised,
+                    in: Capsule()
+                )
+            }
+            .buttonStyle(.plain)
+            .disabled(selectedIdentifiers.isEmpty || isDeleting)
+            .accessibilityLabel("制作拼图")
 
             Button {
                 showDeleteConfirmation = true
@@ -379,9 +418,10 @@ struct PhotoLibraryHome: View {
                         withAnimation(.easeOut(duration: 0.16)) {
                             isSelecting = true
                             selectedIdentifiers.insert(asset.localIdentifier)
+                            selectionOrder.append(asset.localIdentifier)
                         }
                     } else {
-                        selectedIdentifiers.insert(asset.localIdentifier)
+                        addSelection(asset.localIdentifier)
                     }
                     GrainHaptics.mediumImpact(enabled: hapticsEnabled)
                 }
@@ -423,9 +463,18 @@ struct PhotoLibraryHome: View {
             })?.key else {
                 continue
             }
-            if selectedIdentifiers.insert(identifier).inserted {
-                didAddSelection = true
+            if selectedIdentifiers.contains(identifier) {
+                continue
             }
+            if selectedIdentifiers.count >= 10 {
+                if !showSelectionLimitNotice {
+                    showSelectionLimitNotice = true
+                }
+                break
+            }
+            selectedIdentifiers.insert(identifier)
+            selectionOrder.append(identifier)
+            didAddSelection = true
         }
 
         if didAddSelection {
@@ -436,8 +485,9 @@ struct PhotoLibraryHome: View {
     private func toggleSelection(_ asset: PHAsset) {
         if selectedIdentifiers.contains(asset.localIdentifier) {
             selectedIdentifiers.remove(asset.localIdentifier)
+            selectionOrder.removeAll { $0 == asset.localIdentifier }
         } else {
-            selectedIdentifiers.insert(asset.localIdentifier)
+            addSelection(asset.localIdentifier)
         }
         GrainHaptics.selection(enabled: hapticsEnabled)
     }
@@ -446,7 +496,38 @@ struct PhotoLibraryHome: View {
         withAnimation(.easeOut(duration: 0.16)) {
             isSelecting = false
             selectedIdentifiers.removeAll()
+            selectionOrder.removeAll()
         }
+    }
+
+    private func addSelection(_ identifier: String) {
+        guard !selectedIdentifiers.contains(identifier) else { return }
+        guard selectedIdentifiers.count < 10 else {
+            if !showSelectionLimitNotice {
+                showSelectionLimitNotice = true
+            }
+            GrainHaptics.mediumImpact(enabled: hapticsEnabled)
+            return
+        }
+        selectedIdentifiers.insert(identifier)
+        selectionOrder.append(identifier)
+    }
+
+    private func prepareCollage() {
+        let assetLookup = Dictionary(
+            uniqueKeysWithValues: library.assets.map {
+                ($0.localIdentifier, $0)
+            }
+        )
+        let ordered = selectionOrder.compactMap { assetLookup[$0] }
+        let assets = ordered.isEmpty
+            ? library.assets.filter {
+                selectedIdentifiers.contains($0.localIdentifier)
+            }
+            : ordered
+        guard !assets.isEmpty else { return }
+        collageAssets = Array(assets.prefix(10))
+        showCollageEditor = true
     }
 
     private func deleteSelectedAssets() {
@@ -460,6 +541,7 @@ struct PhotoLibraryHome: View {
                 withAnimation(.easeOut(duration: 0.18)) {
                     isSelecting = false
                     selectedIdentifiers.removeAll()
+                    selectionOrder.removeAll()
                 }
             } catch {
                 deleteError = error.localizedDescription

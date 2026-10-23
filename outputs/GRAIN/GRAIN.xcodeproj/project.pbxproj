@@ -26,6 +26,7 @@
 		A10000000000000000000018 /* MosaicEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* MosaicEditorView.swift */; };
 		A10000000000000000000019 /* CameraView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000019 /* CameraView.swift */; };
 		A10000000000000000000020 /* PermissionOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000020 /* PermissionOnboardingView.swift */; };
+		A10000000000000000000021 /* CollageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000021 /* CollageEditorView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -48,6 +49,7 @@
 		B10000000000000000000018 /* MosaicEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MosaicEditorView.swift; sourceTree = "<group>"; };
 		B10000000000000000000019 /* CameraView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraView.swift; sourceTree = "<group>"; };
 		B10000000000000000000020 /* PermissionOnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionOnboardingView.swift; sourceTree = "<group>"; };
+		B10000000000000000000021 /* CollageEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollageEditorView.swift; sourceTree = "<group>"; };
 		B1000000000000000000000A /* GRAIN.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GRAIN.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -91,6 +93,7 @@
 				B10000000000000000000018 /* MosaicEditorView.swift */,
 				B10000000000000000000019 /* CameraView.swift */,
 				B10000000000000000000020 /* PermissionOnboardingView.swift */,
+				B10000000000000000000021 /* CollageEditorView.swift */,
 				B10000000000000000000009 /* Assets.xcassets */,
 			);
 			path = GRAIN;
@@ -191,6 +194,7 @@
 				A10000000000000000000018 /* MosaicEditorView.swift in Sources */,
 				A10000000000000000000019 /* CameraView.swift in Sources */,
 				A10000000000000000000020 /* PermissionOnboardingView.swift in Sources */,
+				A10000000000000000000021 /* CollageEditorView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -308,7 +312,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 59;
+				CURRENT_PROJECT_VERSION = 60;
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -344,7 +348,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 59;
+				CURRENT_PROJECT_VERSION = 60;
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
