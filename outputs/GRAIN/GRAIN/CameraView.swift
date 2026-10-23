@@ -123,11 +123,13 @@ struct CameraCaptureConfiguration {
 final class CameraController: ObservableObject {
     let session = AVCaptureSession()
     private let photoOutput = AVCapturePhotoOutput()
+    private let stillImageOutput = AVCaptureStillImageOutput()
     private let sessionQueue = DispatchQueue(label: "studio.grain.camera.session")
     private var cameraDevice: AVCaptureDevice?
     private var videoInput: AVCaptureDeviceInput?
     private var audioInput: AVCaptureDeviceInput?
     private var photoOutputAttached = false
+    private var stillImageOutputAttached = false
     private var requestedResolution: CameraResolution = .standard24
     private var activeProcessors: [Int64: CameraPhotoCaptureProcessor] = [:]
     private let processorLock = NSLock()
@@ -173,9 +175,27 @@ final class CameraController: ObservableObject {
 
     func setZoom(_ zoom: CGFloat) {
         sessionQueue.async { [weak self] in
-            guard let self, let device = self.cameraDevice else { return }
+            guard let self, var device = self.cameraDevice else { return }
             do {
-                let requestedFactor = self.virtualZoomFactor(for: zoom, device: device)
+                if device.deviceType != .builtInUltraWideCamera,
+                   zoom <= 0.55,
+                   let ultraWide = AVCaptureDevice.default(
+                       .builtInUltraWideCamera,
+                       for: .video,
+                       position: .back
+                   ),
+                   self.replaceVideoInput(with: ultraWide) {
+                    device = ultraWide
+                } else if device.deviceType == .builtInUltraWideCamera,
+                          zoom > 0.55,
+                          let backCamera = self.discoverCamera(position: .back),
+                          self.replaceVideoInput(with: backCamera) {
+                    device = backCamera
+                }
+
+                let requestedFactor = device.deviceType == .builtInUltraWideCamera
+                    ? 1
+                    : zoom
                 let hardwareZoom = min(
                     max(requestedFactor, device.minAvailableVideoZoomFactor),
                     device.maxAvailableVideoZoomFactor
@@ -183,10 +203,7 @@ final class CameraController: ObservableObject {
 
                 try device.lockForConfiguration()
                 device.cancelVideoZoomRamp()
-                device.ramp(
-                    toVideoZoomFactor: hardwareZoom,
-                    withRate: max(6, abs(hardwareZoom - device.videoZoomFactor) * 8)
-                )
+                device.videoZoomFactor = hardwareZoom
                 device.unlockForConfiguration()
                 DispatchQueue.main.async { [weak self] in
                     self?.selectedZoom = zoom
@@ -199,19 +216,30 @@ final class CameraController: ObservableObject {
         }
     }
 
-    private func virtualZoomFactor(
-        for displayZoom: CGFloat,
-        device: AVCaptureDevice
-    ) -> CGFloat {
-        let hasUltraWide = device.constituentDevices.contains {
-            $0.deviceType == .builtInUltraWideCamera
+    private func replaceVideoInput(with device: AVCaptureDevice) -> Bool {
+        do {
+            let newInput = try AVCaptureDeviceInput(device: device)
+            session.beginConfiguration()
+            if let videoInput {
+                session.removeInput(videoInput)
+            }
+            guard session.canAddInput(newInput) else {
+                session.commitConfiguration()
+                return false
+            }
+            session.addInput(newInput)
+            session.commitConfiguration()
+            videoInput = newInput
+            cameraDevice = device
+            publishDeviceCapabilities(
+                device,
+                liveSupported: device.position == .back,
+                rawSupported: device.position == .back
+            )
+            return true
+        } catch {
+            return false
         }
-        guard hasUltraWide else { return displayZoom }
-        let baseFactor = device.virtualDeviceSwitchOverVideoZoomFactors
-            .first
-            .map { CGFloat(truncating: $0) }
-            ?? 2
-        return max(0.5, displayZoom) * baseFactor
     }
 
     func focus(at devicePoint: CGPoint, lock: Bool) {
@@ -432,15 +460,19 @@ final class CameraController: ObservableObject {
             session.addInput(input)
             videoInput = input
 
-            guard session.canAddOutput(photoOutput) else {
+            stillImageOutput.outputSettings = [
+                AVVideoCodecKey: AVVideoCodecType.jpeg,
+                AVVideoQualityKey: 1.0
+            ]
+            stillImageOutput.isHighResolutionStillImageOutputEnabled = true
+            guard session.canAddOutput(stillImageOutput) else {
                 throw CameraError.cannotConfigure
             }
-            session.addOutput(photoOutput)
-            photoOutputAttached = true
-            photoOutput.isLivePhotoCaptureEnabled = false
+            session.addOutput(stillImageOutput)
+            stillImageOutputAttached = true
 
             cameraDevice = device
-            let liveSupported = photoOutput.isLivePhotoCaptureSupported
+            let liveSupported = device.position == .back
             let rawSupported = device.position == .back
             let maxDims = preferredPhotoDimensions(for: device)
                 ?? CMVideoDimensions(width: 0, height: 0)
@@ -516,8 +548,16 @@ final class CameraController: ObservableObject {
     }
 
     private func performCapture(_ configuration: CameraCaptureConfiguration) {
-        guard photoOutputAttached else {
+        let usePhotoOutput = configuration.format == .raw || configuration.livePhoto
+        guard configureCaptureOutput(
+            usePhotoOutput: usePhotoOutput,
+            livePhoto: configuration.livePhoto
+        ) else {
             finishCapture(error: CameraError.cannotConfigure)
+            return
+        }
+        if !usePhotoOutput {
+            captureWithStillImageOutput(configuration)
             return
         }
         guard let rawFormat = photoOutput.availableRawPhotoPixelFormatTypes.first else {
@@ -534,6 +574,70 @@ final class CameraController: ObservableObject {
         } else {
             captureProcessed(configuration)
         }
+    }
+
+    private func captureWithStillImageOutput(_ configuration: CameraCaptureConfiguration) {
+        guard let connection = stillImageOutput.connection(with: .video) else {
+            finishCapture(error: CameraError.cannotConfigure)
+            return
+        }
+        stillImageOutput.captureStillImageAsynchronously(from: connection) { [weak self] buffer, error in
+            guard let self else { return }
+            if let error {
+                DispatchQueue.main.async {
+                    self.finishCapture(error: error)
+                }
+                return
+            }
+            guard let buffer,
+                  let data = AVCaptureStillImageOutput.jpegStillImageNSDataRepresentation(buffer)
+            else {
+                DispatchQueue.main.async {
+                    self.finishCapture(error: CameraError.missingPhotoData)
+                }
+                return
+            }
+            DispatchQueue.main.async {
+                self.processCapturedOutput(
+                    CameraCapturedOutput(data: data, livePhotoURL: nil),
+                    configuration: configuration
+                )
+            }
+        }
+    }
+
+    private func configureCaptureOutput(
+        usePhotoOutput: Bool,
+        livePhoto: Bool
+    ) -> Bool {
+        if !usePhotoOutput, stillImageOutputAttached {
+            return true
+        }
+        session.beginConfiguration()
+        if usePhotoOutput {
+            if stillImageOutputAttached {
+                session.removeOutput(stillImageOutput)
+                stillImageOutputAttached = false
+            }
+            if !photoOutputAttached, session.canAddOutput(photoOutput) {
+                session.addOutput(photoOutput)
+                photoOutputAttached = true
+            }
+            photoOutput.isLivePhotoCaptureEnabled =
+                livePhoto && photoOutput.isLivePhotoCaptureSupported
+        } else {
+            photoOutput.isLivePhotoCaptureEnabled = false
+            if photoOutputAttached {
+                session.removeOutput(photoOutput)
+                photoOutputAttached = false
+            }
+            if !stillImageOutputAttached, session.canAddOutput(stillImageOutput) {
+                session.addOutput(stillImageOutput)
+                stillImageOutputAttached = true
+            }
+        }
+        session.commitConfiguration()
+        return usePhotoOutput ? photoOutputAttached : stillImageOutputAttached
     }
 
     private func captureProcessed(_ configuration: CameraCaptureConfiguration) {
