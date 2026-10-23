@@ -1,3 +1,4 @@
+import CoreImage
 import SwiftUI
 
 enum GrainTheme {
@@ -35,6 +36,16 @@ enum FocusPeakingColor: String, CaseIterable, Identifiable {
         case .yellow: Color(hex: 0xFFD84A)
         case .blue: Color(hex: 0x4AA8FF)
         case .white: Color(hex: 0xFFFFFF)
+        }
+    }
+
+    /// 相机峰值直接用 Core Image 上色，省掉 SwiftUI 的一层混合
+    var ciColor: CIColor {
+        switch self {
+        case .red: CIColor(red: 1.0, green: 0.35, blue: 0.24)
+        case .yellow: CIColor(red: 1.0, green: 0.85, blue: 0.29)
+        case .blue: CIColor(red: 0.29, green: 0.66, blue: 1.0)
+        case .white: CIColor(red: 1.0, green: 1.0, blue: 1.0)
         }
     }
 

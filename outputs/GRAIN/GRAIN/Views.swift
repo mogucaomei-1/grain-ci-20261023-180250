@@ -1079,8 +1079,9 @@ private struct PhotoEditorCanvas: View {
                     guard zoomScale <= 1.01 else { return }
                     selectedTextID = nil
                 },
-                onDoubleTap: resetZoom,
-                isZoomed: zoomScale > 1.01
+                onDoubleTap: { point in
+                    handleDoubleTap(at: point, viewport: viewport, imageSize: imageSize)
+                }
             )
             .frame(width: imageSize.width, height: imageSize.height)
             .position(x: viewport.width / 2, y: viewport.height / 2)
@@ -1141,6 +1142,32 @@ private struct PhotoEditorCanvas: View {
         GrainHaptics.lightImpact(enabled: hapticsEnabled)
     }
 
+    /// 双击：未放大时放大到双击的位置，已放大时缩回原始大小
+    private func handleDoubleTap(at point: CGPoint, viewport: CGSize, imageSize: CGSize) {
+        if zoomScale > 1.01 {
+            resetZoom()
+            return
+        }
+
+        let target: CGFloat = 2.5
+        // point 是照片画布坐标，先换算到画布中心为原点的坐标系
+        let canvasCenter = CGPoint(x: imageSize.width / 2, y: imageSize.height / 2)
+        let dx = point.x - canvasCenter.x
+        let dy = point.y - canvasCenter.y
+        let proposed = CGSize(width: -dx * target, height: -dy * target)
+
+        withAnimation(.easeOut(duration: 0.28)) {
+            zoomScale = target
+            panOffset = clampedPan(
+                proposed,
+                viewport: viewport,
+                imageSize: imageSize,
+                scale: target
+            )
+        }
+        GrainHaptics.lightImpact(enabled: hapticsEnabled)
+    }
+
     /// 放大后左右/上下拖动查看照片其余部分
     private func zoomPanGesture(viewport: CGSize, imageSize: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 2)
@@ -1173,9 +1200,10 @@ private struct PhotoEditorCanvas: View {
     private func clampedPan(
         _ proposed: CGSize,
         viewport: CGSize,
-        imageSize: CGSize
+        imageSize: CGSize,
+        scale overrideScale: CGFloat? = nil
     ) -> CGSize {
-        let scale = max(zoomScale, 1)
+        let scale = max(overrideScale ?? zoomScale, 1)
             * photoScale(viewport: viewport, imageSize: imageSize)
         let drawWidth = imageSize.width * scale
         let drawHeight = imageSize.height * scale

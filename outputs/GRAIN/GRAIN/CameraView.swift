@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreImage
 import CoreLocation
+import Foundation
 import ImageIO
 import Photos
 import SwiftUI
@@ -126,6 +127,8 @@ final class CameraController: ObservableObject {
     private let photoOutput = AVCapturePhotoOutput()
     private let sessionQueue = DispatchQueue(label: "studio.grain.camera.session")
     private var cameraDevice: AVCaptureDevice?
+    /// 长焦相对主摄的光学倍率（iPhone 17 Pro 为 4×）
+    private var teleReach: CGFloat = 4
     private var videoInput: AVCaptureDeviceInput?
     private var audioInput: AVCaptureDeviceInput?
     private var photoOutputAttached = false
@@ -147,14 +150,15 @@ final class CameraController: ObservableObject {
     private let peakingProcessor = FocusPeakingProcessor()
     private var peakingAttached = false
     private var hintGeneration = 0
+    /// 预览视图直接从这里取峰值帧，绕开 SwiftUI 的状态刷新
+    let peakingOverlay = PeakingOverlaySink()
 
     @Published private(set) var isReady = false
     @Published private(set) var isCapturing = false
     @Published private(set) var countdown: Int?
     @Published private(set) var errorMessage: String?
-    /// 峰值对焦：红色描边标出合焦区域
+    /// 峰值对焦：彩色描边标出合焦区域
     @Published private(set) var isFocusPeakingEnabled = false
-    @Published private(set) var peakingMask: CGImage?
     @Published private(set) var peakingHint: String?
     @Published private(set) var isLivePhotoSupported = false
     @Published private(set) var isLivePhotoArmed = false
@@ -219,7 +223,7 @@ final class CameraController: ObservableObject {
         isFocusPeakingEnabled = enabled
         peakingHint = nil
         if !enabled {
-            peakingMask = nil
+            peakingOverlay.submit(nil)
         }
         sessionQueue.async { [weak self] in
             guard let self else { return }
@@ -228,6 +232,14 @@ final class CameraController: ObservableObject {
             } else {
                 self.detachPeakingOutput()
             }
+        }
+    }
+
+    /// 峰值描边颜色（红 / 黄 / 蓝 / 白），切换后下一帧即生效
+    func setPeakingColor(_ color: FocusPeakingColor) {
+        let resolved = color.ciColor
+        peakingQueue.async { [weak self] in
+            self?.peakingProcessor.tintColor = resolved
         }
     }
 
@@ -248,10 +260,8 @@ final class CameraController: ObservableObject {
         ]
         peakingOutput.setSampleBufferDelegate(peakingProcessor, queue: peakingQueue)
         peakingProcessor.onMask = { [weak self] image in
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.isFocusPeakingEnabled else { return }
-                self.peakingMask = image
-            }
+            guard let self, self.isFocusPeakingEnabled else { return }
+            self.peakingOverlay.submit(image)
         }
 
         session.beginConfiguration()
@@ -260,7 +270,7 @@ final class CameraController: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.isFocusPeakingEnabled = false
-                self.peakingMask = nil
+                self.peakingOverlay.submit(nil)
                 self.showPeakingHint("当前镜头不支持峰值对焦")
             }
             return
@@ -282,9 +292,7 @@ final class CameraController: ObservableObject {
         session.commitConfiguration()
         peakingAttached = false
         peakingProcessor.onMask = nil
-        DispatchQueue.main.async { [weak self] in
-            self?.peakingMask = nil
-        }
+        peakingOverlay.submit(nil)
     }
 
     /// 分析图的方向必须和预览层一致，否则红色描边会和画面对不上
@@ -313,38 +321,18 @@ final class CameraController: ObservableObject {
 
     func setZoom(_ zoom: CGFloat) {
         sessionQueue.async { [weak self] in
-            guard let self, var device = self.cameraDevice else { return }
+            guard let self else { return }
+            let requested = min(max(zoom, 0.5), self.maximumZoom)
+            self.selectLensIfNeeded(for: requested)
+            guard let device = self.cameraDevice else { return }
+            let factor = self.hardwareZoomFactor(for: requested, device: device)
             do {
-                if device.deviceType != .builtInUltraWideCamera,
-                   zoom <= 0.55,
-                   let ultraWide = AVCaptureDevice.default(
-                       .builtInUltraWideCamera,
-                       for: .video,
-                       position: .back
-                   ),
-                   self.replaceVideoInput(with: ultraWide) {
-                    device = ultraWide
-                } else if device.deviceType == .builtInUltraWideCamera,
-                          zoom > 0.55,
-                          let backCamera = self.discoverCamera(position: .back),
-                          self.replaceVideoInput(with: backCamera) {
-                    device = backCamera
-                }
-
-                let requestedFactor = device.deviceType == .builtInUltraWideCamera
-                    ? 1
-                    : zoom
-                let hardwareZoom = min(
-                    max(requestedFactor, device.minAvailableVideoZoomFactor),
-                    device.maxAvailableVideoZoomFactor
-                )
-
                 try device.lockForConfiguration()
                 device.cancelVideoZoomRamp()
-                device.videoZoomFactor = hardwareZoom
+                device.videoZoomFactor = factor
                 device.unlockForConfiguration()
                 DispatchQueue.main.async { [weak self] in
-                    self?.selectedZoom = zoom
+                    self?.selectedZoom = requested
                 }
             } catch {
                 DispatchQueue.main.async { [weak self] in
@@ -354,7 +342,85 @@ final class CameraController: ObservableObject {
         }
     }
 
-    private func replaceVideoInput(with device: AVCaptureDevice) -> Bool {
+    /// 0.5× 走超广角，达到长焦光学倍率后切到长焦物理镜头。
+    /// 这样 4×/8× 是真正的长焦成像，而不是主摄裁切放大。
+    /// 只在 sessionQueue 上调用。
+    private func selectLensIfNeeded(for zoom: CGFloat) {
+        guard cameraDevice?.position == .back else { return }
+        let ultraWide = AVCaptureDevice.default(
+            .builtInUltraWideCamera,
+            for: .video,
+            position: .back
+        )
+        let wide = AVCaptureDevice.default(
+            .builtInWideAngleCamera,
+            for: .video,
+            position: .back
+        )
+        let tele = AVCaptureDevice.default(
+            .builtInTelephotoCamera,
+            for: .video,
+            position: .back
+        )
+
+        if let wide, let tele {
+            teleReach = opticalReach(tele: tele, wide: wide)
+            let current = cameraDevice?.deviceType
+            if zoom >= teleReach * 0.94, current != .builtInTelephotoCamera {
+                if replaceVideoInput(with: tele, preserveZoom: true) { return }
+            }
+            // 回到广角留 24% 滞回，避免在临界点来回换镜头
+            if current == .builtInTelephotoCamera, zoom <= teleReach * 0.76 {
+                if replaceVideoInput(with: wide, preserveZoom: true) { return }
+            }
+            if cameraDevice?.deviceType == .builtInTelephotoCamera { return }
+        }
+
+        if zoom < 0.58 {
+            if let ultraWide, cameraDevice?.deviceType != .builtInUltraWideCamera {
+                _ = replaceVideoInput(with: ultraWide, preserveZoom: true)
+            }
+        } else if cameraDevice?.deviceType == .builtInUltraWideCamera, let wide {
+            _ = replaceVideoInput(with: wide, preserveZoom: true)
+        }
+    }
+
+    /// 用户倍率换算成当前镜头上的硬件倍率
+    private func hardwareZoomFactor(for zoom: CGFloat, device: AVCaptureDevice) -> CGFloat {
+        let requested: CGFloat
+        switch device.deviceType {
+        case .builtInUltraWideCamera:
+            requested = 1
+        case .builtInTelephotoCamera:
+            requested = zoom / max(teleReach, 1)
+        default:
+            requested = zoom
+        }
+        return min(
+            max(requested, device.minAvailableVideoZoomFactor),
+            device.maxAvailableVideoZoomFactor
+        )
+    }
+
+    /// 用两台镜头的视场角估算长焦相对主摄的光学倍率，并吸附到常见档位
+    private func opticalReach(tele: AVCaptureDevice, wide: AVCaptureDevice) -> CGFloat {
+        let wideFOV = wide.activeFormat.videoFieldOfView
+        let teleFOV = tele.activeFormat.videoFieldOfView
+        guard wideFOV > 1, teleFOV > 1, teleFOV < wideFOV else { return teleReach }
+        let ratio = CGFloat(
+            tan(Double(wideFOV) * .pi / 360) / tan(Double(teleFOV) * .pi / 360)
+        )
+        guard ratio > 1.2 else { return teleReach }
+        let common: [CGFloat] = [2, 2.5, 3, 3.5, 4, 4.5, 5, 6]
+        return common.min {
+            abs(log(ratio / $0)) < abs(log(ratio / $1))
+        } ?? 4
+    }
+
+    private func replaceVideoInput(
+        with device: AVCaptureDevice,
+        preserveZoom: Bool = false
+    ) -> Bool {
         do {
             let newInput = try AVCaptureDeviceInput(device: device)
             session.beginConfiguration()
@@ -400,7 +466,8 @@ final class CameraController: ObservableObject {
             publishDeviceCapabilities(
                 device,
                 liveSupported: device.position == .back,
-                rawSupported: supportsRawCapture
+                rawSupported: supportsRawCapture,
+                preserveZoom: preserveZoom
             )
             if let preferred {
                 DispatchQueue.main.async { [weak self] in
@@ -839,16 +906,18 @@ final class CameraController: ObservableObject {
     private func publishDeviceCapabilities(
         _ device: AVCaptureDevice,
         liveSupported: Bool,
-        rawSupported: Bool
+        rawSupported: Bool,
+        preserveZoom: Bool = false
     ) {
+        let minimumZoom = device.position == .back ? 0.5 : 1
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            let hasUltraWide = device.constituentDevices.contains {
-                $0.deviceType == .builtInUltraWideCamera
+            // 变焦驱动的换镜头不能把用户正在用的倍率重置回 1×
+            if !preserveZoom {
+                self.minimumZoom = minimumZoom
+                self.maximumZoom = 8
+                self.selectedZoom = 1
             }
-            self.minimumZoom = device.position == .back && hasUltraWide ? 0.5 : 1
-            self.maximumZoom = 8
-            self.selectedZoom = device.position == .back ? 1 : min(max(1, self.minimumZoom), self.maximumZoom)
             self.minimumExposureBias = device.minExposureTargetBias
             self.maximumExposureBias = device.maxExposureTargetBias
             self.exposureBias = min(max(0, device.minExposureTargetBias), device.maxExposureTargetBias)
@@ -1711,13 +1780,15 @@ private enum CameraError: LocalizedError {
     }
 }
 
-/// 从视频流抽帧做边缘检测，输出透明底 + 红色描边的峰值图。
-/// 只处理缩略尺寸并限制帧率，避免拖慢预览与拍照。
+/// 从视频流抽帧做边缘检测，输出透明底 + 彩色描边的峰值图。
+/// 只在缩略尺寸上处理并限制帧率，避免拖慢预览与拍照。
 final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     var onMask: ((CGImage?) -> Void)?
+    /// 描边颜色；切换颜色只影响下一帧，不需要重建会话
+    var tintColor = CIColor(red: 1.0, green: 0.35, blue: 0.24)
 
     private let context = CIContext(options: [.cacheIntermediates: false])
-    private let analysisSize: CGFloat = 340
+    private let analysisSize: CGFloat = 240
     private var lastTime: CFAbsoluteTime = 0
 
     func captureOutput(
@@ -1726,7 +1797,9 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
         from connection: AVCaptureConnection
     ) {
         let now = CFAbsoluteTimeGetCurrent()
-        guard now - lastTime >= 0.13 else { return }
+        // 约 18fps：分辨率降下来后单帧只要几毫秒，
+        // 保持较高的刷新率才能让描边跟得上画面，不会出现拖影。
+        guard now - lastTime >= 0.055 else { return }
         lastTime = now
 
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
@@ -1758,12 +1831,9 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
         let clear = CIImage(
             color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)
         ).cropped(to: outputExtent)
-        // 输出白色描边，实际颜色由 SwiftUI 的 colorMultiply 决定，
-        // 这样切换颜色不需要重新分析每一帧。
-        let white = CIImage(
-            color: CIColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 1.0)
-        ).cropped(to: outputExtent)
-        let masked = white.applyingFilter("CIBlendWithRedMask", parameters: [
+        // 直接输出所选颜色，交给图层合成，省掉 SwiftUI 的一层 colorMultiply
+        let tint = CIImage(color: tintColor).cropped(to: outputExtent)
+        let masked = tint.applyingFilter("CIBlendWithRedMask", parameters: [
             kCIInputBackgroundImageKey: clear,
             kCIInputMaskImageKey: punched
         ])
@@ -1771,6 +1841,62 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
             return
         }
         onMask?(image)
+    }
+}
+
+/// 峰值叠加层：直接写 `CALayer.contents`。
+/// 之前把每帧的 CGImage 塞进 @Published，SwiftUI 每秒要重建十几次整个相机页面，
+/// 主线程被占满后预览掉帧、描边明显滞后，看起来就是一条拖影。
+/// 改成图层直写 + 合并未决帧后，主线程几乎没有额外开销。
+final class PeakingOverlaySink {
+    private weak var layer: CALayer?
+    private var latest: CGImage?
+    private var applyScheduled = false
+    private let lock = NSLock()
+
+    func attach(_ layer: CALayer) {
+        lock.lock()
+        self.layer = layer
+        let image = latest
+        lock.unlock()
+        Self.apply(image, to: layer)
+    }
+
+    func detach(_ layer: CALayer) {
+        lock.lock()
+        if self.layer === layer {
+            self.layer = nil
+        }
+        lock.unlock()
+    }
+
+    func submit(_ image: CGImage?) {
+        lock.lock()
+        latest = image
+        guard !applyScheduled else {
+            lock.unlock()
+            return
+        }
+        applyScheduled = true
+        lock.unlock()
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let image = self.latest
+            let layer = self.layer
+            self.applyScheduled = false
+            self.lock.unlock()
+            guard let layer else { return }
+            Self.apply(image, to: layer)
+        }
+    }
+
+    private static func apply(_ image: CGImage?, to layer: CALayer) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.contents = image
+        CATransaction.commit()
     }
 }
 
@@ -1819,6 +1945,8 @@ enum FocusPeakingRenderer {
 struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
     let mirrored: Bool
+    /// 峰值叠加层的数据源；直接写预览视图的子图层，避免 SwiftUI 每帧重建
+    var peakingSink: PeakingOverlaySink?
     let onFocus: (_ devicePoint: CGPoint, _ lock: Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -1829,6 +1957,7 @@ struct CameraPreviewView: UIViewRepresentable {
         let view = CameraPreviewUIView()
         view.previewLayer.session = session
         view.previewLayer.videoGravity = .resizeAspectFill
+        view.attachPeakingSink(peakingSink)
         if let connection = view.previewLayer.connection {
             if connection.isVideoRotationAngleSupported(90) {
                 connection.videoRotationAngle = 90
@@ -1853,10 +1982,17 @@ struct CameraPreviewView: UIViewRepresentable {
         return view
     }
 
+    static func dismantleUIView(_ uiView: CameraPreviewUIView, coordinator: Coordinator) {
+        uiView.attachPeakingSink(nil)
+    }
+
     func updateUIView(_ uiView: CameraPreviewUIView, context: Context) {
         context.coordinator.parent = self
         if uiView.previewLayer.session !== session {
             uiView.previewLayer.session = session
+        }
+        if uiView.attachedSink !== peakingSink {
+            uiView.attachPeakingSink(peakingSink)
         }
         if let connection = uiView.previewLayer.connection,
            connection.isVideoMirroringSupported,
@@ -1908,13 +2044,39 @@ final class CameraPreviewUIView: UIView {
 
     private var latestFocusLayer: CALayer?
 
+    /// 峰值描边图层：与预览层同 gravity，天然对齐，不会出现错位重影
+    private let peakingLayer = CALayer()
+    private(set) var attachedSink: PeakingOverlaySink?
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .black
+
+        peakingLayer.contentsGravity = .resizeAspectFill
+        peakingLayer.masksToBounds = true
+        peakingLayer.opacity = 0.92
+        peakingLayer.zPosition = 3
+        peakingLayer.allowsEdgeAntialiasing = false
+        layer.addSublayer(peakingLayer)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        peakingLayer.frame = bounds
+        CATransaction.commit()
+    }
+
+    func attachPeakingSink(_ sink: PeakingOverlaySink?) {
+        guard sink !== attachedSink else { return }
+        attachedSink?.detach(peakingLayer)
+        attachedSink = sink
+        sink?.attach(peakingLayer)
     }
 
     func showFocusReticle(at point: CGPoint, locked: Bool) {
@@ -2056,6 +2218,7 @@ struct CameraView: View {
                         CameraPreviewView(
                             session: camera.session,
                             mirrored: camera.isUsingFrontCamera && mirrorFront,
+                            peakingSink: camera.peakingOverlay,
                             onFocus: { devicePoint, lock in
                                 camera.focus(at: devicePoint, lock: lock)
                                 GrainHaptics.mediumImpact(enabled: true)
@@ -2064,21 +2227,6 @@ struct CameraView: View {
                         .frame(width: rect.width, height: rect.height)
                         .clipped()
                         .position(x: rect.midX, y: rect.midY)
-
-                        // 峰值对焦：红色描边叠在预览上，帮助判断合焦区域
-                        if camera.isFocusPeakingEnabled, let mask = camera.peakingMask {
-                            Image(decorative: mask, scale: 1)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
-                                .colorMultiply(
-                                    FocusPeakingColor.resolved(peakingColorRaw).color
-                                )
-                                .frame(width: rect.width, height: rect.height)
-                                .clipped()
-                                .position(x: rect.midX, y: rect.midY)
-                                .opacity(0.94)
-                                .allowsHitTesting(false)
-                        }
 
                         cameraLookOverlay
                         framingOverlay
@@ -2161,6 +2309,12 @@ struct CameraView: View {
         .onChange(of: mirrorFront) { _, value in
             UserDefaults.standard.set(value, forKey: "frontCameraMirrorEnabled")
             camera.applyFrontMirroring()
+        }
+        .onAppear {
+            camera.setPeakingColor(FocusPeakingColor.resolved(peakingColorRaw))
+        }
+        .onChange(of: peakingColorRaw) { _, value in
+            camera.setPeakingColor(FocusPeakingColor.resolved(value))
         }
         .onChange(of: camera.isReady) { _, ready in
             if ready {

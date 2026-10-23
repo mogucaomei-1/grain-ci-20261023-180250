@@ -12,8 +12,8 @@ struct TextOverlayInteractionView: UIViewRepresentable {
     let onMoveStart: () -> Void
     let onMove: (UUID, CGPoint) -> Void
     let onTapEmpty: () -> Void
-    let onDoubleTap: () -> Void
-    let isZoomed: Bool
+    /// 双击位置（照片画布坐标）：未放大时放大到该点，已放大时复位
+    let onDoubleTap: (CGPoint) -> Void
 
     func makeUIView(context: Context) -> TextOverlayCanvasUIView {
         let view = TextOverlayCanvasUIView()
@@ -31,7 +31,6 @@ struct TextOverlayInteractionView: UIViewRepresentable {
             selectedID: selectedID,
             canvasSize: canvasSize,
             hapticsEnabled: hapticsEnabled,
-            isZoomed: isZoomed,
             onSelect: onSelect,
             onEdit: onEdit,
             onDelete: onDelete,
@@ -56,8 +55,7 @@ final class TextOverlayCanvasUIView: UIView, UIGestureRecognizerDelegate {
     private var onMoveStart: (() -> Void)?
     private var onMove: ((UUID, CGPoint) -> Void)?
     private var onTapEmpty: (() -> Void)?
-    private var onDoubleTap: (() -> Void)?
-    private var doubleTapRecognizer: UITapGestureRecognizer?
+    private var onDoubleTap: ((CGPoint) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -70,17 +68,15 @@ final class TextOverlayCanvasUIView: UIView, UIGestureRecognizerDelegate {
         tap.delegate = self
         addGestureRecognizer(tap)
 
-        // 双击复位只在“已放大”时启用，未放大时不会拖慢单击进全屏
+        // 双击恒可用：未放大时放大到双击点，已放大时复位
         let doubleTap = UITapGestureRecognizer(
             target: self,
-            action: #selector(handleDoubleTap)
+            action: #selector(handleDoubleTap(_:))
         )
         doubleTap.numberOfTapsRequired = 2
         doubleTap.cancelsTouchesInView = false
         doubleTap.delegate = self
-        doubleTap.isEnabled = false
         addGestureRecognizer(doubleTap)
-        doubleTapRecognizer = doubleTap
         tap.require(toFail: doubleTap)
     }
 
@@ -93,14 +89,13 @@ final class TextOverlayCanvasUIView: UIView, UIGestureRecognizerDelegate {
         selectedID: UUID?,
         canvasSize: CGSize,
         hapticsEnabled: Bool,
-        isZoomed: Bool,
         onSelect: @escaping (UUID?) -> Void,
         onEdit: @escaping (UUID) -> Void,
         onDelete: @escaping (UUID) -> Void,
         onMoveStart: @escaping () -> Void,
         onMove: @escaping (UUID, CGPoint) -> Void,
         onTapEmpty: @escaping () -> Void,
-        onDoubleTap: @escaping () -> Void
+        onDoubleTap: @escaping (CGPoint) -> Void
     ) {
         self.overlays = overlays
         self.canvasSize = canvasSize
@@ -112,7 +107,6 @@ final class TextOverlayCanvasUIView: UIView, UIGestureRecognizerDelegate {
         self.onMove = onMove
         self.onTapEmpty = onTapEmpty
         self.onDoubleTap = onDoubleTap
-        doubleTapRecognizer?.isEnabled = isZoomed
 
         let validIDs = Set(overlays.map(\.id))
         for (id, item) in itemViews where !validIDs.contains(id) {
@@ -192,8 +186,8 @@ final class TextOverlayCanvasUIView: UIView, UIGestureRecognizerDelegate {
         onTapEmpty?()
     }
 
-    @objc private func handleDoubleTap() {
-        onDoubleTap?()
+    @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
+        onDoubleTap?(gesture.location(in: self))
     }
 }
 
