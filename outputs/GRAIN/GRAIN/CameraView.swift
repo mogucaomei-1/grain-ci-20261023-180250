@@ -128,6 +128,8 @@ final class CameraController: ObservableObject {
     private var videoInput: AVCaptureDeviceInput?
     private var audioInput: AVCaptureDeviceInput?
     private var photoOutputAttached = false
+    private var isSessionConfigured = false
+    private var formatSwitchFailure: String?
     private var requestedResolution: CameraResolution = .standard24
     private var supportsRawCapture = false
     private var activeProcessors: [Int64: CameraPhotoCaptureProcessor] = [:]
@@ -161,7 +163,16 @@ final class CameraController: ObservableObject {
             return
         }
         sessionQueue.async { [weak self] in
-            self?.configureSession()
+            guard let self else { return }
+            // 视图可能重复出现；已配置过就只恢复运行，避免重复 addInput 触发
+            // “无法配置相机会话”。
+            if self.isSessionConfigured {
+                if !self.session.isRunning {
+                    self.session.startRunning()
+                }
+                return
+            }
+            self.configureSession()
         }
     }
 
@@ -217,7 +228,7 @@ final class CameraController: ObservableObject {
 
     private func replaceVideoInput(with device: AVCaptureDevice) -> Bool {
         do {
-            promoteToHighestPhotoFormat(device)
+            _ = promoteToHighestPhotoFormat(device)
             let newInput = try AVCaptureDeviceInput(device: device)
             session.beginConfiguration()
             if let videoInput {
@@ -317,18 +328,52 @@ final class CameraController: ObservableObject {
             }
     }
 
-    private func promoteToHighestPhotoFormat(_ device: AVCaptureDevice) {
-        let best = device.formats.max { lhs, rhs in
-            maximumPhotoArea(lhs) < maximumPhotoArea(rhs)
+    /// 选中支持最大照片尺寸的格式，并返回该格式实际支持的最大尺寸。
+    /// 逐档尝试并在切换后回读，切换失败时会记录原因用于诊断。
+    private func promoteToHighestPhotoFormat(_ device: AVCaptureDevice) -> CMVideoDimensions? {
+        let candidates = device.formats
+            .map { (format: $0, area: maximumPhotoArea($0)) }
+            .filter { $0.area > 0 }
+            .sorted { $0.area > $1.area }
+
+        for candidate in candidates where candidate.area > maximumPhotoArea(device.activeFormat) {
+            do {
+                try device.lockForConfiguration()
+                device.activeFormat = candidate.format
+                device.unlockForConfiguration()
+            } catch {
+                formatSwitchFailure = error.localizedDescription
+                continue
+            }
+            formatSwitchFailure = nil
+            if maximumPhotoArea(device.activeFormat) >= candidate.area {
+                break
+            }
         }
-        guard let best, best !== device.activeFormat else { return }
-        do {
-            try device.lockForConfiguration()
-            device.activeFormat = best
-            device.unlockForConfiguration()
-        } catch {
-            // Keep the system-selected format when the camera is temporarily busy.
+
+        return device.activeFormat.supportedMaxPhotoDimensions.max {
+            Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
         }
+    }
+
+    /// 相机能力摘要，用于在无法获得 24MP/48MP 时向用户说明真实状态
+    private func capabilityReport(
+        _ device: AVCaptureDevice,
+        dimensions: CMVideoDimensions?
+    ) -> String {
+        let highResolutionFormats = device.formats.filter {
+            maximumPhotoArea($0) >= 20_000_000
+        }.count
+        let maxDimensions = dimensions
+            ?? device.activeFormat.supportedMaxPhotoDimensions.max {
+                Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
+            }
+        let dims = maxDimensions.map { "\($0.width)×\($0.height)" } ?? "未知"
+        var report = "设备 \(device.deviceType.rawValue)｜≥24MP 格式 \(highResolutionFormats) 个｜最高 \(dims)｜ProRAW \(photoOutput.isAppleProRAWSupported ? "支持" : "不支持")｜输出 \(photoOutput.maxPhotoDimensions.width)×\(photoOutput.maxPhotoDimensions.height)"
+        if let formatSwitchFailure {
+            report += "｜格式切换失败：\(formatSwitchFailure)"
+        }
+        return report
     }
 
     private func maximumPhotoArea(_ format: AVCaptureDevice.Format) -> Int {
@@ -492,15 +537,20 @@ final class CameraController: ObservableObject {
             // sessionPreset 会覆盖手动选择的 activeFormat，因此先切到 inputPriority，
             // 再挑支持 24MP/48MP 的最高分辨率格式，否则永远只有 12MP。
             session.sessionPreset = .inputPriority
-            promoteToHighestPhotoFormat(device)
+            let promotedDimensions = promoteToHighestPhotoFormat(device)
 
             guard session.canAddOutput(photoOutput) else {
                 throw CameraError.cannotConfigure
             }
             session.addOutput(photoOutput)
             photoOutput.maxPhotoQualityPrioritization = .quality
-            let captureDimensions = maximumPhotoDimensions(for: device)
-            if let captureDimensions {
+            let captureDimensions = promotedDimensions
+                ?? maximumPhotoDimensions(for: device)
+            if let captureDimensions,
+               device.activeFormat.supportedMaxPhotoDimensions.contains(where: {
+                   $0.width == captureDimensions.width
+                    && $0.height == captureDimensions.height
+               }) {
                 photoOutput.maxPhotoDimensions = captureDimensions
             }
             if photoOutput.isAppleProRAWSupported {
@@ -524,10 +574,20 @@ final class CameraController: ObservableObject {
             session.commitConfiguration()
             didCommitConfiguration = true
             session.startRunning()
+            isSessionConfigured = true
+
+            let report = capabilityReport(device, dimensions: captureDimensions)
+            let hasHighResolution = (captureDimensions.map {
+                Int($0.width) * Int($0.height)
+            } ?? 0) >= 20_000_000
 
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.maxPhotoDimensions = maxDims
+                if !hasHighResolution {
+                    // 让用户能直接看到相机真实能力，便于继续定位
+                    self.errorMessage = "相机未提供 24MP 以上分辨率：\(report)"
+                }
                 self.isReady = true
                 self.publishDeviceCapabilities(
                     device,
@@ -658,6 +718,11 @@ final class CameraController: ObservableObject {
                 photoOutput.maxPhotoDimensions = target
             }
         }
+        if let connection = photoOutput.connection(with: .video),
+           connection.isVideoMirroringSupported {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = cameraDevice?.position == .front
+        }
         session.commitConfiguration()
         return photoOutputAttached
     }
@@ -675,8 +740,12 @@ final class CameraController: ObservableObject {
                 format: [AVVideoCodecKey: AVVideoCodecType.jpeg]
             )
         }
-        // 尺寸交给输出的 maxPhotoDimensions（主摄满分辨率），
-        // 在设置上再指定一次会在像素格式不支持时抛异常。
+        // 满分辨率时与输出保持一致；12MP 档不指定，交给输出默认值。
+        let outputDimensions = photoOutput.maxPhotoDimensions
+        if configuration.livePhoto == false,
+           Int(outputDimensions.width) * Int(outputDimensions.height) >= 20_000_000 {
+            settings.maxPhotoDimensions = outputDimensions
+        }
         settings.photoQualityPrioritization = .quality
         applyCommonSettings(settings, configuration: configuration)
         settings.livePhotoMovieFileURL = configuration.livePhoto
@@ -1129,6 +1198,7 @@ private enum CameraError: LocalizedError {
 
 struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
+    let mirrored: Bool
     let onFocus: (_ devicePoint: CGPoint, _ lock: Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -1139,9 +1209,15 @@ struct CameraPreviewView: UIViewRepresentable {
         let view = CameraPreviewUIView()
         view.previewLayer.session = session
         view.previewLayer.videoGravity = .resizeAspectFill
-        if let connection = view.previewLayer.connection,
-           connection.isVideoRotationAngleSupported(90) {
-            connection.videoRotationAngle = 90
+        if let connection = view.previewLayer.connection {
+            if connection.isVideoRotationAngleSupported(90) {
+                connection.videoRotationAngle = 90
+            }
+            // 前置相机按系统相机习惯做镜像预览
+            if connection.isVideoMirroringSupported {
+                connection.automaticallyAdjustsVideoMirroring = false
+                connection.isVideoMirrored = mirrored
+            }
         }
         let tap = UITapGestureRecognizer(
             target: context.coordinator,
@@ -1161,6 +1237,12 @@ struct CameraPreviewView: UIViewRepresentable {
         context.coordinator.parent = self
         if uiView.previewLayer.session !== session {
             uiView.previewLayer.session = session
+        }
+        if let connection = uiView.previewLayer.connection,
+           connection.isVideoMirroringSupported,
+           connection.isVideoMirrored != mirrored {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = mirrored
         }
     }
 
@@ -1339,6 +1421,7 @@ struct CameraView: View {
                 ZStack {
                     CameraPreviewView(
                         session: camera.session,
+                        mirrored: camera.isUsingFrontCamera,
                         onFocus: { devicePoint, lock in
                             camera.focus(at: devicePoint, lock: lock)
                             GrainHaptics.mediumImpact(enabled: true)
@@ -1415,8 +1498,12 @@ struct CameraView: View {
         .onChange(of: format) { _, newValue in
             if newValue == .raw {
                 livePhoto = false
-                Task {
-                    _ = await camera.setLivePhotoEnabled(false)
+                // 只有真正开启过实况照片时才需要重配会话，
+                // 否则会在切换 RAW 时触发多余的会话配置。
+                if camera.isLivePhotoArmed {
+                    Task {
+                        _ = await camera.setLivePhotoEnabled(false)
+                    }
                 }
             }
         }
