@@ -176,12 +176,27 @@ final class CameraController: ObservableObject {
 
     func setZoom(_ zoom: CGFloat) {
         sessionQueue.async { [weak self] in
-            guard let self, let device = self.cameraDevice else { return }
+            guard let self, var device = self.cameraDevice else { return }
             do {
-                let requestedFactor = self.hardwareZoomFactor(
-                    for: zoom,
-                    device: device
-                )
+                if device.deviceType != .builtInUltraWideCamera,
+                   zoom <= 0.55,
+                   let ultraWide = AVCaptureDevice.default(
+                       .builtInUltraWideCamera,
+                       for: .video,
+                       position: .back
+                   ),
+                   self.replaceVideoInput(with: ultraWide) {
+                    device = ultraWide
+                } else if device.deviceType == .builtInUltraWideCamera,
+                          zoom > 0.55,
+                          let backCamera = self.discoverCamera(position: .back),
+                          self.replaceVideoInput(with: backCamera) {
+                    device = backCamera
+                }
+
+                let requestedFactor = device.deviceType == .builtInUltraWideCamera
+                    ? 1
+                    : zoom
                 let hardwareZoom = min(
                     max(requestedFactor, device.minAvailableVideoZoomFactor),
                     device.maxAvailableVideoZoomFactor
@@ -202,22 +217,31 @@ final class CameraController: ObservableObject {
         }
     }
 
-    private func hardwareZoomFactor(
-        for displayZoom: CGFloat,
-        device: AVCaptureDevice
-    ) -> CGFloat {
-        let constituents = device.constituentDevices
-        guard let wideIndex = constituents.firstIndex(where: {
-            $0.deviceType == .builtInWideAngleCamera
-        }), wideIndex > 0 else {
-            return displayZoom
+    private func replaceVideoInput(with device: AVCaptureDevice) -> Bool {
+        do {
+            promoteToHighestPhotoFormat(device)
+            let newInput = try AVCaptureDeviceInput(device: device)
+            session.beginConfiguration()
+            if let videoInput {
+                session.removeInput(videoInput)
+            }
+            guard session.canAddInput(newInput) else {
+                session.commitConfiguration()
+                return false
+            }
+            session.addInput(newInput)
+            session.commitConfiguration()
+            videoInput = newInput
+            cameraDevice = device
+            publishDeviceCapabilities(
+                device,
+                liveSupported: device.position == .back,
+                rawSupported: supportsRawCapture
+            )
+            return true
+        } catch {
+            return false
         }
-        let switchFactors = device.virtualDeviceSwitchOverVideoZoomFactors
-        guard switchFactors.indices.contains(wideIndex - 1) else {
-            return displayZoom
-        }
-        let oneTimesFactor = CGFloat(truncating: switchFactors[wideIndex - 1])
-        return max(0.5, displayZoom) * oneTimesFactor
     }
 
     func focus(at devicePoint: CGPoint, lock: Bool) {
@@ -268,80 +292,35 @@ final class CameraController: ObservableObject {
         sessionQueue.async { [weak self] in
             guard let self, let device = self.cameraDevice else { return }
             self.requestedResolution = resolution
-            guard let selected = self.photoDimensions(
-                for: device,
-                targetPixels: resolution.targetPixels
-            ) else { return }
-            self.applyOutputPhotoDimensions(selected, device: device)
+            let supported = device.activeFormat.supportedMaxPhotoDimensions
+            let targetPixels = resolution.targetPixels
+            let selected = supported
+                .filter { Double($0.width) * Double($0.height) <= targetPixels * 1.08 }
+                .max(by: {
+                    Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
+                })
+                ?? supported.max(by: {
+                    Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
+                })
+            guard let selected else { return }
             DispatchQueue.main.async {
                 self.maxPhotoDimensions = selected
             }
         }
     }
 
-    /// 从当前格式支持的尺寸中挑选最接近目标像素的一档；
-    /// 没有不超过目标的一档时退到最小档，宁可少像素也不写非法尺寸。
-    private func photoDimensions(
-        for device: AVCaptureDevice,
-        targetPixels: Double
-    ) -> CMVideoDimensions? {
+    private func preferredPhotoDimensions(for device: AVCaptureDevice) -> CMVideoDimensions? {
         let supported = device.activeFormat.supportedMaxPhotoDimensions
         guard !supported.isEmpty else { return nil }
-        func area(_ dimensions: CMVideoDimensions) -> Double {
-            Double(dimensions.width) * Double(dimensions.height)
-        }
-        if let fit = supported
-            .filter({ area($0) <= targetPixels * 1.08 })
-            .max(by: { area($0) < area($1) }) {
-            return fit
-        }
-        return supported.min(by: { area($0) < area($1) })
-    }
-
-    /// 只有尺寸确实属于当前格式支持列表时才写入输出，
-    /// 避免 AVFoundation 抛 ObjC 异常（Swift 无法拦截）导致闪退。
-    private func applyOutputPhotoDimensions(
-        _ dimensions: CMVideoDimensions,
-        device: AVCaptureDevice
-    ) {
-        let supported = device.activeFormat.supportedMaxPhotoDimensions
-        guard supported.contains(where: {
-            $0.width == dimensions.width && $0.height == dimensions.height
-        }) else { return }
-        let current = photoOutput.maxPhotoDimensions
-        guard current.width != dimensions.width
-            || current.height != dimensions.height else { return }
-        photoOutput.maxPhotoDimensions = dimensions
-    }
-
-    /// 单张照片设置同理：不合法就不写，交给输出的默认尺寸。
-    private func applyPhotoDimensions(
-        _ dimensions: CMVideoDimensions?,
-        to settings: AVCapturePhotoSettings,
-        device: AVCaptureDevice
-    ) {
-        guard let dimensions else { return }
-        let supported = device.activeFormat.supportedMaxPhotoDimensions
-        guard supported.contains(where: {
-            $0.width == dimensions.width && $0.height == dimensions.height
-        }) else { return }
-        let outputMax = photoOutput.maxPhotoDimensions
-        if outputMax.width > 0, outputMax.height > 0,
-           dimensions.width > outputMax.width
-            || dimensions.height > outputMax.height {
-            return
-        }
-        settings.maxPhotoDimensions = dimensions
-    }
-
-    private func clampedVideoZoomFactor(
-        _ factor: CGFloat,
-        for device: AVCaptureDevice
-    ) -> CGFloat {
-        min(
-            max(factor, device.minAvailableVideoZoomFactor),
-            device.maxAvailableVideoZoomFactor
-        )
+        let targetPixels = requestedResolution.targetPixels
+        return supported
+            .filter { Double($0.width) * Double($0.height) <= targetPixels * 1.08 }
+            .max(by: {
+                Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
+            })
+            ?? supported.max(by: {
+                Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
+            })
     }
 
     private func promoteToHighestPhotoFormat(_ device: AVCaptureDevice) {
@@ -434,12 +413,6 @@ final class CameraController: ObservableObject {
                 self.session.commitConfiguration()
                 self.videoInput = newInput
                 self.cameraDevice = device
-                try device.lockForConfiguration()
-                device.videoZoomFactor = self.clampedVideoZoomFactor(
-                    self.hardwareZoomFactor(for: 1, device: device),
-                    for: device
-                )
-                device.unlockForConfiguration()
                 self.publishDeviceCapabilities(
                     device,
                     liveSupported: self.photoOutput.isLivePhotoCaptureSupported,
@@ -493,6 +466,7 @@ final class CameraController: ObservableObject {
         }
 
         do {
+            promoteToHighestPhotoFormat(device)
             let input = try AVCaptureDeviceInput(device: device)
             session.beginConfiguration()
             var didCommitConfiguration = false
@@ -508,7 +482,6 @@ final class CameraController: ObservableObject {
             }
             session.addInput(input)
             videoInput = input
-            promoteToHighestPhotoFormat(device)
 
             guard session.canAddOutput(photoOutput) else {
                 throw CameraError.cannotConfigure
@@ -518,11 +491,8 @@ final class CameraController: ObservableObject {
             if photoOutput.isAppleProRAWSupported {
                 photoOutput.isAppleProRAWEnabled = true
             }
-            if let dimensions = photoDimensions(
-                for: device,
-                targetPixels: requestedResolution.targetPixels
-            ) {
-                applyOutputPhotoDimensions(dimensions, device: device)
+            if let dimensions = preferredPhotoDimensions(for: device) {
+                photoOutput.maxPhotoDimensions = dimensions
             }
             supportsRawCapture = device.position == .back
                 && (
@@ -544,22 +514,10 @@ final class CameraController: ObservableObject {
             stillImageOutputAttached = true
 
             cameraDevice = device
-            do {
-                try device.lockForConfiguration()
-                device.videoZoomFactor = clampedVideoZoomFactor(
-                    hardwareZoomFactor(for: 1, device: device),
-                    for: device
-                )
-                device.unlockForConfiguration()
-            } catch {
-                // Keep the system default if the device is temporarily busy.
-            }
             let liveSupported = device.position == .back
             let rawSupported = supportsRawCapture
-            let maxDims = photoDimensions(
-                for: device,
-                targetPixels: requestedResolution.targetPixels
-            ) ?? CMVideoDimensions(width: 0, height: 0)
+            let maxDims = preferredPhotoDimensions(for: device)
+                ?? CMVideoDimensions(width: 0, height: 0)
 
             session.commitConfiguration()
             didCommitConfiguration = true
@@ -641,16 +599,7 @@ final class CameraController: ObservableObject {
             finishCapture(error: CameraError.cannotConfigure)
             return
         }
-        // 只有在 ProRAW 已启用时才优先 ProRAW 像素格式，
-        // 否则传入未被启用的 RAW 格式会让 capturePhoto 抛异常。
-        let rawFormats = photoOutput.availableRawPhotoPixelFormatTypes
-        let proRawFormat = photoOutput.isAppleProRAWEnabled
-            ? rawFormats.first(where: {
-                AVCapturePhotoOutput.isAppleProRAWPixelFormat($0)
-            })
-            : nil
-        let rawFormat = proRawFormat ?? rawFormats.first
-        guard let rawFormat else {
+        guard let rawFormat = photoOutput.availableRawPhotoPixelFormatTypes.first else {
             if configuration.format == .raw {
                 finishCapture(error: CameraError.rawUnavailable)
                 return
@@ -716,13 +665,9 @@ final class CameraController: ObservableObject {
             }
             if let configuration {
                 requestedResolution = configuration.resolution
-                if photoOutputAttached,
-                   let device = cameraDevice,
-                   let dimensions = photoDimensions(
-                       for: device,
-                       targetPixels: configuration.resolution.targetPixels
-                   ) {
-                    applyOutputPhotoDimensions(dimensions, device: device)
+                if let device = cameraDevice,
+                   let dimensions = preferredPhotoDimensions(for: device) {
+                    photoOutput.maxPhotoDimensions = dimensions
                 }
                 if configuration.format == .raw,
                    photoOutput.isAppleProRAWSupported {
@@ -759,15 +704,9 @@ final class CameraController: ObservableObject {
                 format: [AVVideoCodecKey: AVVideoCodecType.jpeg]
             )
         }
-        if let device = cameraDevice {
-            applyPhotoDimensions(
-                photoDimensions(
-                    for: device,
-                    targetPixels: configuration.resolution.targetPixels
-                ),
-                to: settings,
-                device: device
-            )
+        if let device = cameraDevice,
+           let dimensions = preferredPhotoDimensions(for: device) {
+            settings.maxPhotoDimensions = dimensions
         }
         settings.photoQualityPrioritization = .quality
         applyCommonSettings(settings, configuration: configuration)
@@ -789,8 +728,6 @@ final class CameraController: ObservableObject {
             rawPixelFormatType: rawFormat,
             processedFormat: nil
         )
-        // RAW 的输出尺寸由像素格式决定，额外指定尺寸极易触发
-        // “unsupported maxPhotoDimensions” 异常，这里保持输出默认值。
         settings.photoQualityPrioritization = .speed
         applyCommonSettings(settings, configuration: configuration)
         startProcessor(settings: settings, configuration: configuration)
@@ -1535,7 +1472,6 @@ struct CameraView: View {
         }
         .onChange(of: camera.isReady) { _, ready in
             if ready {
-                camera.setZoom(1)
                 camera.setPhotoResolution(resolution)
             }
         }
