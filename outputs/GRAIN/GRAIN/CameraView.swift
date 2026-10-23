@@ -34,9 +34,8 @@ enum CameraResolution: String, CaseIterable, Identifiable {
 enum CameraAspect: String, CaseIterable, Identifiable {
     case portrait3x4
     case square
-    case landscape4x3
-    case landscape3x2
-    case landscape16x9
+    case portrait3x2
+    case portrait16x9
 
     var id: String { rawValue }
 
@@ -44,19 +43,19 @@ enum CameraAspect: String, CaseIterable, Identifiable {
         switch self {
         case .portrait3x4: "3:4"
         case .square: "1:1"
-        case .landscape4x3: "4:3"
-        case .landscape3x2: "3:2"
-        case .landscape16x9: "16:9"
+        case .portrait3x2: "3:2"
+        case .portrait16x9: "16:9"
         }
     }
 
+    /// App 锁定竖屏，所以比例一律按竖屏理解：
+    /// 16:9 表示 9:16 的竖幅裁切（与 iOS 原生相机在竖屏下的取景一致）。
     var ratio: Double {
         switch self {
         case .portrait3x4: 3.0 / 4
         case .square: 1
-        case .landscape4x3: 4.0 / 3
-        case .landscape3x2: 3.0 / 2
-        case .landscape16x9: 16.0 / 9
+        case .portrait3x2: 2.0 / 3
+        case .portrait16x9: 9.0 / 16
         }
     }
 }

@@ -51,7 +51,7 @@ struct RootView: View {
                         MinimalTopBar(
                             hasPhoto: true,
                             onCamera: nil,
-                            onFiles: { showDocumentPicker = true },
+                            onFiles: showFileImportButton ? { showDocumentPicker = true } : nil,
                             onCollage: nil,
                             onInfo: { showInfoSheet = true },
                             onSettings: { showSettings = true },
@@ -423,27 +423,19 @@ private struct EditorWorkspace: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             VStack(spacing: 0) {
-                GeometryReader { proxy in
-                    PhotoEditorCanvas(
-                        showHistogram: showHistogram,
-                        selectedTextID: $selectedTextID,
-                        isPickingWhiteBalance: $isPickingWhiteBalance,
-                        onSwitchPhoto: onSwitchPhoto
-                    ) { id in
+                PhotoEditorCanvas(
+                    showHistogram: showHistogram,
+                    selectedTextID: $selectedTextID,
+                    isPickingWhiteBalance: $isPickingWhiteBalance,
+                    onSwitchPhoto: onSwitchPhoto,
+                    onEditText: { id in
                         editingTextID = id
                         selectedTextID = id
                         showTextEditor = true
-                    }
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    // 抽屉打开时把照片整体上移并等比缩小到剩余可视区域内，
-                    // 关闭后恢复原位，避免画布下半部一直被盖住。
-                    .scaleEffect(
-                        advancedCanvasScale(canvasHeight: proxy.size.height),
-                        anchor: .center
-                    )
-                    .offset(y: advancedCanvasOffset(canvasHeight: proxy.size.height))
-                    .animation(.snappy(duration: 0.3), value: showAdvancedGrade)
-                }
+                    },
+                    focusOverlap: showAdvancedGrade ? advancedOverlap : 0
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 EditorToolsPager(
                     page: $editorToolPage,
@@ -505,17 +497,6 @@ private struct EditorWorkspace: View {
 
     /// 进阶抽屉盖住画布的高度 = 抽屉高度（412）− 底部工具栏（150 + 14）
     private var advancedOverlap: CGFloat { 412 - 164 }
-
-    private func advancedCanvasScale(canvasHeight: CGFloat) -> CGFloat {
-        guard showAdvancedGrade, canvasHeight > 0 else { return 1 }
-        let visible = max(canvasHeight - advancedOverlap, 120)
-        return min(1, visible / canvasHeight)
-    }
-
-    private func advancedCanvasOffset(canvasHeight: CGFloat) -> CGFloat {
-        // 平移量等于被遮挡高度的一半，缩放后整张画布正好落在剩余可视区中央
-        showAdvancedGrade ? -advancedOverlap / 2 : 0
-    }
 
     private var edgeSwipeGesture: some Gesture {
         DragGesture(minimumDistance: 8, coordinateSpace: .local)
@@ -691,6 +672,8 @@ private struct PhotoEditorCanvas: View {
     @Binding var isPickingWhiteBalance: Bool
     let onSwitchPhoto: (Int) -> Void
     let onEditText: (UUID) -> Void
+    /// 进阶抽屉遮挡画布的高度；0 表示没有抽屉
+    let focusOverlap: CGFloat
     @State private var showOriginal = false
     @State private var showFullscreen = false
     @State private var compareFraction: CGFloat?
@@ -703,78 +686,16 @@ private struct PhotoEditorCanvas: View {
             ZStack {
                 Color.black
 
-                if showOriginal, let original = editor.originalPreview {
-                    Image(decorative: original, scale: 1)
-                        .resizable()
-                        .frame(width: imageSize.width, height: imageSize.height)
-                        .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
-                        .transition(.opacity)
-                } else if let edited = editor.editedPreview {
-                    Image(decorative: edited, scale: 1)
-                        .resizable()
-                        .frame(width: imageSize.width, height: imageSize.height)
-                        .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
-                        .transition(.opacity)
-                } else {
-                    ProgressView()
-                        .tint(GrainTheme.paper)
-                }
-
-                if let fraction = compareFraction,
-                   let original = editor.originalPreview,
-                   let edited = editor.editedPreview {
-                    Image(decorative: edited, scale: 1)
-                        .resizable()
-                        .frame(width: imageSize.width, height: imageSize.height)
-                        .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
-                    Image(decorative: original, scale: 1)
-                        .resizable()
-                        .frame(width: imageSize.width, height: imageSize.height)
-                        .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
-                        .mask(
-                            HStack(spacing: 0) {
-                                Rectangle()
-                                    .frame(width: max(imageSize.width * fraction, 1))
-                                Spacer(minLength: 0)
-                            }
-                            .frame(width: imageSize.width, height: imageSize.height)
-                        )
-                }
-
-                TextOverlayInteractionView(
-                    overlays: editor.textOverlays,
-                    selectedID: selectedTextID,
-                    canvasSize: imageSize,
-                    hapticsEnabled: hapticsEnabled,
-                    onSelect: { selectedTextID = $0 },
-                    onEdit: onEditText,
-                    onDelete: { id in
-                        editor.deleteTextOverlay(id: id)
-                        selectedTextID = nil
-                    },
-                    onMoveStart: editor.recordUndoSnapshot,
-                    onMove: { id, normalizedCenter in
-                        editor.moveTextOverlay(
-                            id: id,
-                            x: normalizedCenter.x,
-                            y: normalizedCenter.y
-                        )
-                    },
-                    onTapEmpty: {
-                        selectedTextID = nil
-                        showFullscreen = true
-                    }
-                )
-                .frame(width: imageSize.width, height: imageSize.height)
-                .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
-
-                if let fraction = compareFraction {
-                    compareHandle(
-                        fraction: fraction,
-                        viewport: proxy.size,
-                        imageSize: imageSize
+                // 只有照片层（含文字与对比线）随进阶抽屉上移，
+                // 直方图、格式标签、底部按钮等 HUD 保持原地不动。
+                photoLayer(viewport: proxy.size, imageSize: imageSize)
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .scaleEffect(
+                        photoScale(viewport: proxy.size, imageSize: imageSize),
+                        anchor: .center
                     )
-                }
+                    .offset(y: photoOffset(viewport: proxy.size, imageSize: imageSize))
+                    .animation(.snappy(duration: 0.3), value: focusOverlap)
 
                 if isPickingWhiteBalance {
                     whiteBalancePicker(viewport: proxy.size, imageSize: imageSize)
@@ -890,6 +811,104 @@ private struct PhotoEditorCanvas: View {
                 LivePhotoViewer(asset: asset)
             }
         }
+    }
+
+    // MARK: - 照片层（进阶抽屉打开时单独上移）
+
+    /// 抽屉上方仍然可见的画布高度
+    private func visibleHeight(for viewport: CGSize) -> CGFloat {
+        max(viewport.height - focusOverlap, 120)
+    }
+
+    /// 只有照片本身缩小到可见区域内；HUD 不受影响
+    private func photoScale(viewport: CGSize, imageSize: CGSize) -> CGFloat {
+        guard focusOverlap > 0.5, imageSize.height > 0 else { return 1 }
+        let available = max(visibleHeight(for: viewport) - 12, 80)
+        return min(1, available / imageSize.height)
+    }
+
+    /// 把缩小后的照片中心对齐到可见区域中心
+    private func photoOffset(viewport: CGSize, imageSize: CGSize) -> CGFloat {
+        guard focusOverlap > 0.5 else { return 0 }
+        return visibleHeight(for: viewport) / 2 - viewport.height / 2
+    }
+
+    @ViewBuilder
+    private func photoLayer(viewport: CGSize, imageSize: CGSize) -> some View {
+        ZStack {
+            if showOriginal, let original = editor.originalPreview {
+                imageLayer(original, imageSize: imageSize, viewport: viewport)
+                    .transition(.opacity)
+            } else if let edited = editor.editedPreview {
+                imageLayer(edited, imageSize: imageSize, viewport: viewport)
+                    .transition(.opacity)
+            } else {
+                ProgressView()
+                    .tint(GrainTheme.paper)
+            }
+
+            if let fraction = compareFraction,
+               let original = editor.originalPreview,
+               let edited = editor.editedPreview {
+                imageLayer(edited, imageSize: imageSize, viewport: viewport)
+                imageLayer(original, imageSize: imageSize, viewport: viewport)
+                    .mask(
+                        HStack(spacing: 0) {
+                            Rectangle()
+                                .frame(width: max(imageSize.width * fraction, 1))
+                            Spacer(minLength: 0)
+                        }
+                        .frame(width: imageSize.width, height: imageSize.height)
+                    )
+            }
+
+            TextOverlayInteractionView(
+                overlays: editor.textOverlays,
+                selectedID: selectedTextID,
+                canvasSize: imageSize,
+                hapticsEnabled: hapticsEnabled,
+                onSelect: { selectedTextID = $0 },
+                onEdit: onEditText,
+                onDelete: { id in
+                    editor.deleteTextOverlay(id: id)
+                    selectedTextID = nil
+                },
+                onMoveStart: editor.recordUndoSnapshot,
+                onMove: { id, normalizedCenter in
+                    editor.moveTextOverlay(
+                        id: id,
+                        x: normalizedCenter.x,
+                        y: normalizedCenter.y
+                    )
+                },
+                onTapEmpty: {
+                    selectedTextID = nil
+                    showFullscreen = true
+                }
+            )
+            .frame(width: imageSize.width, height: imageSize.height)
+            .position(x: viewport.width / 2, y: viewport.height / 2)
+
+            if let fraction = compareFraction {
+                compareHandle(
+                    fraction: fraction,
+                    viewport: viewport,
+                    imageSize: imageSize
+                )
+            }
+        }
+        .frame(width: viewport.width, height: viewport.height)
+    }
+
+    private func imageLayer(
+        _ image: CGImage,
+        imageSize: CGSize,
+        viewport: CGSize
+    ) -> some View {
+        Image(decorative: image, scale: 1)
+            .resizable()
+            .frame(width: imageSize.width, height: imageSize.height)
+            .position(x: viewport.width / 2, y: viewport.height / 2)
     }
 
     /// 在照片上左右滑动切换图库里的相邻照片；左侧边缘右滑仍留给返回手势
