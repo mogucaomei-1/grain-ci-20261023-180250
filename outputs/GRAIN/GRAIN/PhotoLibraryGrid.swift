@@ -61,8 +61,9 @@ final class PhotoLibraryViewModel: NSObject, ObservableObject, PHPhotoLibraryCha
             for asset in assets {
                 labels[asset.localIdentifier] = Self.formatLabel(for: asset)
             }
+            let snapshot = labels
             await MainActor.run { [weak self] in
-                self?.formatLabels = labels
+                self?.formatLabels = snapshot
             }
         }
     }
@@ -265,60 +266,7 @@ struct PhotoLibraryHome: View {
             if isSelecting {
                 selectionToolbar
             } else {
-                HStack(spacing: 8) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(LibraryFormatFilter.allCases) { filter in
-                                Button {
-                                    withAnimation(.easeOut(duration: 0.16)) {
-                                        formatFilter = filter
-                                    }
-                                } label: {
-                                    Text(filter.title)
-                                        .font(.system(size: 9.5, weight: .semibold, design: .rounded))
-                                        .foregroundStyle(
-                                            formatFilter == filter ? GrainTheme.black : GrainTheme.muted
-                                        )
-                                        .padding(.horizontal, 9)
-                                        .frame(height: 24)
-                                        .background(
-                                            formatFilter == filter
-                                                ? GrainTheme.paper
-                                                : GrainTheme.raised,
-                                            in: Capsule()
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                            }
-
-                            Button {
-                                sortAscending.toggle()
-                            } label: {
-                                HStack(spacing: 3) {
-                                    Image(systemName: sortAscending ? "arrow.up" : "arrow.down")
-                                        .font(.system(size: 8, weight: .bold))
-                                    Text("时间")
-                                        .font(.system(size: 9.5, weight: .semibold, design: .rounded))
-                                }
-                                .foregroundStyle(GrainTheme.muted)
-                                .padding(.horizontal, 9)
-                                .frame(height: 24)
-                                .background(GrainTheme.raised, in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-
-                    if !library.assets.isEmpty {
-                        Text("\(visibleAssets.count)/\(library.assets.count)")
-                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(GrainTheme.muted)
-                            .fixedSize()
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.top, 2)
-                .padding(.bottom, 4)
+                libraryFilterBar
             }
 
             if library.accessDenied {
@@ -444,6 +392,64 @@ struct PhotoLibraryHome: View {
             guard !running, batch.summary != nil else { return }
             Task { await library.refresh() }
         }
+    }
+
+    private var libraryFilterBar: some View {
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(LibraryFormatFilter.allCases) { filter in
+                        filterChip(filter)
+                    }
+                    sortChip
+                }
+            }
+
+            if !library.assets.isEmpty {
+                Text("\(visibleAssets.count)/\(library.assets.count)")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(GrainTheme.muted)
+                    .fixedSize()
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 2)
+        .padding(.bottom, 4)
+    }
+
+    private func filterChip(_ filter: LibraryFormatFilter) -> some View {
+        let active = formatFilter == filter
+        return Button {
+            withAnimation(.easeOut(duration: 0.16)) {
+                formatFilter = filter
+            }
+        } label: {
+            Text(filter.title)
+                .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                .foregroundStyle(active ? GrainTheme.black : GrainTheme.muted)
+                .padding(.horizontal, 9)
+                .frame(height: 24)
+                .background(active ? GrainTheme.paper : GrainTheme.raised, in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var sortChip: some View {
+        Button {
+            sortAscending.toggle()
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: sortAscending ? "arrow.up" : "arrow.down")
+                    .font(.system(size: 8, weight: .bold))
+                Text("时间")
+                    .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+            }
+            .foregroundStyle(GrainTheme.muted)
+            .padding(.horizontal, 9)
+            .frame(height: 24)
+            .background(GrainTheme.raised, in: Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     private var selectionToolbar: some View {

@@ -27,6 +27,12 @@
 		A10000000000000000000019 /* CameraView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000019 /* CameraView.swift */; };
 		A10000000000000000000020 /* PermissionOnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000020 /* PermissionOnboardingView.swift */; };
 		A10000000000000000000021 /* CollageEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000021 /* CollageEditorView.swift */; };
+		A10000000000000000000030 /* AdvancedGrade.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000030 /* AdvancedGrade.swift */; };
+		A10000000000000000000031 /* RecipeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000031 /* RecipeStore.swift */; };
+		A10000000000000000000032 /* ExportFrameRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000032 /* ExportFrameRenderer.swift */; };
+		A10000000000000000000033 /* BatchExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000033 /* BatchExporter.swift */; };
+		A10000000000000000000034 /* AdvancedGradeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000034 /* AdvancedGradeView.swift */; };
+		A10000000000000000000035 /* LivePhotoPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000035 /* LivePhotoPlayer.swift */; };
 		A10000000000000000000022 /* CaptureLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000022 /* CaptureLocation.swift */; };
 /* End PBXBuildFile section */
 
@@ -51,6 +57,12 @@
 		B10000000000000000000019 /* CameraView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraView.swift; sourceTree = "<group>"; };
 		B10000000000000000000020 /* PermissionOnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionOnboardingView.swift; sourceTree = "<group>"; };
 		B10000000000000000000021 /* CollageEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollageEditorView.swift; sourceTree = "<group>"; };
+		B10000000000000000000030 /* AdvancedGrade.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdvancedGrade.swift; sourceTree = "<group>"; };
+		B10000000000000000000031 /* RecipeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecipeStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000032 /* ExportFrameRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportFrameRenderer.swift; sourceTree = "<group>"; };
+		B10000000000000000000033 /* BatchExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchExporter.swift; sourceTree = "<group>"; };
+		B10000000000000000000034 /* AdvancedGradeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdvancedGradeView.swift; sourceTree = "<group>"; };
+		B10000000000000000000035 /* LivePhotoPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LivePhotoPlayer.swift; sourceTree = "<group>"; };
 		B10000000000000000000022 /* CaptureLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureLocation.swift; sourceTree = "<group>"; };
 		B1000000000000000000000A /* GRAIN.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GRAIN.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -96,6 +108,12 @@
 				B10000000000000000000019 /* CameraView.swift */,
 				B10000000000000000000020 /* PermissionOnboardingView.swift */,
 				B10000000000000000000021 /* CollageEditorView.swift */,
+				B10000000000000000000030 /* AdvancedGrade.swift */,
+				B10000000000000000000031 /* RecipeStore.swift */,
+				B10000000000000000000032 /* ExportFrameRenderer.swift */,
+				B10000000000000000000033 /* BatchExporter.swift */,
+				B10000000000000000000034 /* AdvancedGradeView.swift */,
+				B10000000000000000000035 /* LivePhotoPlayer.swift */,
 				B10000000000000000000022 /* CaptureLocation.swift */,
 				B10000000000000000000009 /* Assets.xcassets */,
 			);
@@ -198,6 +216,12 @@
 				A10000000000000000000019 /* CameraView.swift in Sources */,
 				A10000000000000000000020 /* PermissionOnboardingView.swift in Sources */,
 				A10000000000000000000021 /* CollageEditorView.swift in Sources */,
+				A10000000000000000000030 /* AdvancedGrade.swift in Sources */,
+				A10000000000000000000031 /* RecipeStore.swift in Sources */,
+				A10000000000000000000032 /* ExportFrameRenderer.swift in Sources */,
+				A10000000000000000000033 /* BatchExporter.swift in Sources */,
+				A10000000000000000000034 /* AdvancedGradeView.swift in Sources */,
+				A10000000000000000000035 /* LivePhotoPlayer.swift in Sources */,
 				A10000000000000000000022 /* CaptureLocation.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -316,7 +340,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 72;
+				CURRENT_PROJECT_VERSION = 73;
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -353,7 +377,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 72;
+				CURRENT_PROJECT_VERSION = 73;
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
