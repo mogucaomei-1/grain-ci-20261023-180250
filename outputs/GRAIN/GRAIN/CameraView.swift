@@ -583,9 +583,7 @@ final class CameraController: ObservableObject {
             finishCapture(error: CameraError.cannotConfigure)
             return
         }
-        let rawFormats = photoOutput.availableRawPhotoPixelFormatTypes.map {
-            $0.uint32Value
-        }
+        let rawFormats = photoOutput.availableRawPhotoPixelFormatTypes
         let rawFormat = rawFormats.first(where: {
             AVCapturePhotoOutput.isAppleProRAWPixelFormat($0)
         }) ?? rawFormats.first
