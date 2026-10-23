@@ -8,6 +8,7 @@ enum GrainTheme {
     static let muted = Color(hex: 0x8E8B84)
     static let line = Color.white.opacity(0.09)
     static let accent = Color(hex: 0xD9774E)
+    static let danger = Color(hex: 0xE0685C)
 }
 
 extension Color {

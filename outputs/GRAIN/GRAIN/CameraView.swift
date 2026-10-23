@@ -153,6 +153,8 @@ final class CameraController: ObservableObject {
     @Published private(set) var maximumExposureBias: Float = 2
     @Published private(set) var isUsingFrontCamera = false
     @Published private(set) var latestCaptureThumbnail: UIImage?
+    /// 最近一张成功写入相册的照片标识，用于从左下角缩略图直接进入编辑
+    @Published private(set) var latestCaptureAssetIdentifier: String?
 
     func start() async {
         let cameraAllowed = await requestMediaAccess(for: .video)
@@ -326,6 +328,28 @@ final class CameraController: ObservableObject {
             .max {
                 Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
             }
+    }
+
+    /// 所选分辨率对应的采集尺寸：取不超过目标像素的最大受支持档位，
+    /// 没有更小档位时退到最小档，避免请求超过设置值。
+    private func requestedPhotoDimensions(
+        for resolution: CameraResolution,
+        device: AVCaptureDevice
+    ) -> CMVideoDimensions? {
+        let supported = device.activeFormat.supportedMaxPhotoDimensions
+        guard !supported.isEmpty else { return nil }
+        let target = resolution.targetPixels
+        let withinTarget = supported.filter {
+            Double($0.width) * Double($0.height) <= target * 1.05
+        }
+        if let best = withinTarget.max(by: {
+            Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
+        }) {
+            return best
+        }
+        return supported.min {
+            Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
+        }
     }
 
     /// 选中支持最大照片尺寸的格式，并返回该格式实际支持的最大尺寸。
@@ -772,7 +796,17 @@ final class CameraController: ObservableObject {
             rawPixelFormatType: rawFormat,
             processedFormat: nil
         )
-        settings.photoQualityPrioritization = .speed
+        // 不指定尺寸时 ProRAW 一律按 12MP 输出；必须在每张设置上写明，
+        // 系统才会按所选 24MP/48MP 采集（不支持时会回落到可用档位）。
+        if let device = cameraDevice,
+           let dimensions = requestedPhotoDimensions(
+               for: configuration.resolution,
+               device: device
+           ) {
+            settings.maxPhotoDimensions = dimensions
+        }
+        // 高分辨率 ProRAW 依赖高质量优先级；用 .speed 会被静默降级到 12MP。
+        settings.photoQualityPrioritization = .quality
         applyCommonSettings(settings, configuration: configuration)
         startProcessor(settings: settings, configuration: configuration)
     }
@@ -829,9 +863,14 @@ final class CameraController: ObservableObject {
                 if let thumbnail = CameraImageProcessor.thumbnail(from: processed.data) {
                     latestCaptureThumbnail = UIImage(cgImage: thumbnail)
                 }
-                try await saveToPhotoLibrary(processed)
+                let assetIdentifier = try await saveToPhotoLibrary(processed)
+                latestCaptureAssetIdentifier = assetIdentifier
                 GrainHaptics.mediumImpact(enabled: true)
-                notice = "已保存到照片图库"
+                if let size = CameraImageProcessor.pixelSize(of: processed.data) {
+                    notice = "已保存 \(size.width)×\(size.height)"
+                } else {
+                    notice = "已保存到照片图库"
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -842,7 +881,7 @@ final class CameraController: ObservableObject {
         }
     }
 
-    private func saveToPhotoLibrary(_ output: CameraPreparedOutput) async throws {
+    private func saveToPhotoLibrary(_ output: CameraPreparedOutput) async throws -> String? {
         guard await requestPhotoLibraryAddAccess() else {
             throw CameraError.photoLibraryDenied
         }
@@ -857,15 +896,27 @@ final class CameraController: ObservableObject {
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
         do {
-            try await commitPhotoLibrarySave(output, fileURL: tempURL, attempt: .fileWithMetadata)
+            return try await commitPhotoLibrarySave(
+                output,
+                fileURL: tempURL,
+                attempt: .fileWithMetadata
+            )
         } catch {
             // PhotoKit 对 DNG 的写入器匹配很挑：文件 + 显式 UTI 被拒时，
             // 再让系统按扩展名自行判定，最后用内存数据兜底。
             do {
-                try await commitPhotoLibrarySave(output, fileURL: tempURL, attempt: .fileInferredType)
+                return try await commitPhotoLibrarySave(
+                    output,
+                    fileURL: tempURL,
+                    attempt: .fileInferredType
+                )
             } catch {
                 do {
-                    try await commitPhotoLibrarySave(output, fileURL: tempURL, attempt: .dataWithMetadata)
+                    return try await commitPhotoLibrarySave(
+                        output,
+                        fileURL: tempURL,
+                        attempt: .dataWithMetadata
+                    )
                 } catch {
                     throw Self.mappedSaveError(error)
                 }
@@ -886,8 +937,9 @@ final class CameraController: ObservableObject {
         _ output: CameraPreparedOutput,
         fileURL: URL,
         attempt: PhotoSaveAttempt
-    ) async throws {
-        try await withCheckedThrowingContinuation { continuation in
+    ) async throws -> String? {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String?, Error>) in
+            var createdIdentifier: String?
             PHPhotoLibrary.shared().performChanges {
                 let request = PHAssetCreationRequest.forAsset()
                 let options = PHAssetResourceCreationOptions()
@@ -901,6 +953,7 @@ final class CameraController: ObservableObject {
                 } else {
                     request.addResource(with: .photo, fileURL: fileURL, options: options)
                 }
+                createdIdentifier = request.placeholderForCreatedAsset?.localIdentifier
 
                 if let livePhotoURL = output.livePhotoURL {
                     let videoOptions = PHAssetResourceCreationOptions()
@@ -916,7 +969,7 @@ final class CameraController: ObservableObject {
                 }
             } completionHandler: { success, error in
                 if success {
-                    continuation.resume()
+                    continuation.resume(returning: createdIdentifier)
                 } else {
                     continuation.resume(
                         throwing: error ?? CameraError.saveFailed
@@ -1241,6 +1294,20 @@ private enum CameraImageProcessor {
         return formatter.string(from: Date())
     }
 
+    /// 读取最终文件的像素尺寸，用于在提示里回显真实保存结果
+    static func pixelSize(of data: Data) -> (width: Int, height: Int)? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              width > 0, height > 0
+        else {
+            return nil
+        }
+        return (width, height)
+    }
+
     static func thumbnail(from data: Data) -> CGImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
             return nil
@@ -1489,6 +1556,8 @@ final class CameraPreviewUIView: UIView {
 }
 
 struct CameraView: View {
+    /// 点击左下角刚拍的照片时回调相册标识，由外层负责关闭相机并进入编辑
+    var onOpenCapture: ((String) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @StateObject private var camera = CameraController()
     @State private var format: CameraCaptureFormat = .heif
@@ -1507,6 +1576,10 @@ struct CameraView: View {
     @State private var isPreparingLivePhoto = false
 
     private let zoomOptions: [CGFloat] = [0.5, 1, 2, 4, 8]
+
+    init(onOpenCapture: ((String) -> Void)? = nil) {
+        self.onOpenCapture = onOpenCapture
+    }
 
     var body: some View {
         ZStack {
@@ -1830,7 +1903,11 @@ struct CameraView: View {
 
             HStack {
                 Button {
-                    closeCamera()
+                    if let identifier = camera.latestCaptureAssetIdentifier {
+                        openLatestCapture(identifier)
+                    } else {
+                        closeCamera()
+                    }
                 } label: {
                     ZStack {
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -1853,7 +1930,11 @@ struct CameraView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("打开照片图库")
+                .accessibilityLabel(
+                    camera.latestCaptureAssetIdentifier == nil
+                        ? "打开照片图库"
+                        : "打开刚拍摄的照片"
+                )
 
                 Spacer()
 
@@ -2116,6 +2197,18 @@ struct CameraView: View {
         camera.cancelCapture()
         camera.stop()
         dismiss()
+    }
+
+    /// 带着最近一张照片的相册标识退出相机，外层收到后直接打开编辑页
+    private func openLatestCapture(_ identifier: String) {
+        camera.cancelCapture()
+        camera.stop()
+        if let onOpenCapture {
+            // 先交给外层记录标识并关闭覆盖视图，避免 dismiss 与回调竞争
+            onOpenCapture(identifier)
+        } else {
+            dismiss()
+        }
     }
 
     private var pinchToZoomGesture: some Gesture {

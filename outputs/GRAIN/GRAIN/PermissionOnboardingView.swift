@@ -114,10 +114,6 @@ struct PermissionOnboardingView: View {
             && photoState == .granted
     }
 
-    private var successColor: Color {
-        Color(hex: 0x75B68A)
-    }
-
     private func permissionRow(
         icon: String,
         title: String,
@@ -129,7 +125,7 @@ struct PermissionOnboardingView: View {
         HStack(spacing: 13) {
             Image(systemName: icon)
                 .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(state == .granted ? successColor : GrainTheme.accent)
+                .foregroundStyle(GrainTheme.accent)
                 .frame(width: 30)
 
             VStack(alignment: .leading, spacing: 3) {
@@ -160,10 +156,12 @@ struct PermissionOnboardingView: View {
                     }
                 }
                 .font(.system(size: 10, weight: .bold, design: .rounded))
-                .foregroundStyle(state == .granted ? successColor : GrainTheme.paper)
+                .foregroundStyle(state == .granted ? GrainTheme.accent : GrainTheme.paper)
                 .frame(width: 72, height: 32)
                 .background(
-                    state == .granted ? successColor.opacity(0.14) : GrainTheme.raised,
+                    state == .granted
+                        ? GrainTheme.accent.opacity(0.14)
+                        : GrainTheme.raised,
                     in: Capsule()
                 )
             }

@@ -15,6 +15,8 @@ struct RootView: View {
     @State private var showSettings = false
     @State private var showCamera = false
     @State private var showHomeCollage = false
+    @State private var pendingCapturedAssetID: String?
+    @State private var showDeleteConfirmation = false
     @State private var libraryImportTask: Task<Void, Never>?
     @State private var libraryImportGeneration = 0
 
@@ -33,7 +35,8 @@ struct RootView: View {
                         onSettings: { showSettings = true },
                         histogramVisible: showHistogram,
                         onToggleHistogram: nil,
-                        onExport: {}
+                        onExport: {},
+                        onDelete: nil
                     )
 
                     PhotoLibraryHome(library: photoLibrary) { asset in
@@ -57,7 +60,8 @@ struct RootView: View {
                             onExport: {
                                 editor.exportResult = nil
                                 showExportSheet = true
-                            }
+                            },
+                            onDelete: { showDeleteConfirmation = true }
                         )
 
                         EditorWorkspace(
@@ -78,6 +82,7 @@ struct RootView: View {
         .sheet(isPresented: $showDocumentPicker) {
             DocumentRawImporter { url in
                 showDocumentPicker = false
+                editor.sourceAssetIdentifier = nil
                 editor.importPhoto(from: url)
             } onCancel: {
                 showDocumentPicker = false
@@ -102,10 +107,41 @@ struct RootView: View {
                 .presentationDragIndicator(.visible)
         }
         .fullScreenCover(isPresented: $showCamera) {
-            CameraView()
+            CameraView { identifier in
+                pendingCapturedAssetID = identifier
+                showCamera = false
+            }
         }
         .fullScreenCover(isPresented: $showHomeCollage) {
             CollageEditorView(assets: [])
+        }
+        .onChange(of: showCamera) { _, presented in
+            guard !presented, let identifier = pendingCapturedAssetID else { return }
+            pendingCapturedAssetID = nil
+            Task {
+                // 等相机覆盖视图退场后再推入编辑页，避免两个转场叠在一起
+                try? await Task.sleep(for: .milliseconds(320))
+                openCapturedAsset(identifier)
+            }
+        }
+        .confirmationDialog(
+            editor.sourceAssetIdentifier == nil ? "关闭当前照片？" : "删除这张照片？",
+            isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(
+                editor.sourceAssetIdentifier == nil ? "关闭" : "删除照片",
+                role: .destructive
+            ) {
+                deleteCurrentPhoto()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text(
+                editor.sourceAssetIdentifier == nil
+                    ? "这张照片来自文件导入，只会关闭编辑，不会删除原文件。"
+                    : "照片会从系统图库中删除，此操作无法撤销。"
+            )
         }
         .alert(
             "无法打开照片",
@@ -185,6 +221,9 @@ struct RootView: View {
                     return
                 }
                 editor.importPhoto(from: url)
+                editor.sourceAssetIdentifier = editor.photo == nil
+                    ? nil
+                    : asset.localIdentifier
                 libraryImportTask = nil
             } catch is CancellationError {
                 guard generation == libraryImportGeneration else { return }
@@ -202,6 +241,34 @@ struct RootView: View {
         libraryImportTask?.cancel()
         libraryImportTask = nil
     }
+
+    /// 打开相机刚写入相册的那张照片
+    private func openCapturedAsset(_ identifier: String) {
+        let result = PHAsset.fetchAssets(
+            withLocalIdentifiers: [identifier],
+            options: nil
+        )
+        guard let asset = result.firstObject else { return }
+        importLibraryAsset(asset)
+    }
+
+    /// 删除当前编辑的照片：来自图库的会一并从系统相册删除，
+    /// 文件导入的只关闭编辑。
+    private func deleteCurrentPhoto() {
+        guard let identifier = editor.sourceAssetIdentifier else {
+            editor.returnHome()
+            Task { await photoLibrary.refresh() }
+            return
+        }
+        Task {
+            do {
+                try await photoLibrary.deleteAssets(identifiers: [identifier])
+                editor.returnHome()
+            } catch {
+                editor.errorMessage = error.localizedDescription
+            }
+        }
+    }
 }
 
 private struct MinimalTopBar: View {
@@ -214,6 +281,7 @@ private struct MinimalTopBar: View {
     let histogramVisible: Bool
     let onToggleHistogram: (() -> Void)?
     let onExport: () -> Void
+    let onDelete: (() -> Void)?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -282,6 +350,18 @@ private struct MinimalTopBar: View {
             }
 
             if hasPhoto {
+                if let onDelete {
+                    Button(action: onDelete) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(GrainTheme.danger)
+                            .frame(width: 38, height: 38)
+                            .background(GrainTheme.raised, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("删除当前照片")
+                }
+
                 Button(action: onInfo) {
                     Image(systemName: "info.circle")
                         .font(.system(size: 14, weight: .medium))

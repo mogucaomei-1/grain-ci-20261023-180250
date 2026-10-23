@@ -28,6 +28,8 @@ final class EditorViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var exportResult: ExportResult?
     @Published var noticeMessage: String?
+    /// 当前照片对应的系统相册标识；从文件导入时为 nil
+    @Published var sourceAssetIdentifier: String?
 
     private var previewTask: Task<Void, Never>?
     private var importTask: Task<Void, Never>?
@@ -82,6 +84,7 @@ final class EditorViewModel: ObservableObject {
         recommendationBaseline = nil
         adjustmentRecommendationBaseline = nil
         canUndo = false
+        sourceAssetIdentifier = nil
     }
 
     func resetSelectedProfile() {
