@@ -1,7 +1,7 @@
 # GRAIN 交付内容
 
-- `GRAIN-build69/GRAIN-unsigned.ipa`：1.1 (69)、arm64、未签名的可重签 IPA（照片方向修正、RAW 保存修复）。
-- `GRAIN-build69/GRAIN-unsigned.sha256`：对应 IPA 的 SHA-256 校验值。
+- `GRAIN-build70/GRAIN-unsigned.ipa`：1.1 (70)、arm64、未签名的可重签 IPA（RAW 分辨率跟随设置、缩略图直达编辑、编辑页删除按钮、启动页配色）。
+- `GRAIN-build70/GRAIN-unsigned.sha256`：对应 IPA 的 SHA-256 校验值。
 - `GRAIN-build63/GRAIN-unsigned.ipa`：1.1 (63)、arm64、未签名的可重签 IPA（相机闪退，仅作对照）。
 - `GRAIN-build64/GRAIN-unsigned.ipa`：1.1 (64)、arm64、未签名的可重签 IPA（打开相机仍会闪退，仅作对照）。
 - `GRAIN-prototype.html`：可直接在浏览器打开的交互原型，支持实时胶片预览、分组参数、导出面板和定位开关。
