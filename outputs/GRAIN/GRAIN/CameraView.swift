@@ -131,6 +131,7 @@ final class CameraController: ObservableObject {
     private var photoOutputAttached = false
     private var stillImageOutputAttached = false
     private var requestedResolution: CameraResolution = .standard24
+    private var supportsRawCapture = false
     private var activeProcessors: [Int64: CameraPhotoCaptureProcessor] = [:]
     private let processorLock = NSLock()
     private var captureGeneration = 0
@@ -218,6 +219,7 @@ final class CameraController: ObservableObject {
 
     private func replaceVideoInput(with device: AVCaptureDevice) -> Bool {
         do {
+            promoteToHighestPhotoFormat(device)
             let newInput = try AVCaptureDeviceInput(device: device)
             session.beginConfiguration()
             if let videoInput {
@@ -234,7 +236,7 @@ final class CameraController: ObservableObject {
             publishDeviceCapabilities(
                 device,
                 liveSupported: device.position == .back,
-                rawSupported: device.position == .back
+                rawSupported: supportsRawCapture
             )
             return true
         } catch {
@@ -319,6 +321,26 @@ final class CameraController: ObservableObject {
             ?? supported.max(by: {
                 Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
             })
+    }
+
+    private func promoteToHighestPhotoFormat(_ device: AVCaptureDevice) {
+        let best = device.formats.max { lhs, rhs in
+            maximumPhotoArea(lhs) < maximumPhotoArea(rhs)
+        }
+        guard let best, best !== device.activeFormat else { return }
+        do {
+            try device.lockForConfiguration()
+            device.activeFormat = best
+            device.unlockForConfiguration()
+        } catch {
+            // Keep the system-selected format when the camera is temporarily busy.
+        }
+    }
+
+    private func maximumPhotoArea(_ format: AVCaptureDevice.Format) -> Int {
+        format.supportedMaxPhotoDimensions
+            .map { Int($0.width) * Int($0.height) }
+            .max() ?? 0
     }
 
     func setLivePhotoEnabled(_ enabled: Bool) async -> Bool {
@@ -444,6 +466,7 @@ final class CameraController: ObservableObject {
         }
 
         do {
+            promoteToHighestPhotoFormat(device)
             let input = try AVCaptureDeviceInput(device: device)
             session.beginConfiguration()
             var didCommitConfiguration = false
@@ -460,6 +483,25 @@ final class CameraController: ObservableObject {
             session.addInput(input)
             videoInput = input
 
+            guard session.canAddOutput(photoOutput) else {
+                throw CameraError.cannotConfigure
+            }
+            session.addOutput(photoOutput)
+            photoOutput.maxPhotoQualityPrioritization = .quality
+            if photoOutput.isAppleProRAWSupported {
+                photoOutput.isAppleProRAWEnabled = true
+            }
+            if let dimensions = preferredPhotoDimensions(for: device) {
+                photoOutput.maxPhotoDimensions = dimensions
+            }
+            supportsRawCapture = device.position == .back
+                && (
+                    photoOutput.isAppleProRAWSupported
+                    || !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty
+                )
+            session.removeOutput(photoOutput)
+            photoOutputAttached = false
+
             stillImageOutput.outputSettings = [
                 AVVideoCodecKey: AVVideoCodecType.jpeg,
                 AVVideoQualityKey: 1.0
@@ -473,7 +515,7 @@ final class CameraController: ObservableObject {
 
             cameraDevice = device
             let liveSupported = device.position == .back
-            let rawSupported = device.position == .back
+            let rawSupported = supportsRawCapture
             let maxDims = preferredPhotoDimensions(for: device)
                 ?? CMVideoDimensions(width: 0, height: 0)
 
@@ -548,16 +590,13 @@ final class CameraController: ObservableObject {
     }
 
     private func performCapture(_ configuration: CameraCaptureConfiguration) {
-        let usePhotoOutput = configuration.format == .raw || configuration.livePhoto
+        let usePhotoOutput = true
         guard configureCaptureOutput(
             usePhotoOutput: usePhotoOutput,
-            livePhoto: configuration.livePhoto
+            livePhoto: configuration.livePhoto,
+            configuration: configuration
         ) else {
             finishCapture(error: CameraError.cannotConfigure)
-            return
-        }
-        if !usePhotoOutput {
-            captureWithStillImageOutput(configuration)
             return
         }
         guard let rawFormat = photoOutput.availableRawPhotoPixelFormatTypes.first else {
@@ -608,7 +647,8 @@ final class CameraController: ObservableObject {
 
     private func configureCaptureOutput(
         usePhotoOutput: Bool,
-        livePhoto: Bool
+        livePhoto: Bool,
+        configuration: CameraCaptureConfiguration? = nil
     ) -> Bool {
         if !usePhotoOutput, stillImageOutputAttached {
             return true
@@ -622,6 +662,17 @@ final class CameraController: ObservableObject {
             if !photoOutputAttached, session.canAddOutput(photoOutput) {
                 session.addOutput(photoOutput)
                 photoOutputAttached = true
+            }
+            if let configuration {
+                requestedResolution = configuration.resolution
+                if let device = cameraDevice,
+                   let dimensions = preferredPhotoDimensions(for: device) {
+                    photoOutput.maxPhotoDimensions = dimensions
+                }
+                if configuration.format == .raw,
+                   photoOutput.isAppleProRAWSupported {
+                    photoOutput.isAppleProRAWEnabled = true
+                }
             }
             photoOutput.isLivePhotoCaptureEnabled =
                 livePhoto && photoOutput.isLivePhotoCaptureSupported
@@ -653,6 +704,11 @@ final class CameraController: ObservableObject {
                 format: [AVVideoCodecKey: AVVideoCodecType.jpeg]
             )
         }
+        if let device = cameraDevice,
+           let dimensions = preferredPhotoDimensions(for: device) {
+            settings.maxPhotoDimensions = dimensions
+        }
+        settings.photoQualityPrioritization = .quality
         applyCommonSettings(settings, configuration: configuration)
         settings.livePhotoMovieFileURL = configuration.livePhoto
             && photoOutput.isLivePhotoCaptureSupported
@@ -672,6 +728,7 @@ final class CameraController: ObservableObject {
             rawPixelFormatType: rawFormat,
             processedFormat: nil
         )
+        settings.photoQualityPrioritization = .speed
         applyCommonSettings(settings, configuration: configuration)
         startProcessor(settings: settings, configuration: configuration)
     }
@@ -698,6 +755,7 @@ final class CameraController: ObservableObject {
                 self.processorLock.lock()
                 self.activeProcessors.removeValue(forKey: id)
                 self.processorLock.unlock()
+                self.restoreStillOutput()
                 switch result {
                 case .success(let output):
                     self.processCapturedOutput(output, configuration: configuration)
@@ -793,10 +851,20 @@ final class CameraController: ObservableObject {
     }
 
     private func finishCapture(error: Error) {
+        restoreStillOutput()
         DispatchQueue.main.async { [weak self] in
             self?.errorMessage = error.localizedDescription
             self?.isCapturing = false
             self?.countdown = nil
+        }
+    }
+
+    private func restoreStillOutput() {
+        sessionQueue.async { [weak self] in
+            _ = self?.configureCaptureOutput(
+                usePhotoOutput: false,
+                livePhoto: false
+            )
         }
     }
 
@@ -955,19 +1023,6 @@ private enum CameraImageProcessor {
                 throw CameraError.imageDecodeFailed
             }
 
-            if configuration.format != .png {
-                let identifier = (CGImageSourceGetType(source) as String?)
-                    ?? UTType.heic.identifier
-                let type = UTType(identifier) ?? .heic
-                let fileExtension = type.preferredFilenameExtension ?? "heic"
-                return CameraPreparedOutput(
-                    data: output.data,
-                    fileName: "GRAIN-\(timestamp()).\(fileExtension)",
-                    uniformTypeIdentifier: type.identifier,
-                    livePhotoURL: output.livePhotoURL
-                )
-            }
-
             guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
                 as? [CFString: Any]
             else {
@@ -1014,7 +1069,11 @@ private enum CameraImageProcessor {
             ) else {
                 throw CameraError.imageEncodeFailed
             }
-            CGImageDestinationAddImage(destination, image, nil)
+            CGImageDestinationAddImage(
+                destination,
+                image,
+                [kCGImageDestinationLossyCompressionQuality: 1.0] as CFDictionary
+            )
             guard CGImageDestinationFinalize(destination) else {
                 throw CameraError.imageEncodeFailed
             }
