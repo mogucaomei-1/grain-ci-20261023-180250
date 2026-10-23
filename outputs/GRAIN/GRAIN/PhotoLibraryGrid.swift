@@ -177,9 +177,6 @@ struct PhotoLibraryHome: View {
     @State private var selectedIdentifiers = Set<String>()
     @State private var selectionOrder: [String] = []
     @State private var showDeleteConfirmation = false
-    @State private var showCollageEditor = false
-    @State private var collageAssets: [PHAsset] = []
-    @State private var showCollageLimitNotice = false
     @State private var isDeleting = false
     @State private var isPreparingShare = false
     @State private var shareURLs: [URL] = []
@@ -292,14 +289,6 @@ struct PhotoLibraryHome: View {
         } message: {
             Text(shareError ?? "")
         }
-        .alert("拼图最多 10 张", isPresented: $showCollageLimitNotice) {
-            Button("知道了", role: .cancel) {}
-        } message: {
-            Text("主页现已支持选择更多照片分享或删除。制作拼图时请只选择最多 10 张。")
-        }
-        .fullScreenCover(isPresented: $showCollageEditor) {
-            CollageEditorView(assets: collageAssets)
-        }
         .sheet(isPresented: $showShareSheet, onDismiss: clearShareFiles) {
             GrainShareSheet(items: shareURLs)
                 .ignoresSafeArea()
@@ -320,32 +309,6 @@ struct PhotoLibraryHome: View {
                 .foregroundStyle(GrainTheme.accent)
 
             Spacer()
-
-            Button {
-                prepareCollage()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "puzzlepiece.extension.fill")
-                    Text("拼图")
-                }
-                .font(.system(size: 10, weight: .bold, design: .rounded))
-                .foregroundStyle(
-                    !selectedIdentifiers.isEmpty
-                        ? GrainTheme.paper
-                        : GrainTheme.muted
-                )
-                .padding(.horizontal, 10)
-                .frame(height: 28)
-                .background(
-                    !selectedIdentifiers.isEmpty
-                        ? GrainTheme.accent.opacity(0.22)
-                        : GrainTheme.raised,
-                    in: Capsule()
-                )
-            }
-            .buttonStyle(.plain)
-            .disabled(selectedIdentifiers.isEmpty || isDeleting)
-            .accessibilityLabel("制作拼图")
 
             Button {
                 shareSelectedAssets()
@@ -542,27 +505,6 @@ struct PhotoLibraryHome: View {
         guard !selectedIdentifiers.contains(identifier) else { return }
         selectedIdentifiers.insert(identifier)
         selectionOrder.append(identifier)
-    }
-
-    private func prepareCollage() {
-        let assetLookup = Dictionary(
-            uniqueKeysWithValues: library.assets.map {
-                ($0.localIdentifier, $0)
-            }
-        )
-        let ordered = selectionOrder.compactMap { assetLookup[$0] }
-        let assets = ordered.isEmpty
-            ? library.assets.filter {
-                selectedIdentifiers.contains($0.localIdentifier)
-            }
-            : ordered
-        guard !assets.isEmpty else { return }
-        guard assets.count <= 10 else {
-            showCollageLimitNotice = true
-            return
-        }
-        collageAssets = Array(assets.prefix(10))
-        showCollageEditor = true
     }
 
     private func shareSelectedAssets() {
