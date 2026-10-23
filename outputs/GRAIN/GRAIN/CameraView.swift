@@ -1285,6 +1285,14 @@ private final class CameraPhotoCaptureProcessor: NSObject, AVCapturePhotoCapture
         self.completion = completion
     }
 
+    /// 快门声音开关：在系统播放快门声之前接管
+    func photoOutput(
+        _ output: AVCapturePhotoOutput,
+        willCapturePhotoFor resolvedSettings: AVCaptureResolvedPhotoSettings
+    ) {
+        GrainShutterSound.playForCapture()
+    }
+
     func photoOutput(
         _ output: AVCapturePhotoOutput,
         didFinishProcessingPhoto photo: AVCapturePhoto,

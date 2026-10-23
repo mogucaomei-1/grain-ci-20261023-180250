@@ -418,11 +418,13 @@ struct AppSettingsView: View {
     @AppStorage("showCollageButton") private var showCollageButton = true
     @AppStorage("captureLocationEnabled") private var captureLocationEnabled = true
     @AppStorage("captureDeviceInfoEnabled") private var captureDeviceInfoEnabled = true
+    @AppStorage("shutterSoundEnabled") private var shutterSoundEnabled = true
 
     var body: some View {
         ZStack {
             GrainTheme.black.ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 14) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("设置")
@@ -622,9 +624,34 @@ struct AppSettingsView: View {
                         .stroke(GrainTheme.line, lineWidth: 0.8)
                 }
 
-                Spacer()
+                // 快门声音
+                HStack(spacing: 12) {
+                    Image(systemName: "camera.shutter.button")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(GrainTheme.accent)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("快门声音")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        Text("拍照时播放机械快门声")
+                            .font(.system(size: 9, design: .rounded))
+                            .foregroundStyle(GrainTheme.muted)
+                    }
+                    Spacer()
+                    Toggle("", isOn: $shutterSoundEnabled)
+                        .labelsHidden()
+                        .tint(GrainTheme.accent)
+                }
+                .padding(16)
+                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 17)
+                        .stroke(GrainTheme.line, lineWidth: 0.8)
+                }
             }
             .padding(20)
+            }
+            .scrollIndicators(.hidden)
         }
     }
 }

@@ -587,9 +587,9 @@ struct CollageEditorView: View {
                     .background(Color.black.opacity(0.78), in: Circle())
             }
             .buttonStyle(.plain)
-            .offset(x: 5, y: -5)
+            .offset(x: 4, y: -4)
         }
-        .frame(width: 52, height: 52)
+        .frame(width: 48, height: 48)
         .contextMenu {
             Button("设为封面") { makeCover(asset) }
             Button("前移") { move(asset, offset: -1) }
