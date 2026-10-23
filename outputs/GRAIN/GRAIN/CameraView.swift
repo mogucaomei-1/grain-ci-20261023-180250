@@ -123,13 +123,11 @@ struct CameraCaptureConfiguration {
 final class CameraController: ObservableObject {
     let session = AVCaptureSession()
     private let photoOutput = AVCapturePhotoOutput()
-    private let stillImageOutput = AVCaptureStillImageOutput()
     private let sessionQueue = DispatchQueue(label: "studio.grain.camera.session")
     private var cameraDevice: AVCaptureDevice?
     private var videoInput: AVCaptureDeviceInput?
     private var audioInput: AVCaptureDeviceInput?
     private var photoOutputAttached = false
-    private var stillImageOutputAttached = false
     private var requestedResolution: CameraResolution = .standard24
     private var supportsRawCapture = false
     private var activeProcessors: [Int64: CameraPhotoCaptureProcessor] = [:]
@@ -290,37 +288,33 @@ final class CameraController: ObservableObject {
 
     func setPhotoResolution(_ resolution: CameraResolution) {
         sessionQueue.async { [weak self] in
-            guard let self, let device = self.cameraDevice else { return }
+            guard let self else { return }
+            // 静态照片始终按相机最大分辨率采集，24MP/48MP 在导出阶段降采样，
+            // 避免在运行中的会话里反复改 maxPhotoDimensions 触发异常。
             self.requestedResolution = resolution
-            let supported = device.activeFormat.supportedMaxPhotoDimensions
-            let targetPixels = resolution.targetPixels
-            let selected = supported
-                .filter { Double($0.width) * Double($0.height) <= targetPixels * 1.08 }
-                .max(by: {
-                    Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
-                })
-                ?? supported.max(by: {
-                    Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
-                })
-            guard let selected else { return }
+            let dims = self.cameraDevice.flatMap {
+                self.maximumPhotoDimensions(for: $0)
+            } ?? CMVideoDimensions(width: 0, height: 0)
             DispatchQueue.main.async {
-                self.maxPhotoDimensions = selected
+                self.maxPhotoDimensions = dims
             }
         }
     }
 
-    private func preferredPhotoDimensions(for device: AVCaptureDevice) -> CMVideoDimensions? {
-        let supported = device.activeFormat.supportedMaxPhotoDimensions
-        guard !supported.isEmpty else { return nil }
-        let targetPixels = requestedResolution.targetPixels
-        return supported
-            .filter { Double($0.width) * Double($0.height) <= targetPixels * 1.08 }
-            .max(by: {
+    /// 当前格式支持的最大静态照片尺寸（iPhone 17 Pro 主摄为 8064×6048）
+    private func maximumPhotoDimensions(for device: AVCaptureDevice) -> CMVideoDimensions? {
+        device.activeFormat.supportedMaxPhotoDimensions.max {
+            Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
+        }
+    }
+
+    /// 12MP 档位，用于实况照片等不支持满分辨率输出的场景
+    private func standardPhotoDimensions(for device: AVCaptureDevice) -> CMVideoDimensions? {
+        device.activeFormat.supportedMaxPhotoDimensions
+            .filter { Int($0.width) * Int($0.height) <= 13_000_000 }
+            .max {
                 Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
-            })
-            ?? supported.max(by: {
-                Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height)
-            })
+            }
     }
 
     private func promoteToHighestPhotoFormat(_ device: AVCaptureDevice) {
@@ -380,6 +374,19 @@ final class CameraController: ObservableObject {
                 }
                 self.photoOutput.isLivePhotoCaptureEnabled =
                     enabled && hasAudio && self.photoOutput.isLivePhotoCaptureSupported
+                // 实况照片最高按 12MP 输出，其余情况回到主摄满分辨率；
+                // 两个档位都对 ProRAW 合法，不会触发尺寸校验异常。
+                if let device = self.cameraDevice {
+                    let target = enabled
+                        ? self.standardPhotoDimensions(for: device)
+                        : self.maximumPhotoDimensions(for: device)
+                    if let target,
+                       device.activeFormat.supportedMaxPhotoDimensions.contains(where: {
+                           $0.width == target.width && $0.height == target.height
+                       }) {
+                        self.photoOutput.maxPhotoDimensions = target
+                    }
+                }
                 self.session.commitConfiguration()
                 let armed = enabled && hasAudio
                 DispatchQueue.main.async {
@@ -466,7 +473,6 @@ final class CameraController: ObservableObject {
         }
 
         do {
-            promoteToHighestPhotoFormat(device)
             let input = try AVCaptureDeviceInput(device: device)
             session.beginConfiguration()
             var didCommitConfiguration = false
@@ -483,40 +489,36 @@ final class CameraController: ObservableObject {
             session.addInput(input)
             videoInput = input
 
+            // sessionPreset 会覆盖手动选择的 activeFormat，因此先切到 inputPriority，
+            // 再挑支持 24MP/48MP 的最高分辨率格式，否则永远只有 12MP。
+            session.sessionPreset = .inputPriority
+            promoteToHighestPhotoFormat(device)
+
             guard session.canAddOutput(photoOutput) else {
                 throw CameraError.cannotConfigure
             }
             session.addOutput(photoOutput)
             photoOutput.maxPhotoQualityPrioritization = .quality
+            let captureDimensions = maximumPhotoDimensions(for: device)
+            if let captureDimensions {
+                photoOutput.maxPhotoDimensions = captureDimensions
+            }
             if photoOutput.isAppleProRAWSupported {
                 photoOutput.isAppleProRAWEnabled = true
-            }
-            if let dimensions = preferredPhotoDimensions(for: device) {
-                photoOutput.maxPhotoDimensions = dimensions
             }
             supportsRawCapture = device.position == .back
                 && (
                     photoOutput.isAppleProRAWSupported
                     || !photoOutput.availableRawPhotoPixelFormatTypes.isEmpty
                 )
-            session.removeOutput(photoOutput)
-            photoOutputAttached = false
-
-            stillImageOutput.outputSettings = [
-                AVVideoCodecKey: AVVideoCodecType.jpeg,
-                AVVideoQualityKey: 1.0
-            ]
-            stillImageOutput.isHighResolutionStillImageOutputEnabled = true
-            guard session.canAddOutput(stillImageOutput) else {
-                throw CameraError.cannotConfigure
-            }
-            session.addOutput(stillImageOutput)
-            stillImageOutputAttached = true
+            // 照片输出常驻会话：反复移除/添加会让 ProRAW 与最大尺寸状态丢失，
+            // 也是 RAW 拍摄失效和闪退的来源之一。
+            photoOutputAttached = true
 
             cameraDevice = device
             let liveSupported = device.position == .back
             let rawSupported = supportsRawCapture
-            let maxDims = preferredPhotoDimensions(for: device)
+            let maxDims = captureDimensions
                 ?? CMVideoDimensions(width: 0, height: 0)
 
             session.commitConfiguration()
@@ -542,6 +544,19 @@ final class CameraController: ObservableObject {
 
     private func discoverCamera(position: AVCaptureDevice.Position) -> AVCaptureDevice? {
         if position == .back {
+            // 24MP/48MP 静态照片与 ProRAW 只在主摄这一物理设备上可用；
+            // 虚拟三摄会退化到 12MP 且不提供 RAW 格式。
+            if let wide = AVCaptureDevice.default(
+                .builtInWideAngleCamera,
+                for: .video,
+                position: .back
+            ), wide.formats.contains(where: { format in
+                format.supportedMaxPhotoDimensions.contains {
+                    Int($0.width) * Int($0.height) >= 40_000_000
+                }
+            }) {
+                return wide
+            }
             return AVCaptureDevice.default(
                 .builtInTripleCamera,
                 for: .video,
@@ -590,105 +605,61 @@ final class CameraController: ObservableObject {
     }
 
     private func performCapture(_ configuration: CameraCaptureConfiguration) {
-        let usePhotoOutput = true
-        guard configureCaptureOutput(
-            usePhotoOutput: usePhotoOutput,
+        guard configurePhotoOutputForCapture(
             livePhoto: configuration.livePhoto,
             configuration: configuration
         ) else {
             finishCapture(error: CameraError.cannotConfigure)
             return
         }
-        guard let rawFormat = photoOutput.availableRawPhotoPixelFormatTypes.first else {
-            if configuration.format == .raw {
+
+        let rawFormats = photoOutput.availableRawPhotoPixelFormatTypes
+        // ProRAW 才能给出主摄满分辨率 RAW；Bayer RAW 仅作为兜底。
+        let rawFormat = rawFormats.first(where: {
+            AVCapturePhotoOutput.isAppleProRAWPixelFormat($0)
+        }) ?? rawFormats.first
+
+        if configuration.format == .raw {
+            guard let rawFormat else {
                 finishCapture(error: CameraError.rawUnavailable)
                 return
             }
-            captureProcessed(configuration)
-            return
-        }
-
-        if configuration.format == .raw {
             captureRaw(configuration, rawFormat: rawFormat)
         } else {
             captureProcessed(configuration)
         }
     }
 
-    private func captureWithStillImageOutput(_ configuration: CameraCaptureConfiguration) {
-        guard let connection = stillImageOutput.connection(with: .video) else {
-            finishCapture(error: CameraError.cannotConfigure)
-            return
-        }
-        stillImageOutput.captureStillImageAsynchronously(from: connection) { [weak self] buffer, error in
-            guard let self else { return }
-            if let error {
-                DispatchQueue.main.async {
-                    self.finishCapture(error: error)
-                }
-                return
-            }
-            guard let buffer,
-                  let data = AVCaptureStillImageOutput.jpegStillImageNSDataRepresentation(buffer)
-            else {
-                DispatchQueue.main.async {
-                    self.finishCapture(error: CameraError.missingPhotoData)
-                }
-                return
-            }
-            DispatchQueue.main.async {
-                self.processCapturedOutput(
-                    CameraCapturedOutput(data: data, livePhotoURL: nil),
-                    configuration: configuration
-                )
-            }
-        }
-    }
-
-    private func configureCaptureOutput(
-        usePhotoOutput: Bool,
+    /// 每张照片开拍前只同步实况照片开关；照片输出自会话建立后常驻，
+    /// 避免反复增删输出导致 ProRAW 与最大尺寸配置失效。
+    private func configurePhotoOutputForCapture(
         livePhoto: Bool,
-        configuration: CameraCaptureConfiguration? = nil
+        configuration: CameraCaptureConfiguration
     ) -> Bool {
-        if !usePhotoOutput, stillImageOutputAttached {
-            return true
-        }
         session.beginConfiguration()
-        if usePhotoOutput {
-            if stillImageOutputAttached {
-                session.removeOutput(stillImageOutput)
-                stillImageOutputAttached = false
-            }
-            if !photoOutputAttached, session.canAddOutput(photoOutput) {
-                session.addOutput(photoOutput)
-                photoOutputAttached = true
-            }
-            if let configuration {
-                requestedResolution = configuration.resolution
-                if let device = cameraDevice,
-                   let dimensions = preferredPhotoDimensions(for: device) {
-                    photoOutput.maxPhotoDimensions = dimensions
-                }
-                if configuration.format == .raw,
-                   photoOutput.isAppleProRAWSupported {
-                    photoOutput.isAppleProRAWEnabled = true
-                }
-            }
-            photoOutput.isLivePhotoCaptureEnabled =
-                livePhoto && photoOutput.isLivePhotoCaptureSupported
-        } else {
-            photoOutput.isLivePhotoCaptureEnabled = false
-            if photoOutputAttached {
-                session.removeOutput(photoOutput)
-                photoOutputAttached = false
-            }
-            if !stillImageOutputAttached, session.canAddOutput(stillImageOutput) {
-                session.addOutput(stillImageOutput)
-                stillImageOutputAttached = true
+        if !photoOutputAttached, session.canAddOutput(photoOutput) {
+            session.addOutput(photoOutput)
+            photoOutputAttached = true
+        }
+        requestedResolution = configuration.resolution
+        photoOutput.isLivePhotoCaptureEnabled =
+            livePhoto && photoOutput.isLivePhotoCaptureSupported
+        // 实况照片按 12MP、普通照片按主摄满分辨率；两档都对 ProRAW 合法。
+        if let device = cameraDevice {
+            let target = livePhoto
+                ? standardPhotoDimensions(for: device)
+                : maximumPhotoDimensions(for: device)
+            if let target,
+               device.activeFormat.supportedMaxPhotoDimensions.contains(where: {
+                   $0.width == target.width && $0.height == target.height
+               }),
+               photoOutput.maxPhotoDimensions.width != target.width
+                || photoOutput.maxPhotoDimensions.height != target.height {
+                photoOutput.maxPhotoDimensions = target
             }
         }
         session.commitConfiguration()
-        return usePhotoOutput ? photoOutputAttached : stillImageOutputAttached
+        return photoOutputAttached
     }
 
     private func captureProcessed(_ configuration: CameraCaptureConfiguration) {
@@ -704,10 +675,8 @@ final class CameraController: ObservableObject {
                 format: [AVVideoCodecKey: AVVideoCodecType.jpeg]
             )
         }
-        if let device = cameraDevice,
-           let dimensions = preferredPhotoDimensions(for: device) {
-            settings.maxPhotoDimensions = dimensions
-        }
+        // 尺寸交给输出的 maxPhotoDimensions（主摄满分辨率），
+        // 在设置上再指定一次会在像素格式不支持时抛异常。
         settings.photoQualityPrioritization = .quality
         applyCommonSettings(settings, configuration: configuration)
         settings.livePhotoMovieFileURL = configuration.livePhoto
@@ -755,7 +724,6 @@ final class CameraController: ObservableObject {
                 self.processorLock.lock()
                 self.activeProcessors.removeValue(forKey: id)
                 self.processorLock.unlock()
-                self.restoreStillOutput()
                 switch result {
                 case .success(let output):
                     self.processCapturedOutput(output, configuration: configuration)
@@ -851,20 +819,10 @@ final class CameraController: ObservableObject {
     }
 
     private func finishCapture(error: Error) {
-        restoreStillOutput()
         DispatchQueue.main.async { [weak self] in
             self?.errorMessage = error.localizedDescription
             self?.isCapturing = false
             self?.countdown = nil
-        }
-    }
-
-    private func restoreStillOutput() {
-        sessionQueue.async { [weak self] in
-            _ = self?.configureCaptureOutput(
-                usePhotoOutput: false,
-                livePhoto: false
-            )
         }
     }
 
