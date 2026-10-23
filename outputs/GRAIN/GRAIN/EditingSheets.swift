@@ -392,11 +392,13 @@ struct AppSettingsView: View {
     @AppStorage("showCameraButton") private var showCameraButton = true
     @AppStorage("showFileImportButton") private var showFileImportButton = true
     @AppStorage("showCollageButton") private var showCollageButton = true
+    @AppStorage("captureLocationEnabled") private var captureLocationEnabled = true
+    @AppStorage("captureDeviceInfoEnabled") private var captureDeviceInfoEnabled = true
 
     var body: some View {
         ZStack {
             GrainTheme.black.ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 14) {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("设置")
@@ -530,6 +532,61 @@ struct AppSettingsView: View {
                     }
                     Spacer()
                     Toggle("", isOn: $showCollageButton)
+                        .labelsHidden()
+                        .tint(GrainTheme.accent)
+                }
+                .padding(16)
+                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 17)
+                        .stroke(GrainTheme.line, lineWidth: 0.8)
+                }
+
+                HStack(spacing: 12) {
+                    Image(systemName: "location.fill")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(GrainTheme.accent)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("位置信息")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        Text("在拍摄的照片中写入 GPS 位置")
+                            .font(.system(size: 9, design: .rounded))
+                            .foregroundStyle(GrainTheme.muted)
+                    }
+                    Spacer()
+                    Toggle("", isOn: $captureLocationEnabled)
+                        .labelsHidden()
+                        .tint(GrainTheme.accent)
+                        .onChange(of: captureLocationEnabled) { _, enabled in
+                            if enabled {
+                                CaptureLocationProvider.shared.start()
+                            } else {
+                                CaptureLocationProvider.shared.stop()
+                            }
+                        }
+                }
+                .padding(16)
+                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 17)
+                        .stroke(GrainTheme.line, lineWidth: 0.8)
+                }
+
+                HStack(spacing: 12) {
+                    Image(systemName: "camera.metering.center.weighted")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(GrainTheme.accent)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("机型与镜头参数")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        Text("在拍摄的照片中写入相机型号与镜头信息")
+                            .font(.system(size: 9, design: .rounded))
+                            .foregroundStyle(GrainTheme.muted)
+                    }
+                    Spacer()
+                    Toggle("", isOn: $captureDeviceInfoEnabled)
                         .labelsHidden()
                         .tint(GrainTheme.accent)
                 }

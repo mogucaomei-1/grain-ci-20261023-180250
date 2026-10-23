@@ -37,13 +37,13 @@ struct RawImageProcessor {
             throw ImageProcessorError.cannotOpenFile
         }
 
-        let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any] ?? [:]
-        let tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
-        let gps = properties[kCGImagePropertyGPSDictionary] as? [CFString: Any]
-        let latitudeValue = (gps?[kCGImagePropertyGPSLatitude] as? NSNumber)?.doubleValue
-        let latitudeRef = gps?[kCGImagePropertyGPSLatitudeRef] as? String
-        let longitudeValue = (gps?[kCGImagePropertyGPSLongitude] as? NSNumber)?.doubleValue
-        let longitudeRef = gps?[kCGImagePropertyGPSLongitudeRef] as? String
+        let exif = stringKeyedDictionary(properties[kCGImagePropertyExifDictionary])
+        let tiff = stringKeyedDictionary(properties[kCGImagePropertyTIFFDictionary])
+        let gps = stringKeyedDictionary(properties[kCGImagePropertyGPSDictionary])
+        let latitudeValue = (gps[kCGImagePropertyGPSLatitude] as? NSNumber)?.doubleValue
+        let latitudeRef = gps[kCGImagePropertyGPSLatitudeRef] as? String
+        let longitudeValue = (gps[kCGImagePropertyGPSLongitude] as? NSNumber)?.doubleValue
+        let longitudeRef = gps[kCGImagePropertyGPSLongitudeRef] as? String
         let latitude = latitudeValue.map { latitudeRef == "S" ? -$0 : $0 }
         let longitude = longitudeValue.map { longitudeRef == "W" ? -$0 : $0 }
 
@@ -53,6 +53,7 @@ struct RawImageProcessor {
         let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap(Int64.init) ?? 0
 
         let dateString = exif[kCGImagePropertyExifDateTimeOriginal] as? String
+            ?? tiff[kCGImagePropertyTIFFDateTime] as? String
         let date = dateString.flatMap {
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -77,12 +78,25 @@ struct RawImageProcessor {
             cameraModel: cameraModel,
             lensModel: exif[kCGImagePropertyExifLensModel] as? String ?? "",
             capturedAt: date,
-            hasLocation: gps?.isEmpty == false,
+            hasLocation: !gps.isEmpty,
             latitude: latitude,
             longitude: longitude,
             orientation: rawOrientation,
             isLikelyScreenshot: isLikelyScreenshot
         )
+    }
+
+    /// ImageIO 返回的嵌套字典既可能是 [String: Any] 也可能是 [CFString: Any]
+    private static func stringKeyedDictionary(_ value: Any?) -> [CFString: Any] {
+        if let dictionary = value as? [CFString: Any] {
+            return dictionary
+        }
+        if let dictionary = value as? [String: Any] {
+            return dictionary.reduce(into: [:]) { result, pair in
+                result[pair.key as CFString] = pair.value
+            }
+        }
+        return [:]
     }
 
     static func renderPreview(

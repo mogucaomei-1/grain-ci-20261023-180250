@@ -366,6 +366,10 @@ struct PhotoLibraryHome: View {
                 .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
                 .id(asset.localIdentifier)
 
+            AssetFormatBadge(asset: asset)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(5)
+
             if isSelecting {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
                     .fill(Color.black.opacity(selected ? 0.22 : 0.04))
@@ -591,6 +595,63 @@ struct PhotoLibraryHome: View {
             .frame(height: 42)
             .background(GrainTheme.paper, in: Capsule())
             Spacer()
+        }
+    }
+}
+
+private struct AssetFormatBadge: View {
+    let asset: PHAsset
+    @State private var label: String?
+
+    var body: some View {
+        Group {
+            if let label {
+                Text(label)
+                    .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                    .tracking(0.5)
+                    .foregroundStyle(GrainTheme.paper)
+                    .padding(.horizontal, 5)
+                    .frame(height: 15)
+                    .background(.black.opacity(0.56), in: Capsule())
+            }
+        }
+        .task(id: asset.localIdentifier) {
+            label = AssetFormat.label(for: asset)
+        }
+    }
+}
+
+private enum AssetFormat {
+    static func label(for asset: PHAsset) -> String? {
+        guard let identifier = PHAssetResource.assetResources(for: asset)
+            .first?.uniformTypeIdentifier
+        else {
+            return nil
+        }
+        return label(forUniformTypeIdentifier: identifier)
+    }
+
+    static func label(forUniformTypeIdentifier identifier: String) -> String? {
+        switch identifier {
+        case "public.heic", "public.heif", "public.heic.sequence":
+            return "HEIF"
+        case "public.png":
+            return "PNG"
+        case "public.jpeg":
+            return "JPEG"
+        case "public.tiff":
+            return "TIFF"
+        case "com.adobe.raw-image", "com.adobe.digital-negative":
+            return "RAW"
+        default:
+            let lowercased = identifier.lowercased()
+            if lowercased.contains("raw") || lowercased.contains("arw") {
+                return "RAW"
+            }
+            if lowercased.hasSuffix("dng") {
+                return "RAW"
+            }
+            return nil
         }
     }
 }

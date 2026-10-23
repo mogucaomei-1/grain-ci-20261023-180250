@@ -1,6 +1,6 @@
 # GRAIN 1.1 — Sony RAW 胶片工作台
 
-GRAIN 是一个面向 iPhone 的 SwiftUI RAW 调色 App。主流程围绕 Sony ARW 导入、胶片色彩模拟、原尺寸高质量导出和 GPS 隐私开关设计。当前测试包为 1.1 (71)。
+GRAIN 是一个面向 iPhone 的 SwiftUI RAW 调色 App。主流程围绕 Sony ARW 导入、胶片色彩模拟、原尺寸高质量导出和 GPS 隐私开关设计。当前测试包为 1.1 (72)。
 
 ## 打开方式
 
@@ -65,6 +65,10 @@ GRAIN 是一个面向 iPhone 的 SwiftUI RAW 调色 App。主流程围绕 Sony A
 - RAW 写入相册时使用正确的 DNG UTI（`com.adobe.raw-image`），并按“文件+元数据 → 仅文件 → 内存数据”顺序重试；修复选择 RAW 拍照时 PHPhotosError 3302。
 - 照片输出常驻会话，不再每次快门移除/添加 `AVCapturePhotoOutput`；尺寸只在 12MP（实况照片）与满分辨率之间切换，两者都对 ProRAW 合法，避免尺寸校验异常导致的闪退。
 
+- 非 RAW 拍摄（HEIF/JPEG/PNG）会把 `AVCapturePhoto` 的 EXIF/TIFF/GPS 写入重编码文件，图片信息页可显示机型、镜头、拍摄时间与位置；TIFF 也加入导入支持。
+- 新增“位置信息”“机型与镜头参数”两个拍摄开关：关闭位置后不写入 GPS/相册位置，关闭机型后移除 TIFF Make/Model 与 EXIF 镜头字段；定位权限在首次开启位置开关（或进相机）时按需申请。
+- 编辑页照片格式标签按实际文件扩展名显示 RAW / HEIF / PNG / JPEG / TIFF，不再一律显示 RAW；主页图库缩略图左上角也会显示对应格式徽标。
+- 编辑页主画布支持左右滑动切换图库中的相邻照片（右滑下一张、左滑上一张），左侧边缘右滑仍保留返回图库手势。
 ## 关键文件
 
 - `GRAIN/ImageProcessor.swift`：RAW 解码、预览、色彩管线、全尺寸导出和元数据策略。

@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreLocation
 import ImageIO
 import Photos
 import SwiftUI
@@ -164,6 +165,13 @@ final class CameraController: ObservableObject {
             }
             return
         }
+        let wantsLocation = UserDefaults.standard
+            .object(forKey: "captureLocationEnabled") as? Bool ?? true
+        if wantsLocation {
+            await MainActor.run {
+                CaptureLocationProvider.shared.start()
+            }
+        }
         sessionQueue.async { [weak self] in
             guard let self else { return }
             // 视图可能重复出现；已配置过就只恢复运行，避免重复 addInput 触发
@@ -180,6 +188,9 @@ final class CameraController: ObservableObject {
 
     func stop() {
         captureGeneration += 1
+        DispatchQueue.main.async {
+            CaptureLocationProvider.shared.stop()
+        }
         sessionQueue.async { [weak self] in
             self?.session.stopRunning()
         }
@@ -869,8 +880,11 @@ final class CameraController: ObservableObject {
         configuration: CameraCaptureConfiguration
     ) {
         let id = settings.uniqueID
+        let wantsLocation = UserDefaults.standard
+            .object(forKey: "captureLocationEnabled") as? Bool ?? true
         let processor = CameraPhotoCaptureProcessor(
-            expectLivePhoto: settings.livePhotoMovieFileURL != nil
+            expectLivePhoto: settings.livePhotoMovieFileURL != nil,
+            location: wantsLocation ? CaptureLocationProvider.shared.latestLocation : nil
         ) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -986,6 +1000,7 @@ final class CameraController: ObservableObject {
             var createdIdentifier: String?
             PHPhotoLibrary.shared().performChanges {
                 let request = PHAssetCreationRequest.forAsset()
+                request.location = output.location
                 let options = PHAssetResourceCreationOptions()
                 options.originalFilename = output.fileName
                 options.shouldMoveFile = false
@@ -1072,6 +1087,9 @@ final class CameraController: ObservableObject {
 
 private struct CameraCapturedOutput: @unchecked Sendable {
     let data: Data
+    let metadata: [String: Any]
+    let capturedAt: Date
+    let location: CLLocation?
     let livePhotoURL: URL?
 }
 
@@ -1079,6 +1097,7 @@ private struct CameraPreparedOutput: @unchecked Sendable {
     let data: Data
     let fileName: String
     let uniformTypeIdentifier: String
+    let location: CLLocation?
     let livePhotoURL: URL?
 }
 
@@ -1093,15 +1112,23 @@ private final class CameraPhotoCaptureProcessor: NSObject, AVCapturePhotoCapture
     typealias Completion = (Result<CameraCapturedOutput, Error>) -> Void
 
     private let expectLivePhoto: Bool
+    private let location: CLLocation?
     private let completion: Completion
     private var photoData: Data?
+    private var photoMetadata: [String: Any] = [:]
+    private var capturedAt = Date()
     private var livePhotoURL: URL?
     private var captureError: Error?
     private var captureFinished = false
     private var hasCompleted = false
 
-    init(expectLivePhoto: Bool, completion: @escaping Completion) {
+    init(
+        expectLivePhoto: Bool,
+        location: CLLocation?,
+        completion: @escaping Completion
+    ) {
         self.expectLivePhoto = expectLivePhoto
+        self.location = location
         self.completion = completion
     }
 
@@ -1114,6 +1141,8 @@ private final class CameraPhotoCaptureProcessor: NSObject, AVCapturePhotoCapture
             captureError = error
         } else {
             photoData = photo.fileDataRepresentation()
+            photoMetadata = photo.metadata
+            capturedAt = Date()
         }
         finishIfReady()
     }
@@ -1166,6 +1195,9 @@ private final class CameraPhotoCaptureProcessor: NSObject, AVCapturePhotoCapture
         hasCompleted = true
         completion(.success(CameraCapturedOutput(
             data: photoData,
+            metadata: photoMetadata,
+            capturedAt: capturedAt,
+            location: location,
             livePhotoURL: expectLivePhoto ? livePhotoURL : nil
         )))
     }
@@ -1193,6 +1225,7 @@ private enum CameraImageProcessor {
                     // 填成 com.adobe.digital-negative 会让 PhotoKit 找不到
                     // 写入器并以 PHPhotosErrorDomain 3302 拒绝整张照片。
                     uniformTypeIdentifier: dngTypeIdentifier,
+                    location: output.location,
                     livePhotoURL: nil
                 )
             }
@@ -1251,7 +1284,13 @@ private enum CameraImageProcessor {
             CGImageDestinationAddImage(
                 destination,
                 image,
-                [kCGImageDestinationLossyCompressionQuality: 1.0] as CFDictionary
+                destinationProperties(
+                    metadata: output.metadata,
+                    width: image.width,
+                    height: image.height,
+                    capturedAt: output.capturedAt,
+                    location: output.location
+                ) as CFDictionary
             )
             guard CGImageDestinationFinalize(destination) else {
                 throw CameraError.imageEncodeFailed
@@ -1262,9 +1301,104 @@ private enum CameraImageProcessor {
                 data: data as Data,
                 fileName: "GRAIN-\(timestamp()).\(fileExtension)",
                 uniformTypeIdentifier: type.identifier,
+                location: output.location,
                 livePhotoURL: output.livePhotoURL
             )
         }
+    }
+
+    /// 把 AVCapturePhoto 的 EXIF/TIFF/GPS 写入重编码后的 HEIF/PNG。
+    /// 同时应用设置里的“位置信息”“机型与镜头参数”开关。
+    private static func destinationProperties(
+        metadata: [String: Any],
+        width: Int,
+        height: Int,
+        capturedAt: Date,
+        location: CLLocation?
+    ) -> [String: Any] {
+        var properties = metadata
+        properties[kCGImageDestinationLossyCompressionQuality as String] = 1.0
+        var tiff = stringDictionary(properties[kCGImagePropertyTIFFDictionary as String])
+        var exif = stringDictionary(properties[kCGImagePropertyExifDictionary as String])
+
+        let deviceInfoEnabled = UserDefaults.standard
+            .object(forKey: "captureDeviceInfoEnabled") as? Bool ?? true
+        if !deviceInfoEnabled {
+            tiff.removeValue(forKey: kCGImagePropertyTIFFMake as String)
+            tiff.removeValue(forKey: kCGImagePropertyTIFFModel as String)
+            exif.removeValue(forKey: kCGImagePropertyExifLensMake as String)
+            exif.removeValue(forKey: kCGImagePropertyExifLensModel as String)
+            exif.removeValue(forKey: "LensSerialNumber")
+        }
+
+        // 像素已经按 EXIF 转正，标记方向和尺寸都要同步
+        properties[kCGImagePropertyOrientation as String] = 1
+        tiff[kCGImagePropertyTIFFOrientation as String] = 1
+
+        exif[kCGImagePropertyExifPixelXDimension as String] = width
+        exif[kCGImagePropertyExifPixelYDimension as String] = height
+        if exif[kCGImagePropertyExifDateTimeOriginal as String] == nil {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+            let stamp = formatter.string(from: capturedAt)
+            exif[kCGImagePropertyExifDateTimeOriginal as String] = stamp
+            exif[kCGImagePropertyExifDateTimeDigitized as String] = stamp
+        }
+
+        let locationEnabled = UserDefaults.standard
+            .object(forKey: "captureLocationEnabled") as? Bool ?? true
+        if locationEnabled {
+            if properties[kCGImagePropertyGPSDictionary as String] == nil,
+               let location {
+                properties[kCGImagePropertyGPSDictionary as String] =
+                    gpsProperties(for: location)
+            }
+        } else {
+            properties.removeValue(forKey: kCGImagePropertyGPSDictionary as String)
+        }
+
+        properties[kCGImagePropertyTIFFDictionary as String] = tiff
+        properties[kCGImagePropertyExifDictionary as String] = exif
+        return properties
+    }
+
+    private static func stringDictionary(_ value: Any?) -> [String: Any] {
+        if let dictionary = value as? [String: Any] {
+            return dictionary
+        }
+        if let dictionary = value as? [CFString: Any] {
+            return dictionary.reduce(into: [:]) { result, pair in
+                result[pair.key as String] = pair.value
+            }
+        }
+        return [:]
+    }
+
+    private static func gpsProperties(for location: CLLocation) -> [String: Any] {
+        let coordinate = location.coordinate
+        var gps: [String: Any] = [
+            kCGImagePropertyGPSLatitudeRef as String:
+                coordinate.latitude >= 0 ? "N" : "S",
+            kCGImagePropertyGPSLatitude as String: abs(coordinate.latitude),
+            kCGImagePropertyGPSLongitudeRef as String:
+                coordinate.longitude >= 0 ? "E" : "W",
+            kCGImagePropertyGPSLongitude as String: abs(coordinate.longitude)
+        ]
+        if location.horizontalAccuracy >= 0 {
+            gps[kCGImagePropertyGPSHPositioningError as String] =
+                location.horizontalAccuracy
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy:MM:dd"
+        gps[kCGImagePropertyGPSDateStamp as String] =
+            formatter.string(from: location.timestamp)
+        formatter.dateFormat = "HH:mm:ss"
+        gps[kCGImagePropertyGPSTimeStamp as String] =
+            formatter.string(from: location.timestamp)
+        return gps
     }
 
     /// 缩放到位图的精确像素量；源图更小则保持原样，不做插值放大

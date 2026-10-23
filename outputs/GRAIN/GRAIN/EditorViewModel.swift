@@ -410,7 +410,10 @@ final class EditorViewModel: ObservableObject {
         previewNeedsUpdate = false
         previewGeneration += 1
 
-        let supportedExtensions = ["arw", "srf", "sr2", "dng", "jpg", "jpeg", "heic", "heif", "png"]
+        let supportedExtensions = [
+            "arw", "srf", "sr2", "dng", "jpg", "jpeg",
+            "heic", "heif", "png", "tif", "tiff"
+        ]
         guard supportedExtensions.contains(incomingURL.pathExtension.lowercased()) else {
             isPreparing = false
             errorMessage = "请选择 Sony ARW、DNG、HEIC 或 JPEG 图片。"

@@ -70,6 +70,9 @@ struct RootView: View {
                                 cancelPendingLibraryImport()
                                 editor.returnHome()
                                 Task { await photoLibrary.refresh() }
+                            },
+                            onSwitchPhoto: { offset in
+                                switchLibraryPhoto(offset)
                             }
                         )
                     }
@@ -242,6 +245,18 @@ struct RootView: View {
         libraryImportTask = nil
     }
 
+    /// 编辑页左右滑动切换到图库中的相邻照片
+    private func switchLibraryPhoto(_ offset: Int) {
+        guard let identifier = editor.sourceAssetIdentifier,
+              let index = photoLibrary.assets.firstIndex(where: {
+                  $0.localIdentifier == identifier
+              })
+        else { return }
+        let targetIndex = index + offset
+        guard photoLibrary.assets.indices.contains(targetIndex) else { return }
+        importLibraryAsset(photoLibrary.assets[targetIndex])
+    }
+
     /// 打开相机刚写入相册的那张照片
     private func openCapturedAsset(_ identifier: String) {
         let result = PHAsset.fetchAssets(
@@ -393,6 +408,7 @@ private struct EditorWorkspace: View {
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
     let showHistogram: Bool
     let onBackToLibrary: () -> Void
+    let onSwitchPhoto: (Int) -> Void
     @State private var showCropEditor = false
     @State private var editingTextID: UUID?
     @State private var selectedTextID: UUID?
@@ -405,7 +421,8 @@ private struct EditorWorkspace: View {
         VStack(spacing: 0) {
             PhotoEditorCanvas(
                 showHistogram: showHistogram,
-                selectedTextID: $selectedTextID
+                selectedTextID: $selectedTextID,
+                onSwitchPhoto: onSwitchPhoto
             ) { id in
                 editingTextID = id
                 selectedTextID = id
@@ -616,6 +633,7 @@ private struct PhotoEditorCanvas: View {
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
     let showHistogram: Bool
     @Binding var selectedTextID: UUID?
+    let onSwitchPhoto: (Int) -> Void
     let onEditText: (UUID) -> Void
     @State private var showOriginal = false
     @State private var showFullscreen = false
@@ -738,6 +756,7 @@ private struct PhotoEditorCanvas: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
+            .simultaneousGesture(switchPhotoGesture)
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
@@ -745,6 +764,22 @@ private struct PhotoEditorCanvas: View {
             FullscreenPhotoView()
                 .environmentObject(editor)
         }
+    }
+
+    /// 在照片上左右滑动切换图库里的相邻照片；左侧边缘右滑仍留给返回手势
+    private var switchPhotoGesture: some Gesture {
+        DragGesture(minimumDistance: 26)
+            .onEnded { value in
+                guard selectedTextID == nil else { return }
+                let horizontal = value.translation.width
+                let vertical = value.translation.height
+                guard abs(horizontal) > 68,
+                      abs(horizontal) > abs(vertical) * 1.5
+                else { return }
+                if horizontal > 0, value.startLocation.x <= 40 { return }
+                GrainHaptics.selection(enabled: hapticsEnabled)
+                onSwitchPhoto(horizontal > 0 ? 1 : -1)
+            }
     }
 
     private var imageAspect: CGFloat {

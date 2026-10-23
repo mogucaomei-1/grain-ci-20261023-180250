@@ -582,7 +582,22 @@ struct PhotoAsset: Identifiable, Equatable, Sendable {
     }
 
     var sourceKindLabel: String {
-        isLikelyScreenshot ? "SCREENSHOT" : "RAW"
+        switch url.pathExtension.lowercased() {
+        case "arw", "srf", "sr2", "dng", "raw":
+            return "RAW"
+        case "heic", "heif":
+            return "HEIF"
+        case "png":
+            return "PNG"
+        case "jpg", "jpeg":
+            return "JPEG"
+        case "tif", "tiff":
+            return "TIFF"
+        case "":
+            return "IMAGE"
+        default:
+            return url.pathExtension.uppercased()
+        }
     }
 }
 
