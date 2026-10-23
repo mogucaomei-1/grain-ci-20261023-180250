@@ -857,29 +857,49 @@ final class CameraController: ObservableObject {
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
         do {
-            try await commitPhotoLibrarySave(output, fileURL: tempURL)
+            try await commitPhotoLibrarySave(output, fileURL: tempURL, attempt: .fileWithMetadata)
         } catch {
-            // 部分格式（尤其 ProRAW DNG）用文件 URL 会被 PhotoKit 拒绝，
-            // 改用内存数据再写一次。
-            try await commitPhotoLibrarySave(output, fileURL: nil)
+            // PhotoKit 对 DNG 的写入器匹配很挑：文件 + 显式 UTI 被拒时，
+            // 再让系统按扩展名自行判定，最后用内存数据兜底。
+            do {
+                try await commitPhotoLibrarySave(output, fileURL: tempURL, attempt: .fileInferredType)
+            } catch {
+                do {
+                    try await commitPhotoLibrarySave(output, fileURL: tempURL, attempt: .dataWithMetadata)
+                } catch {
+                    throw Self.mappedSaveError(error)
+                }
+            }
         }
+    }
+
+    /// PHPhotosError 3302 表示资源校验失败（格式不被接受），给出中文说明
+    private static func mappedSaveError(_ error: Error) -> Error {
+        let nsError = error as NSError
+        if nsError.domain == "PHPhotosErrorDomain", nsError.code == 3302 {
+            return CameraError.photoLibraryRejectedFormat
+        }
+        return error
     }
 
     private func commitPhotoLibrarySave(
         _ output: CameraPreparedOutput,
-        fileURL: URL?
+        fileURL: URL,
+        attempt: PhotoSaveAttempt
     ) async throws {
         try await withCheckedThrowingContinuation { continuation in
             PHPhotoLibrary.shared().performChanges {
                 let request = PHAssetCreationRequest.forAsset()
                 let options = PHAssetResourceCreationOptions()
                 options.originalFilename = output.fileName
-                options.uniformTypeIdentifier = output.uniformTypeIdentifier
                 options.shouldMoveFile = false
-                if let fileURL {
-                    request.addResource(with: .photo, fileURL: fileURL, options: options)
-                } else {
+                if attempt != .fileInferredType {
+                    options.uniformTypeIdentifier = output.uniformTypeIdentifier
+                }
+                if attempt == .dataWithMetadata {
                     request.addResource(with: .photo, data: output.data, options: options)
+                } else {
+                    request.addResource(with: .photo, fileURL: fileURL, options: options)
                 }
 
                 if let livePhotoURL = output.livePhotoURL {
@@ -963,6 +983,13 @@ private struct CameraPreparedOutput: @unchecked Sendable {
     let fileName: String
     let uniformTypeIdentifier: String
     let livePhotoURL: URL?
+}
+
+/// PhotoKit 写入方式：DNG 在不同系统版本上可接受的组合不同，按顺序尝试
+private enum PhotoSaveAttempt {
+    case fileWithMetadata
+    case fileInferredType
+    case dataWithMetadata
 }
 
 private final class CameraPhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate {
@@ -1062,7 +1089,10 @@ private enum CameraImageProcessor {
                 return CameraPreparedOutput(
                     data: output.data,
                     fileName: "GRAIN-\(timestamp()).dng",
-                    uniformTypeIdentifier: "com.adobe.digital-negative",
+                    // DNG 的 UTI 是 com.adobe.raw-image（UTType.dng）；
+                    // 填成 com.adobe.digital-negative 会让 PhotoKit 找不到
+                    // 写入器并以 PHPhotosErrorDomain 3302 拒绝整张照片。
+                    uniformTypeIdentifier: UTType.dng.identifier,
                     livePhotoURL: nil
                 )
             }
@@ -1082,15 +1112,16 @@ private enum CameraImageProcessor {
 
             let sourceWidth = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue ?? 0
             let sourceHeight = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue ?? 0
-            let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
             let targetPixels = configuration.resolution.targetPixels
             let sourceLongEdge = max(sourceWidth, sourceHeight)
 
-            // 解码时留出裁切余量，避免整张 48MP 位图常驻内存
+            // 解码时留出裁切余量，避免整张 48MP 位图常驻内存。
+            // WithTransform 让 ImageIO 直接按 EXIF 方向生成正向像素，
+            // 不再自己拼旋转矩阵（此前手写矩阵把竖拍图转了 180°）。
             let decodeLimit = min(sourceLongEdge, (targetPixels * 2).squareRoot().rounded())
             let decodeOptions: [CFString: Any] = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: false,
+                kCGImageSourceCreateThumbnailWithTransform: true,
                 kCGImageSourceThumbnailMaxPixelSize: max(1, Int(decodeLimit))
             ]
             guard let decoded = CGImageSourceCreateThumbnailAtIndex(
@@ -1101,11 +1132,9 @@ private enum CameraImageProcessor {
                 throw CameraError.imageDecodeFailed
             }
 
-            // 先按 EXIF 方向把像素转正，再裁切、再缩放到目标像素，
-            // 否则竖拍照片会在错误的坐标系里被裁掉一半。
-            let oriented = orientedImage(decoded, orientation: orientation)
+            // decoded 已按 orientation 转正，裁切与缩放都在正向坐标系里进行
             let image = resized(
-                crop(oriented, to: configuration.aspect.ratio),
+                crop(decoded, to: configuration.aspect.ratio),
                 targetPixels: targetPixels
             )
             let format: CameraCaptureFormat = configuration.format == .png ? .png : .heif
@@ -1136,54 +1165,6 @@ private enum CameraImageProcessor {
                 livePhotoURL: output.livePhotoURL
             )
         }
-    }
-
-    /// 按 EXIF 方向把像素转正，输出不带方向标记的正向位图
-    private static func orientedImage(_ image: CGImage, orientation: Int) -> CGImage {
-        guard orientation != 1 else { return image }
-        let width = image.width
-        let height = image.height
-        let swapsSides = [5, 6, 7, 8].contains(orientation)
-        let outputWidth = swapsSides ? height : width
-        let outputHeight = swapsSides ? width : height
-        guard let context = CGContext(
-            data: nil,
-            width: outputWidth,
-            height: outputHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            return image
-        }
-        let w = CGFloat(width)
-        let h = CGFloat(height)
-        var transform = CGAffineTransform.identity
-        switch orientation {
-        case 2:
-            transform = CGAffineTransform(translationX: w, y: 0).scaledBy(x: -1, y: 1)
-        case 3:
-            transform = CGAffineTransform(translationX: w, y: h).rotated(by: .pi)
-        case 4:
-            transform = CGAffineTransform(translationX: 0, y: h).scaledBy(x: 1, y: -1)
-        case 5:
-            transform = CGAffineTransform(rotationAngle: .pi / 2).scaledBy(x: 1, y: -1)
-        case 6:
-            transform = CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
-        case 7:
-            transform = CGAffineTransform(translationX: h, y: w)
-                .rotated(by: .pi / 2)
-                .scaledBy(x: -1, y: 1)
-        case 8:
-            transform = CGAffineTransform(translationX: 0, y: w).rotated(by: -.pi / 2)
-        default:
-            break
-        }
-        context.concatenate(transform)
-        context.interpolationQuality = .high
-        context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-        return context.makeImage() ?? image
     }
 
     /// 缩放到位图的精确像素量；源图更小则保持原样，不做插值放大
@@ -1282,6 +1263,7 @@ private enum CameraError: LocalizedError {
     case imageDecodeFailed
     case imageEncodeFailed
     case saveFailed
+    case photoLibraryRejectedFormat
 
     var errorDescription: String? {
         switch self {
@@ -1301,6 +1283,8 @@ private enum CameraError: LocalizedError {
             "无法生成所选照片格式。"
         case .saveFailed:
             "照片保存失败，请检查存储空间。"
+        case .photoLibraryRejectedFormat:
+            "照片图库拒绝了这张照片的文件格式（PHPhotosError 3302）。如果这是 RAW 照片，请把这条提示发给开发者。"
         }
     }
 }
