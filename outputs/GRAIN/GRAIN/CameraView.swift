@@ -1075,6 +1075,9 @@ private final class CameraPhotoCaptureProcessor: NSObject, AVCapturePhotoCapture
 }
 
 private enum CameraImageProcessor {
+    /// DNG 的标准 UTI；UTType.dng 在部分 SDK 里没有暴露，直接用标识符。
+    static let dngTypeIdentifier = "com.adobe.raw-image"
+
     static func prepare(
         output: CameraCapturedOutput,
         configuration: CameraCaptureConfiguration
@@ -1092,7 +1095,7 @@ private enum CameraImageProcessor {
                     // DNG 的 UTI 是 com.adobe.raw-image（UTType.dng）；
                     // 填成 com.adobe.digital-negative 会让 PhotoKit 找不到
                     // 写入器并以 PHPhotosErrorDomain 3302 拒绝整张照片。
-                    uniformTypeIdentifier: UTType.dng.identifier,
+                    uniformTypeIdentifier: dngTypeIdentifier,
                     livePhotoURL: nil
                 )
             }
