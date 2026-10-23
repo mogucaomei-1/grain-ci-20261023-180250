@@ -977,6 +977,15 @@ private struct PhotoEditorCanvas: View {
                 peakingMask = nil
             }
         }
+        .onChange(of: zoomScale) { oldValue, newValue in
+            let wasZoomed = oldValue > 1.01
+            let isZoomed = newValue > 1.01
+            if isZoomed && !wasZoomed {
+                editor.prepareZoomPreview()
+            } else if !isZoomed && wasZoomed {
+                editor.releaseZoomPreview()
+            }
+        }
     }
 
     private var peakingTaskID: String {
@@ -1021,6 +1030,10 @@ private struct PhotoEditorCanvas: View {
             if showOriginal, let original = editor.originalPreview {
                 imageLayer(original, imageSize: imageSize, viewport: viewport)
                     .transition(.opacity)
+            } else if zoomScale > 1.01, let zoom = editor.zoomPreview {
+                // 放大时用全尺寸原图，替换 1280px 的预览，细节不再发糊
+                imageLayer(zoom, imageSize: imageSize, viewport: viewport)
+                    .transition(.opacity)
             } else if let edited = editor.editedPreview {
                 imageLayer(edited, imageSize: imageSize, viewport: viewport)
                     .transition(.opacity)
@@ -1029,7 +1042,8 @@ private struct PhotoEditorCanvas: View {
                     .tint(GrainTheme.paper)
             }
 
-            if let fraction = compareFraction,
+            if zoomScale <= 1.01,
+               let fraction = compareFraction,
                let original = editor.originalPreview,
                let edited = editor.editedPreview {
                 imageLayer(edited, imageSize: imageSize, viewport: viewport)
