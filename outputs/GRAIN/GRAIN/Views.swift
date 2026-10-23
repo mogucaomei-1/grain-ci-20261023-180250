@@ -285,6 +285,30 @@ struct RootView: View {
     }
 }
 
+private enum HomeTool: String, CaseIterable, Identifiable {
+    case camera
+    case files
+    case collage
+
+    var id: String { rawValue }
+
+    var symbol: String {
+        switch self {
+        case .camera: "camera.fill"
+        case .files: "folder"
+        case .collage: "puzzlepiece.extension.fill"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .camera: "打开相机"
+        case .files: "从文件导入"
+        case .collage: "打开拼图"
+        }
+    }
+}
+
 private struct MinimalTopBar: View {
     let hasPhoto: Bool
     let onCamera: (() -> Void)?
@@ -296,6 +320,11 @@ private struct MinimalTopBar: View {
     let onToggleHistogram: (() -> Void)?
     let onExport: () -> Void
     let onDelete: (() -> Void)?
+
+    @AppStorage("homeToolOrder") private var homeToolOrder = "camera,files,collage"
+    @State private var draggingHomeTool: HomeTool?
+    @State private var homeToolDrag: CGFloat = 0
+    @State private var suppressHomeToolTap = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -317,38 +346,44 @@ private struct MinimalTopBar: View {
 
             Spacer()
 
-            if let onCamera {
-                Button(action: onCamera) {
-                    Image(systemName: "camera.fill")
-                        .font(.system(size: 14, weight: .medium))
-                        .frame(width: 38, height: 38)
-                        .background(GrainTheme.raised, in: Circle())
+            if !hasPhoto, !visibleHomeTools.isEmpty {
+                ForEach(visibleHomeTools) { tool in
+                    homeToolButton(tool)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("打开相机")
-            }
+            } else {
+                if let onCamera {
+                    Button(action: onCamera) {
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 14, weight: .medium))
+                            .frame(width: 38, height: 38)
+                            .background(GrainTheme.raised, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("打开相机")
+                }
 
-            if let onFiles {
-                Button(action: onFiles) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 14, weight: .medium))
-                        .frame(width: 38, height: 38)
-                        .background(GrainTheme.raised, in: Circle())
+                if let onFiles {
+                    Button(action: onFiles) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 14, weight: .medium))
+                            .frame(width: 38, height: 38)
+                            .background(GrainTheme.raised, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("从文件导入")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("从文件导入")
-            }
 
-            if let onCollage {
-                Button(action: onCollage) {
-                    Image(systemName: "puzzlepiece.extension.fill")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(GrainTheme.paper)
-                        .frame(width: 38, height: 38)
-                        .background(GrainTheme.raised, in: Circle())
+                if let onCollage {
+                    Button(action: onCollage) {
+                        Image(systemName: "puzzlepiece.extension.fill")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(GrainTheme.paper)
+                            .frame(width: 38, height: 38)
+                            .background(GrainTheme.raised, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("打开拼图")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("打开拼图")
             }
 
             if let onToggleHistogram {
@@ -399,6 +434,104 @@ private struct MinimalTopBar: View {
         .foregroundStyle(GrainTheme.paper)
         .padding(.horizontal, 18)
         .frame(height: 54)
+    }
+
+    // MARK: 主页三个入口的顺序
+
+    private var orderedHomeToolIDs: [String] {
+        let valid = HomeTool.allCases.map(\.rawValue)
+        let stored = homeToolOrder.split(separator: ",").map(String.init)
+        var ids = stored.filter { valid.contains($0) }
+        for id in valid where !ids.contains(id) {
+            ids.append(id)
+        }
+        return ids
+    }
+
+    private var visibleHomeTools: [HomeTool] {
+        orderedHomeToolIDs.compactMap { id in
+            guard let tool = HomeTool(rawValue: id) else { return nil }
+            switch tool {
+            case .camera: return onCamera == nil ? nil : tool
+            case .files: return onFiles == nil ? nil : tool
+            case .collage: return onCollage == nil ? nil : tool
+            }
+        }
+    }
+
+    private func homeToolButton(_ tool: HomeTool) -> some View {
+        Button {
+            guard !suppressHomeToolTap else { return }
+            switch tool {
+            case .camera: onCamera?()
+            case .files: onFiles?()
+            case .collage: onCollage?()
+            }
+        } label: {
+            Image(systemName: tool.symbol)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(GrainTheme.paper)
+                .frame(width: 38, height: 38)
+                .background(GrainTheme.raised, in: Circle())
+                .scaleEffect(draggingHomeTool == tool ? 1.12 : 1)
+                .offset(x: draggingHomeTool == tool ? homeToolDrag : 0)
+                .zIndex(draggingHomeTool == tool ? 1 : 0)
+                .animation(.snappy(duration: 0.18), value: draggingHomeTool)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(tool.label)
+        .simultaneousGesture(homeToolReorderGesture(tool))
+    }
+
+    /// 长按后左右拖动，松手按位移换位
+    private func homeToolReorderGesture(_ tool: HomeTool) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.34)
+            .sequenced(before: DragGesture(minimumDistance: 0))
+            .onChanged { value in
+                switch value {
+                case .second(true, let drag):
+                    if draggingHomeTool == nil {
+                        draggingHomeTool = tool
+                        suppressHomeToolTap = true
+                        GrainHaptics.mediumImpact(enabled: true)
+                    }
+                    if let drag {
+                        homeToolDrag = drag.translation.width
+                    }
+                default:
+                    break
+                }
+            }
+            .onEnded { _ in
+                guard let dragging = draggingHomeTool else {
+                    suppressHomeToolTap = false
+                    return
+                }
+                commitHomeToolOrder(dragging, translation: homeToolDrag)
+                withAnimation(.snappy(duration: 0.2)) {
+                    draggingHomeTool = nil
+                    homeToolDrag = 0
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    suppressHomeToolTap = false
+                }
+            }
+    }
+
+    private func commitHomeToolOrder(_ tool: HomeTool, translation: CGFloat) {
+        var visible = visibleHomeTools.map(\.id)
+        guard let index = visible.firstIndex(of: tool.id) else { return }
+        // 每个按钮宽 38 + 间距 12
+        let steps = Int((translation / 50).rounded())
+        let target = min(max(index + steps, 0), visible.count - 1)
+        guard target != index else { return }
+        visible.remove(at: index)
+        visible.insert(tool.id, at: target)
+        let hidden = orderedHomeToolIDs.filter { !visible.contains($0) }
+        withAnimation(.snappy(duration: 0.22)) {
+            homeToolOrder = (visible + hidden).joined(separator: ",")
+        }
+        GrainHaptics.selection(enabled: true)
     }
 }
 
@@ -673,17 +806,23 @@ private struct PhotoEditorCanvas: View {
     /// 进阶抽屉遮挡画布的高度；0 表示没有抽屉
     let focusOverlap: CGFloat
     @State private var showOriginal = false
-    @State private var showFullscreen = false
     @State private var compareFraction: CGFloat?
     @State private var showLivePhoto = false
+    @AppStorage("focusPeakingColor") private var peakingColorRaw = "red"
+    @State private var showFocusPeaking = false
+    @State private var peakingMask: CGImage?
     /// 双指放大查看照片；双击复位
     @State private var zoomScale: CGFloat = 1
     @State private var isPinching = false
+    @State private var isPanning = false
+    @State private var panOffset: CGSize = .zero
+    @State private var panBase: CGSize = .zero
     @GestureState private var pinchZoom: CGFloat = 1
 
     var body: some View {
         GeometryReader { proxy in
             let imageSize = displayImageSize(in: proxy.size)
+            let shownPan = displayedPan(viewport: proxy.size, imageSize: imageSize)
 
             ZStack {
                 Color.black
@@ -697,7 +836,11 @@ private struct PhotoEditorCanvas: View {
                             * zoomScale * pinchZoom,
                         anchor: .center
                     )
-                    .offset(y: photoOffset(viewport: proxy.size, imageSize: imageSize))
+                    .offset(
+                        x: shownPan.width,
+                        y: photoOffset(viewport: proxy.size, imageSize: imageSize)
+                            + shownPan.height
+                    )
                     .animation(.snappy(duration: 0.3), value: focusOverlap)
 
                 if isPickingWhiteBalance {
@@ -759,6 +902,21 @@ private struct PhotoEditorCanvas: View {
                         }
 
                         Button {
+                            showFocusPeaking.toggle()
+                            GrainHaptics.lightImpact(enabled: hapticsEnabled)
+                        } label: {
+                            Image(systemName: "viewfinder")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(
+                                    showFocusPeaking ? GrainTheme.accent : GrainTheme.paper
+                                )
+                                .frame(width: 30, height: 29)
+                                .background(.black.opacity(0.52), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(showFocusPeaking ? "关闭峰值对焦" : "显示峰值对焦")
+
+                        Button {
                             withAnimation(.easeOut(duration: 0.18)) {
                                 compareFraction = compareFraction == nil ? 0.5 : nil
                             }
@@ -803,18 +961,38 @@ private struct PhotoEditorCanvas: View {
             .clipped()
             .simultaneousGesture(switchPhotoGesture)
             .simultaneousGesture(pinchZoomGesture)
+            .simultaneousGesture(zoomPanGesture(viewport: proxy.size, imageSize: imageSize))
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
-        .fullScreenCover(isPresented: $showFullscreen) {
-            FullscreenPhotoView()
-                .environmentObject(editor)
-        }
         .fullScreenCover(isPresented: $showLivePhoto) {
             if let asset = editor.currentPHAsset {
                 LivePhotoViewer(asset: asset)
             }
         }
+        .task(id: peakingTaskID) {
+            if showFocusPeaking {
+                await buildPeakingMask()
+            } else {
+                peakingMask = nil
+            }
+        }
+    }
+
+    private var peakingTaskID: String {
+        "\(editor.photo?.displayName ?? "-")-\(editor.editedPreview?.width ?? 0)-\(showFocusPeaking)"
+    }
+
+    private func buildPeakingMask() async {
+        guard let image = editor.editedPreview ?? editor.originalPreview else {
+            peakingMask = nil
+            return
+        }
+        let mask = await Task.detached(priority: .userInitiated) {
+            FocusPeakingRenderer.mask(from: image)
+        }.value
+        guard !Task.isCancelled, showFocusPeaking else { return }
+        peakingMask = mask
     }
 
     // MARK: - 照片层（进阶抽屉打开时单独上移）
@@ -866,6 +1044,17 @@ private struct PhotoEditorCanvas: View {
                     )
             }
 
+            // 峰值对焦：静态预览上标出合焦边缘
+            if showFocusPeaking, let mask = peakingMask {
+                Image(decorative: mask, scale: 1)
+                    .resizable()
+                    .colorMultiply(FocusPeakingColor.resolved(peakingColorRaw).color)
+                    .frame(width: imageSize.width, height: imageSize.height)
+                    .position(x: viewport.width / 2, y: viewport.height / 2)
+                    .opacity(0.94)
+                    .allowsHitTesting(false)
+            }
+
             TextOverlayInteractionView(
                 overlays: editor.textOverlays,
                 selectedID: selectedTextID,
@@ -886,10 +1075,9 @@ private struct PhotoEditorCanvas: View {
                     )
                 },
                 onTapEmpty: {
-                    // 放大查看时单击不进入全屏，此时双击才是复位
+                    // 编辑页不再点图进全屏，单击只取消文字选中
                     guard zoomScale <= 1.01 else { return }
                     selectedTextID = nil
-                    showFullscreen = true
                 },
                 onDoubleTap: resetZoom,
                 isZoomed: zoomScale > 1.01
@@ -936,6 +1124,7 @@ private struct PhotoEditorCanvas: View {
                 if updated <= 1.02 {
                     withAnimation(.easeOut(duration: 0.24)) {
                         zoomScale = 1
+                        panOffset = .zero
                     }
                 } else {
                     zoomScale = min(updated, 6)
@@ -947,8 +1136,55 @@ private struct PhotoEditorCanvas: View {
         guard zoomScale > 1.01 else { return }
         withAnimation(.easeOut(duration: 0.26)) {
             zoomScale = 1
+            panOffset = .zero
         }
         GrainHaptics.lightImpact(enabled: hapticsEnabled)
+    }
+
+    /// 放大后左右/上下拖动查看照片其余部分
+    private func zoomPanGesture(viewport: CGSize, imageSize: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 2)
+            .onChanged { value in
+                guard zoomScale > 1.01 else { return }
+                if !isPanning {
+                    isPanning = true
+                    panBase = panOffset
+                }
+                panOffset = clampedPan(
+                    CGSize(
+                        width: panBase.width + value.translation.width,
+                        height: panBase.height + value.translation.height
+                    ),
+                    viewport: viewport,
+                    imageSize: imageSize
+                )
+            }
+            .onEnded { _ in
+                isPanning = false
+                panBase = panOffset
+            }
+    }
+
+    private func displayedPan(viewport: CGSize, imageSize: CGSize) -> CGSize {
+        guard zoomScale > 1.01 else { return .zero }
+        return clampedPan(panOffset, viewport: viewport, imageSize: imageSize)
+    }
+
+    private func clampedPan(
+        _ proposed: CGSize,
+        viewport: CGSize,
+        imageSize: CGSize
+    ) -> CGSize {
+        let scale = max(zoomScale, 1)
+            * photoScale(viewport: viewport, imageSize: imageSize)
+        let drawWidth = imageSize.width * scale
+        let drawHeight = imageSize.height * scale
+        let maxX = max((drawWidth - viewport.width) / 2, 0)
+        let maxY = max((drawHeight - viewport.height) / 2, 0)
+        return CGSize(
+            width: min(max(proposed.width, -maxX), maxX),
+            height: min(max(proposed.height, -maxY), maxY)
+        )
     }
 
     /// 在照片上左右滑动切换图库里的相邻照片；左侧边缘右滑仍留给返回手势
@@ -1394,18 +1630,16 @@ private struct FilmPresetBar: View {
                     .lineLimit(1)
                     .frame(width: 62, alignment: .leading)
 
-                Slider(
+                ResetValueSlider(
                     value: intensityBinding,
-                    in: 0...200,
-                    onEditingChanged: { editing in
-                        if editing {
-                            editor.recordUndoSnapshot()
-                            lastIntensityHaptic = editor.intensity * 100
-                            GrainHaptics.prepare()
-                        }
-                    }
+                    range: 0...200,
+                    onEditStart: {
+                        editor.recordUndoSnapshot()
+                        lastIntensityHaptic = editor.intensity * 100
+                        GrainHaptics.prepare()
+                    },
+                    onReset: resetIntensity
                 )
-                .tint(editor.selectedProfile == .neutral ? GrainTheme.muted : GrainTheme.accent)
                 .disabled(editor.selectedProfile == .neutral)
 
                 Menu {
@@ -1505,6 +1739,19 @@ private struct FilmPresetBar: View {
                 editor.schedulePreview()
             }
         )
+    }
+
+    /// 双击白色旋钮恢复胶片默认浓度（82%）
+    private func resetIntensity() {
+        guard editor.selectedProfile != .neutral else { return }
+        let defaultValue = 82.0
+        guard abs(editor.intensity * 100 - defaultValue) > 0.5 else { return }
+        editor.recordUndoSnapshot()
+        editor.intensity = defaultValue / 100
+        editor.markManualAdjustment()
+        lastIntensityHaptic = defaultValue
+        GrainHaptics.mediumImpact(enabled: hapticsEnabled)
+        editor.schedulePreview()
     }
 
     private var orderedProfiles: [FilmProfile] {

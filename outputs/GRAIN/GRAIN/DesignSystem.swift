@@ -11,6 +11,38 @@ enum GrainTheme {
     static let danger = Color(hex: 0xE0685C)
 }
 
+/// 峰值对焦的描边颜色（相机与编辑页共用）
+enum FocusPeakingColor: String, CaseIterable, Identifiable {
+    case red
+    case yellow
+    case blue
+    case white
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .red: "红色"
+        case .yellow: "黄色"
+        case .blue: "蓝色"
+        case .white: "白色"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .red: Color(hex: 0xFF5A3C)
+        case .yellow: Color(hex: 0xFFD84A)
+        case .blue: Color(hex: 0x4AA8FF)
+        case .white: Color(hex: 0xFFFFFF)
+        }
+    }
+
+    static func resolved(_ rawValue: String) -> FocusPeakingColor {
+        FocusPeakingColor(rawValue: rawValue) ?? .red
+    }
+}
+
 extension Color {
     init(hex: UInt32, opacity: Double = 1) {
         self.init(

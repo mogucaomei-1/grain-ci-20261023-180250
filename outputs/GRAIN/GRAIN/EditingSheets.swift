@@ -419,6 +419,7 @@ struct AppSettingsView: View {
     @AppStorage("captureLocationEnabled") private var captureLocationEnabled = true
     @AppStorage("captureDeviceInfoEnabled") private var captureDeviceInfoEnabled = true
     @AppStorage("shutterSoundEnabled") private var shutterSoundEnabled = true
+    @AppStorage("focusPeakingColor") private var focusPeakingColor = "red"
 
     var body: some View {
         ZStack {
@@ -641,6 +642,50 @@ struct AppSettingsView: View {
                     Toggle("", isOn: $shutterSoundEnabled)
                         .labelsHidden()
                         .tint(GrainTheme.accent)
+                }
+                .padding(16)
+                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 17)
+                        .stroke(GrainTheme.line, lineWidth: 0.8)
+                }
+
+                // 峰值对焦颜色
+                HStack(spacing: 12) {
+                    Image(systemName: "viewfinder")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(GrainTheme.accent)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("峰值对焦颜色")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        Text("相机与编辑页的合焦描边共用")
+                            .font(.system(size: 9, design: .rounded))
+                            .foregroundStyle(GrainTheme.muted)
+                    }
+                    Spacer()
+                    HStack(spacing: 8) {
+                        ForEach(FocusPeakingColor.allCases) { option in
+                            Button {
+                                focusPeakingColor = option.rawValue
+                                GrainHaptics.selection(enabled: hapticsEnabled)
+                            } label: {
+                                Circle()
+                                    .fill(option.color)
+                                    .frame(width: 22, height: 22)
+                                    .overlay {
+                                        Circle().stroke(
+                                            focusPeakingColor == option.rawValue
+                                                ? GrainTheme.paper
+                                                : Color.white.opacity(0.16),
+                                            lineWidth: focusPeakingColor == option.rawValue ? 1.8 : 0.8
+                                        )
+                                    }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(option.title)
+                        }
+                    }
                 }
                 .padding(16)
                 .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))

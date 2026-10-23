@@ -1738,27 +1738,32 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
         let resized = source.transformed(
             by: CGAffineTransform(scaleX: scale, y: scale)
         )
+        // CIEdges 之类的邻域滤镜可能输出无限范围，必须先钉回有限尺寸，
+        // 否则 createCGImage 会失败，峰值图永远出不来。
+        let outputExtent = resized.extent.integral
+        guard outputExtent.width > 2, outputExtent.height > 2 else { return }
+
         let mono = resized.applyingFilter("CIColorControls", parameters: [
             kCIInputSaturationKey: 0.0,
             kCIInputContrastKey: 1.4
         ])
         let edges = mono.applyingFilter("CIEdges", parameters: [
             kCIInputIntensityKey: 2.0
-        ])
+        ]).cropped(to: outputExtent)
         let punched = edges.applyingFilter("CIColorControls", parameters: [
             kCIInputContrastKey: 2.6,
             kCIInputBrightnessKey: -0.08
-        ])
-        let outputExtent = punched.extent.integral
-        guard outputExtent.width > 2, outputExtent.height > 2 else { return }
+        ]).cropped(to: outputExtent)
 
         let clear = CIImage(
             color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)
         ).cropped(to: outputExtent)
-        let red = CIImage(
-            color: CIColor(red: 1.0, green: 0.24, blue: 0.14, alpha: 1.0)
+        // 输出白色描边，实际颜色由 SwiftUI 的 colorMultiply 决定，
+        // 这样切换颜色不需要重新分析每一帧。
+        let white = CIImage(
+            color: CIColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 1.0)
         ).cropped(to: outputExtent)
-        let masked = red.applyingFilter("CIBlendWithRedMask", parameters: [
+        let masked = white.applyingFilter("CIBlendWithRedMask", parameters: [
             kCIInputBackgroundImageKey: clear,
             kCIInputMaskImageKey: punched
         ])
@@ -1766,6 +1771,48 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
             return
         }
         onMask?(image)
+    }
+}
+
+/// 从静态预览图生成峰值图（编辑页使用）
+enum FocusPeakingRenderer {
+    private static let context = CIContext(options: [.cacheIntermediates: false])
+
+    static func mask(from image: CGImage) -> CGImage? {
+        let source = CIImage(cgImage: image)
+        let extent = source.extent
+        guard extent.width > 4, extent.height > 4 else { return nil }
+        let scale = min(1, 1400 / max(extent.width, extent.height))
+        let resized = source.transformed(
+            by: CGAffineTransform(scaleX: scale, y: scale)
+        )
+        // 同样先固定输出范围，避免邻域滤镜的无限 extent 让导出失败
+        let outputExtent = resized.extent.integral
+        guard outputExtent.width > 4, outputExtent.height > 4 else { return nil }
+
+        let mono = resized.applyingFilter("CIColorControls", parameters: [
+            kCIInputSaturationKey: 0.0,
+            kCIInputContrastKey: 1.4
+        ])
+        let edges = mono.applyingFilter("CIEdges", parameters: [
+            kCIInputIntensityKey: 2.2
+        ]).cropped(to: outputExtent)
+        let punched = edges.applyingFilter("CIColorControls", parameters: [
+            kCIInputContrastKey: 2.8,
+            kCIInputBrightnessKey: -0.08
+        ]).cropped(to: outputExtent)
+
+        let clear = CIImage(
+            color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)
+        ).cropped(to: outputExtent)
+        let white = CIImage(
+            color: CIColor(red: 1, green: 1, blue: 1, alpha: 1)
+        ).cropped(to: outputExtent)
+        let masked = white.applyingFilter("CIBlendWithRedMask", parameters: [
+            kCIInputBackgroundImageKey: clear,
+            kCIInputMaskImageKey: punched
+        ])
+        return context.createCGImage(masked, from: outputExtent)
     }
 }
 
@@ -1980,6 +2027,7 @@ struct CameraView: View {
     @State private var zoomGestureBase: CGFloat?
     @AppStorage("filmOrder") private var filmOrder = ""
     @AppStorage("frontCameraMirrorEnabled") private var mirrorFront = true
+    @AppStorage("focusPeakingColor") private var peakingColorRaw = "red"
     @State private var cameraProfile: FilmProfile = .neutral
     @State private var cameraIntensity = 1.0
     @State private var didSwipeBack = false
@@ -2022,10 +2070,13 @@ struct CameraView: View {
                             Image(decorative: mask, scale: 1)
                                 .resizable()
                                 .aspectRatio(contentMode: .fill)
+                                .colorMultiply(
+                                    FocusPeakingColor.resolved(peakingColorRaw).color
+                                )
                                 .frame(width: rect.width, height: rect.height)
                                 .clipped()
                                 .position(x: rect.midX, y: rect.midY)
-                                .opacity(0.92)
+                                .opacity(0.94)
                                 .allowsHitTesting(false)
                         }
 
@@ -2362,18 +2413,23 @@ struct CameraView: View {
                     camera.setFocusPeaking(!camera.isFocusPeakingEnabled)
                     GrainHaptics.selection(enabled: true)
                 } label: {
-                    Image(systemName: "viewfinder")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(
-                            camera.isFocusPeakingEnabled ? GrainTheme.black : GrainTheme.paper
-                        )
-                        .frame(width: 34, height: 30)
-                        .background(
-                            camera.isFocusPeakingEnabled
-                                ? GrainTheme.accent
-                                : Color.black.opacity(0.54),
-                            in: Capsule()
-                        )
+                    HStack(spacing: 4) {
+                        Image(systemName: "viewfinder")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("峰值")
+                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                    }
+                    .foregroundStyle(
+                        camera.isFocusPeakingEnabled ? GrainTheme.black : GrainTheme.paper
+                    )
+                    .padding(.horizontal, 9)
+                    .frame(height: 30)
+                    .background(
+                        camera.isFocusPeakingEnabled
+                            ? GrainTheme.accent
+                            : Color.black.opacity(0.54),
+                        in: Capsule()
+                    )
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(
@@ -2492,7 +2548,7 @@ struct CameraView: View {
                     .foregroundStyle(cameraProfile == .neutral ? GrainTheme.muted : GrainTheme.accent)
                     .frame(width: 70, alignment: .leading)
                     .lineLimit(1)
-                Slider(value: $cameraIntensity, in: 0...1)
+                Slider(value: $cameraIntensity, in: 0...2)
                     .tint(GrainTheme.accent)
                     .disabled(cameraProfile == .neutral)
                 Text("\(Int((cameraIntensity * 100).rounded()))%")
@@ -2597,7 +2653,11 @@ struct CameraView: View {
                 }
                 .frame(width: rect.width, height: rect.height)
                 .position(x: rect.midX, y: rect.midY)
-                .opacity(cameraIntensity * 0.27)
+                // 100% 以上继续加深，和编辑页的 200% 上限保持一致
+                .opacity(
+                    min(cameraIntensity, 1) * 0.27
+                        + max(cameraIntensity - 1, 0) * 0.16
+                )
                 .allowsHitTesting(false)
             }
         }

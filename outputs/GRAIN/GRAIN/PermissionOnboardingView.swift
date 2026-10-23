@@ -180,7 +180,9 @@ struct PermissionOnboardingView: View {
                 }
             }
             .buttonStyle(.plain)
-            .disabled(state == .requesting || state == .granted)
+            // 这里不能用 .disabled：禁用态会把“已开启”文字自动调暗，
+            // 看起来就比左侧图标暗一截。改成只拦截点击，颜色保持原样。
+            .allowsHitTesting(state != .requesting && state != .granted)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
