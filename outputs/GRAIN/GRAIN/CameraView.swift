@@ -718,6 +718,12 @@ final class CameraController: ObservableObject {
                 photoOutput.maxPhotoDimensions = target
             }
         }
+        // RAW 必须由 ProRAW 输出提供满分辨率 DNG
+        if configuration.format == .raw,
+           photoOutput.isAppleProRAWSupported,
+           !photoOutput.isAppleProRAWEnabled {
+            photoOutput.isAppleProRAWEnabled = true
+        }
         if let connection = photoOutput.connection(with: .video),
            connection.isVideoMirroringSupported {
             connection.automaticallyAdjustsVideoMirroring = false
@@ -850,6 +856,19 @@ final class CameraController: ObservableObject {
         try output.data.write(to: tempURL, options: .atomic)
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
+        do {
+            try await commitPhotoLibrarySave(output, fileURL: tempURL)
+        } catch {
+            // 部分格式（尤其 ProRAW DNG）用文件 URL 会被 PhotoKit 拒绝，
+            // 改用内存数据再写一次。
+            try await commitPhotoLibrarySave(output, fileURL: nil)
+        }
+    }
+
+    private func commitPhotoLibrarySave(
+        _ output: CameraPreparedOutput,
+        fileURL: URL?
+    ) async throws {
         try await withCheckedThrowingContinuation { continuation in
             PHPhotoLibrary.shared().performChanges {
                 let request = PHAssetCreationRequest.forAsset()
@@ -857,11 +876,11 @@ final class CameraController: ObservableObject {
                 options.originalFilename = output.fileName
                 options.uniformTypeIdentifier = output.uniformTypeIdentifier
                 options.shouldMoveFile = false
-                request.addResource(
-                    with: .photo,
-                    fileURL: tempURL,
-                    options: options
-                )
+                if let fileURL {
+                    request.addResource(with: .photo, fileURL: fileURL, options: options)
+                } else {
+                    request.addResource(with: .photo, data: output.data, options: options)
+                }
 
                 if let livePhotoURL = output.livePhotoURL {
                     let videoOptions = PHAssetResourceCreationOptions()
@@ -1035,6 +1054,11 @@ private enum CameraImageProcessor {
     ) throws -> CameraPreparedOutput {
         try autoreleasepool {
             if configuration.format == .raw {
+                // 只有真正的 DNG 才能按 RAW 写入相册；否则 PhotoKit 会以
+                // “resource invalid” 拒绝整张照片。
+                guard isDNG(output.data) else {
+                    throw CameraError.rawUnavailable
+                }
                 return CameraPreparedOutput(
                     data: output.data,
                     fileName: "GRAIN-\(timestamp()).dng",
@@ -1059,32 +1083,31 @@ private enum CameraImageProcessor {
             let sourceWidth = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue ?? 0
             let sourceHeight = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue ?? 0
             let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
-            let isRotated = [5, 6, 7, 8].contains(orientation)
-            let orientedWidth = isRotated ? sourceHeight : sourceWidth
-            let orientedHeight = isRotated ? sourceWidth : sourceHeight
-            let currentRatio = orientedWidth / max(orientedHeight, 1)
-            let targetRatio = configuration.aspect.ratio
             let targetPixels = configuration.resolution.targetPixels
-            let neededLongEdge = currentRatio > targetRatio
-                ? sqrt(targetPixels / targetRatio)
-                : sqrt(targetPixels * targetRatio)
             let sourceLongEdge = max(sourceWidth, sourceHeight)
-            let maxPixelSize = Int(min(sourceLongEdge, ceil(neededLongEdge)).rounded())
 
-            let thumbnailOptions: [CFString: Any] = [
+            // 解码时留出裁切余量，避免整张 48MP 位图常驻内存
+            let decodeLimit = min(sourceLongEdge, (targetPixels * 2).squareRoot().rounded())
+            let decodeOptions: [CFString: Any] = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixelSize)
+                kCGImageSourceCreateThumbnailWithTransform: false,
+                kCGImageSourceThumbnailMaxPixelSize: max(1, Int(decodeLimit))
             ]
             guard let decoded = CGImageSourceCreateThumbnailAtIndex(
                 source,
                 0,
-                thumbnailOptions as CFDictionary
+                decodeOptions as CFDictionary
             ) else {
                 throw CameraError.imageDecodeFailed
             }
-            let image = crop(decoded, to: targetRatio)
 
+            // 先按 EXIF 方向把像素转正，再裁切、再缩放到目标像素，
+            // 否则竖拍照片会在错误的坐标系里被裁掉一半。
+            let oriented = orientedImage(decoded, orientation: orientation)
+            let image = resized(
+                crop(oriented, to: configuration.aspect.ratio),
+                targetPixels: targetPixels
+            )
             let format: CameraCaptureFormat = configuration.format == .png ? .png : .heif
             let type = format == .png ? UTType.png : UTType.heic
             let data = NSMutableData()
@@ -1115,11 +1138,90 @@ private enum CameraImageProcessor {
         }
     }
 
+    /// 按 EXIF 方向把像素转正，输出不带方向标记的正向位图
+    private static func orientedImage(_ image: CGImage, orientation: Int) -> CGImage {
+        guard orientation != 1 else { return image }
+        let width = image.width
+        let height = image.height
+        let swapsSides = [5, 6, 7, 8].contains(orientation)
+        let outputWidth = swapsSides ? height : width
+        let outputHeight = swapsSides ? width : height
+        guard let context = CGContext(
+            data: nil,
+            width: outputWidth,
+            height: outputHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return image
+        }
+        let w = CGFloat(width)
+        let h = CGFloat(height)
+        var transform = CGAffineTransform.identity
+        switch orientation {
+        case 2:
+            transform = CGAffineTransform(translationX: w, y: 0).scaledBy(x: -1, y: 1)
+        case 3:
+            transform = CGAffineTransform(translationX: w, y: h).rotated(by: .pi)
+        case 4:
+            transform = CGAffineTransform(translationX: 0, y: h).scaledBy(x: 1, y: -1)
+        case 5:
+            transform = CGAffineTransform(rotationAngle: .pi / 2).scaledBy(x: 1, y: -1)
+        case 6:
+            transform = CGAffineTransform(translationX: h, y: 0).rotated(by: .pi / 2)
+        case 7:
+            transform = CGAffineTransform(translationX: h, y: w)
+                .rotated(by: .pi / 2)
+                .scaledBy(x: -1, y: 1)
+        case 8:
+            transform = CGAffineTransform(translationX: 0, y: w).rotated(by: -.pi / 2)
+        default:
+            break
+        }
+        context.concatenate(transform)
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return context.makeImage() ?? image
+    }
+
+    /// 缩放到位图的精确像素量；源图更小则保持原样，不做插值放大
+    private static func resized(_ image: CGImage, targetPixels: Double) -> CGImage {
+        let currentPixels = Double(image.width) * Double(image.height)
+        guard currentPixels > targetPixels * 1.02 else { return image }
+        let ratio = Double(image.width) / Double(max(image.height, 1))
+        let height = (targetPixels / ratio).squareRoot()
+        let width = height * ratio
+        let targetWidth = max(1, Int(width.rounded()))
+        let targetHeight = max(1, Int(height.rounded()))
+        guard let context = CGContext(
+            data: nil,
+            width: targetWidth,
+            height: targetHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return image
+        }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: targetWidth, height: targetHeight))
+        return context.makeImage() ?? image
+    }
+
     private static func crop(_ image: CGImage, to ratio: Double) -> CGImage {
         let width = CGFloat(image.width)
         let height = CGFloat(image.height)
         let currentRatio = width / max(height, 1)
-        let targetRatio = CGFloat(ratio)
+        // 竖直方向的照片自动取倒数，让“4:3”在竖拍时表示 3:4 而不是强行裁成横图
+        var targetRatio = CGFloat(ratio)
+        if currentRatio < 1, targetRatio > 1 {
+            targetRatio = 1 / targetRatio
+        } else if currentRatio > 1, targetRatio < 1 {
+            targetRatio = 1 / targetRatio
+        }
         let cropRect: CGRect
         if currentRatio > targetRatio {
             let targetWidth = height * targetRatio
@@ -1139,6 +1241,13 @@ private enum CameraImageProcessor {
             )
         }
         return image.cropping(to: cropRect.integral) ?? image
+    }
+
+    /// DNG 采用 TIFF 容器：II*\0 或 MM\0*
+    private static func isDNG(_ data: Data) -> Bool {
+        let header = [UInt8](data.prefix(4))
+        return header == [0x49, 0x49, 0x2A, 0x00]
+            || header == [0x4D, 0x4D, 0x00, 0x2A]
     }
 
     private static func timestamp() -> String {
@@ -1471,7 +1580,7 @@ struct CameraView: View {
 
             if let error = camera.errorMessage {
                 VStack(spacing: 12) {
-                    Text("相机无法启动")
+                    Text(camera.isReady ? "相机出错" : "相机无法启动")
                         .font(.system(size: 18, weight: .bold, design: .serif))
                     Text(error)
                         .font(.system(size: 10, design: .rounded))
@@ -1520,7 +1629,17 @@ struct CameraView: View {
                 camera.setPhotoResolution(resolution)
             }
         }
+        .onChange(of: camera.selectedZoom) { _, _ in
+            if !is48MPAvailable, resolution == .high48 {
+                resolution = .standard24
+            }
+        }
         .simultaneousGesture(edgeSwipeBackGesture)
+    }
+
+    /// 数码变焦或前置镜头会在传感器上裁切，拿不到 48MP
+    private var is48MPAvailable: Bool {
+        camera.selectedZoom <= 1.05 && !camera.isUsingFrontCamera
     }
 
     private var topBar: some View {
@@ -1700,6 +1819,8 @@ struct CameraView: View {
                         resolution == option ? GrainTheme.paper : Color.black.opacity(0.54),
                         in: Capsule()
                     )
+                    .opacity(is48MPAvailable || option != .high48 ? 1 : 0.42)
+                    .disabled(!is48MPAvailable && option == .high48)
                     .buttonStyle(.plain)
                 }
 
