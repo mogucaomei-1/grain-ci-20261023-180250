@@ -96,7 +96,7 @@ struct RootView: View {
         .sheet(isPresented: $showExportSheet) {
             ExportSettingsSheet()
                 .environmentObject(editor)
-                .presentationDetents([.height(620)])
+                .presentationDetents([.height(600)])
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showInfoSheet) {
@@ -423,17 +423,27 @@ private struct EditorWorkspace: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             VStack(spacing: 0) {
-                PhotoEditorCanvas(
-                    showHistogram: showHistogram,
-                    selectedTextID: $selectedTextID,
-                    isPickingWhiteBalance: $isPickingWhiteBalance,
-                    onSwitchPhoto: onSwitchPhoto
-                ) { id in
-                    editingTextID = id
-                    selectedTextID = id
-                    showTextEditor = true
+                GeometryReader { proxy in
+                    PhotoEditorCanvas(
+                        showHistogram: showHistogram,
+                        selectedTextID: $selectedTextID,
+                        isPickingWhiteBalance: $isPickingWhiteBalance,
+                        onSwitchPhoto: onSwitchPhoto
+                    ) { id in
+                        editingTextID = id
+                        selectedTextID = id
+                        showTextEditor = true
+                    }
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    // 抽屉打开时把照片整体上移并等比缩小到剩余可视区域内，
+                    // 关闭后恢复原位，避免画布下半部一直被盖住。
+                    .scaleEffect(
+                        advancedCanvasScale(canvasHeight: proxy.size.height),
+                        anchor: .center
+                    )
+                    .offset(y: advancedCanvasOffset(canvasHeight: proxy.size.height))
+                    .animation(.snappy(duration: 0.3), value: showAdvancedGrade)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 EditorToolsPager(
                     page: $editorToolPage,
@@ -491,6 +501,20 @@ private struct EditorWorkspace: View {
         }
         .simultaneousGesture(edgeSwipeGesture)
         .ignoresSafeArea(.container, edges: .bottom)
+    }
+
+    /// 进阶抽屉盖住画布的高度 = 抽屉高度（412）− 底部工具栏（150 + 14）
+    private var advancedOverlap: CGFloat { 412 - 164 }
+
+    private func advancedCanvasScale(canvasHeight: CGFloat) -> CGFloat {
+        guard showAdvancedGrade, canvasHeight > 0 else { return 1 }
+        let visible = max(canvasHeight - advancedOverlap, 120)
+        return min(1, visible / canvasHeight)
+    }
+
+    private func advancedCanvasOffset(canvasHeight: CGFloat) -> CGFloat {
+        // 平移量等于被遮挡高度的一半，缩放后整张画布正好落在剩余可视区中央
+        showAdvancedGrade ? -advancedOverlap / 2 : 0
     }
 
     private var edgeSwipeGesture: some Gesture {
@@ -1828,6 +1852,8 @@ private struct ResetValueSlider: View {
 private struct ExportSettingsSheet: View {
     @EnvironmentObject private var editor: EditorViewModel
     @Environment(\.dismiss) private var dismiss
+    /// 表单实际高度：让 sheet 刚好包住内容，不再留出一条黑色空隙
+    @State private var contentHeight: CGFloat = 0
 
     var body: some View {
         Group {
@@ -1837,6 +1863,8 @@ private struct ExportSettingsSheet: View {
                 exportForm
             }
         }
+        .presentationDetents([.height(contentHeight > 0 ? contentHeight + 46 : 600)])
+        .presentationDragIndicator(.visible)
         .sheet(
             isPresented: sharingBinding,
             onDismiss: { editor.finishFileExportSharing() }
@@ -2003,8 +2031,6 @@ private struct ExportSettingsSheet: View {
                 }
                 .tint(GrainTheme.accent)
 
-                Spacer(minLength: 8)
-
                 if let message = editor.errorMessage {
                     Text(message)
                         .font(.system(size: 9.5, design: .rounded))
@@ -2036,9 +2062,30 @@ private struct ExportSettingsSheet: View {
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.top, 28)
-            .padding(.bottom, 14)
+            .padding(.top, 22)
+            .padding(.bottom, 16)
+            .background {
+                GeometryReader { proxy in
+                    Color.clear
+                        .preference(
+                            key: ExportFormHeightKey.self,
+                            value: proxy.size.height
+                        )
+                }
             }
+            .onPreferenceChange(ExportFormHeightKey.self) { height in
+                // 忽略布局过程中的临时小值，避免 sheet 高度来回跳
+                guard height > 300, abs(height - contentHeight) > 0.5 else { return }
+                contentHeight = height
+            }
+            }
+    }
+}
+
+private struct ExportFormHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

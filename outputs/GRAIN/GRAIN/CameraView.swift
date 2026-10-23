@@ -268,6 +268,8 @@ final class CameraController: ObservableObject {
                 // 输出上限必须跟随当前镜头，否则超广角会沿用主摄的 48MP
                 photoOutput.maxPhotoDimensions = preferred
             }
+            // 换镜头后要同步照片输出的镜像状态，否则前置拍出来和预览左右相反
+            applyPhotoMirroring(for: device)
             session.commitConfiguration()
             videoInput = newInput
             cameraDevice = device
@@ -408,8 +410,17 @@ final class CameraController: ObservableObject {
     /// 逐档尝试并在切换后回读，切换失败时会记录原因用于诊断。
     private func promoteToHighestPhotoFormat(_ device: AVCaptureDevice) -> CMVideoDimensions? {
         let candidates = device.formats
-            .map { (format: $0, area: maximumPhotoArea($0)) }
-            .filter { $0.area > 0 }
+            .map { format -> (format: AVCaptureDevice.Format, area: Int, videoLongEdge: Int) in
+                let video = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                return (
+                    format,
+                    maximumPhotoArea(format),
+                    max(Int(video.width), Int(video.height))
+                )
+            }
+            // 部分镜头（尤其是前置）存在“照片尺寸很大、视频流却只有 192×144”的格式。
+            // 一旦选中它，预览会糊成马赛克，成片也可能只有几百像素，必须先排除。
+            .filter { $0.area > 0 && $0.videoLongEdge >= 1280 }
             .sorted { $0.area > $1.area }
 
         for candidate in candidates where candidate.area > maximumPhotoArea(device.activeFormat) {
@@ -806,10 +817,37 @@ final class CameraController: ObservableObject {
         if let connection = photoOutput.connection(with: .video),
            connection.isVideoMirroringSupported {
             connection.automaticallyAdjustsVideoMirroring = false
-            connection.isVideoMirrored = cameraDevice?.position == .front
+            connection.isVideoMirrored =
+                cameraDevice?.position == .front && frontMirrorEnabled
         }
         session.commitConfiguration()
         return photoOutputAttached
+    }
+
+    /// 前置是否镜像（与相机页开关同源）
+    private var frontMirrorEnabled: Bool {
+        UserDefaults.standard.object(forKey: "frontCameraMirrorEnabled") as? Bool ?? true
+    }
+
+    /// 把镜像设置写到照片输出连接：前置按开关镜像，后置永远不镜像
+    private func applyPhotoMirroring(for device: AVCaptureDevice) {
+        guard let connection = photoOutput.connection(with: .video),
+              connection.isVideoMirroringSupported
+        else { return }
+        connection.automaticallyAdjustsVideoMirroring = false
+        connection.isVideoMirrored = device.position == .front && frontMirrorEnabled
+    }
+
+    /// 用户切换镜像开关后，实时更新到运行中的会话
+    func applyFrontMirroring() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.session.beginConfiguration()
+            if let device = self.cameraDevice {
+                self.applyPhotoMirroring(for: device)
+            }
+            self.session.commitConfiguration()
+        }
     }
 
     private func captureProcessed(_ configuration: CameraCaptureConfiguration) {
@@ -1248,10 +1286,17 @@ private enum CameraImageProcessor {
             let targetPixels = configuration.resolution.targetPixels
             let sourceLongEdge = max(sourceWidth, sourceHeight)
 
+            // 尺寸读不出来时按 12MP 处理，避免把缩略图尺寸当成上限
+            let effectiveLongEdge = sourceLongEdge > 0 ? sourceLongEdge : 4032
+            if sourceLongEdge > 0, sourceLongEdge < 1000 {
+                // 正常 iPhone 镜头不可能只有几百像素，说明拿到了预览流而不是照片
+                throw CameraError.photoTooSmall
+            }
+
             // 解码时留出裁切余量，避免整张 48MP 位图常驻内存。
             // WithTransform 让 ImageIO 直接按 EXIF 方向生成正向像素，
             // 不再自己拼旋转矩阵（此前手写矩阵把竖拍图转了 180°）。
-            let decodeLimit = min(sourceLongEdge, (targetPixels * 2).squareRoot().rounded())
+            let decodeLimit = min(effectiveLongEdge, (targetPixels * 2).squareRoot().rounded())
             let decodeOptions: [CFString: Any] = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
@@ -1263,6 +1308,9 @@ private enum CameraImageProcessor {
                 decodeOptions as CFDictionary
             ) else {
                 throw CameraError.imageDecodeFailed
+            }
+            if Double(max(decoded.width, decoded.height)) < effectiveLongEdge * 0.5 {
+                throw CameraError.photoTooSmall
             }
 
             // decoded 已按 orientation 转正，裁切与缩放都在正向坐标系里进行
@@ -1512,6 +1560,7 @@ private enum CameraError: LocalizedError {
     case imageEncodeFailed
     case saveFailed
     case photoLibraryRejectedFormat
+    case photoTooSmall
 
     var errorDescription: String? {
         switch self {
@@ -1533,6 +1582,8 @@ private enum CameraError: LocalizedError {
             "照片保存失败，请检查存储空间。"
         case .photoLibraryRejectedFormat:
             "照片图库拒绝了这张照片的文件格式（PHPhotosError 3302）。如果这是 RAW 照片，请把这条提示发给开发者。"
+        case .photoTooSmall:
+            "相机返回了异常低的分辨率，请切换镜头或重新打开相机后再试。"
         }
     }
 }
@@ -1747,6 +1798,7 @@ struct CameraView: View {
     @State private var showGrid = true
     @State private var zoomGestureBase: CGFloat?
     @AppStorage("filmOrder") private var filmOrder = ""
+    @AppStorage("frontCameraMirrorEnabled") private var mirrorFront = true
     @State private var cameraProfile: FilmProfile = .neutral
     @State private var cameraIntensity = 1.0
     @State private var didSwipeBack = false
@@ -1765,18 +1817,31 @@ struct CameraView: View {
             VStack(spacing: 0) {
                 topBar
 
-                ZStack {
-                    CameraPreviewView(
-                        session: camera.session,
-                        mirrored: camera.isUsingFrontCamera,
-                        onFocus: { devicePoint, lock in
-                            camera.focus(at: devicePoint, lock: lock)
-                            GrainHaptics.mediumImpact(enabled: true)
-                        }
-                    )
+                GeometryReader { proxy in
+                    // 取景区域按所选比例裁成一块，其余留黑：
+                    // 这样才能做到“看到什么就拍到什么”，而不是始终铺满屏幕。
+                    let rect = fittedFrame(for: aspect.ratio, in: proxy.size)
+                    ZStack {
+                        Color.black
+
+                        CameraPreviewView(
+                            session: camera.session,
+                            mirrored: camera.isUsingFrontCamera && mirrorFront,
+                            onFocus: { devicePoint, lock in
+                                camera.focus(at: devicePoint, lock: lock)
+                                GrainHaptics.mediumImpact(enabled: true)
+                            }
+                        )
+                        .frame(width: rect.width, height: rect.height)
+                        .clipped()
+                        .position(x: rect.midX, y: rect.midY)
+
+                        cameraLookOverlay
+                        framingOverlay
+                    }
+                    .contentShape(Rectangle())
                     .simultaneousGesture(pinchToZoomGesture)
-                    cameraLookOverlay
-                    framingOverlay
+                    .animation(.easeInOut(duration: 0.24), value: aspect)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
@@ -1862,6 +1927,10 @@ struct CameraView: View {
         .onChange(of: resolution) { _, value in
             camera.setPhotoResolution(value)
         }
+        .onChange(of: mirrorFront) { _, value in
+            UserDefaults.standard.set(value, forKey: "frontCameraMirrorEnabled")
+            camera.applyFrontMirroring()
+        }
         .onChange(of: camera.isReady) { _, ready in
             if ready {
                 camera.setPhotoResolution(resolution)
@@ -1926,6 +1995,23 @@ struct CameraView: View {
                     .background(Color.black.opacity(0.58), in: Circle())
             }
             .buttonStyle(.plain)
+
+            if camera.isUsingFrontCamera {
+                Button {
+                    mirrorFront.toggle()
+                    GrainHaptics.selection(enabled: true)
+                } label: {
+                    Image(systemName: "arrow.left.and.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(
+                            mirrorFront ? GrainTheme.accent : GrainTheme.paper.opacity(0.55)
+                        )
+                        .frame(width: 38, height: 38)
+                        .background(Color.black.opacity(0.58), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(mirrorFront ? "关闭自拍镜像" : "开启自拍镜像")
+            }
 
             Button {
                 guard !isPreparingLivePhoto else { return }
@@ -2275,12 +2361,7 @@ struct CameraView: View {
 
     private var cameraLookOverlay: some View {
         GeometryReader { proxy in
-            let available = CGSize(
-                width: proxy.size.width - 18,
-                height: proxy.size.height - 18
-            )
-            let fitted = fittedFrame(for: aspect.ratio, in: available)
-            let rect = fitted.offsetBy(dx: 9, dy: 9)
+            let rect = fittedFrame(for: aspect.ratio, in: proxy.size)
 
             if cameraProfile != .neutral {
                 ZStack {
@@ -2312,17 +2393,17 @@ struct CameraView: View {
 
     private var framingOverlay: some View {
         GeometryReader { proxy in
-            // 只保留三分构图线；不再画取景框边线，
-            // 因为那条线比实际成像范围内缩，容易让人误判边缘。
+            let rect = fittedFrame(for: aspect.ratio, in: proxy.size)
+            // 三分构图线贴合真实取景区域，四周留黑的区域不画线。
             if showGrid {
                 Path { path in
                     for index in 1...2 {
-                        let x = proxy.size.width * CGFloat(index) / 3
-                        path.move(to: CGPoint(x: x, y: 0))
-                        path.addLine(to: CGPoint(x: x, y: proxy.size.height))
-                        let y = proxy.size.height * CGFloat(index) / 3
-                        path.move(to: CGPoint(x: 0, y: y))
-                        path.addLine(to: CGPoint(x: proxy.size.width, y: y))
+                        let x = rect.minX + rect.width * CGFloat(index) / 3
+                        path.move(to: CGPoint(x: x, y: rect.minY))
+                        path.addLine(to: CGPoint(x: x, y: rect.maxY))
+                        let y = rect.minY + rect.height * CGFloat(index) / 3
+                        path.move(to: CGPoint(x: rect.minX, y: y))
+                        path.addLine(to: CGPoint(x: rect.maxX, y: y))
                     }
                 }
                 .stroke(Color.white.opacity(0.18), lineWidth: 0.7)

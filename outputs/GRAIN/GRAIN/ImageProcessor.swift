@@ -47,10 +47,41 @@ struct RawImageProcessor {
         let latitude = latitudeValue.map { latitudeRef == "S" ? -$0 : $0 }
         let longitude = longitudeValue.map { longitudeRef == "W" ? -$0 : $0 }
 
-        let width = properties[kCGImagePropertyPixelWidth] as? Int ?? 0
-        let height = properties[kCGImagePropertyPixelHeight] as? Int ?? 0
+        var width = properties[kCGImagePropertyPixelWidth] as? Int ?? 0
+        var height = properties[kCGImagePropertyPixelHeight] as? Int ?? 0
         let rawOrientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.uint32Value ?? 1
         let fileSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap(Int64.init) ?? 0
+
+        let rawExtensions = ["arw", "srf", "sr2", "dng", "raw", "nef", "cr2", "cr3", "raf", "orf", "rw2"]
+        let isRawFile = rawExtensions.contains(url.pathExtension.lowercased())
+
+        // 部分 RAW（例如单反/微单的 ARW）的 0 号图像其实是内嵌预览
+        // （常见 1616×1080），ImageIO 报的尺寸会远小于真实像素。
+        // EXIF 里的 PixelXDimension/PixelYDimension 才是整张原图，取更大的那组。
+        let exifWidth = (exif[kCGImagePropertyExifPixelXDimension] as? NSNumber)?.intValue ?? 0
+        let exifHeight = (exif[kCGImagePropertyExifPixelYDimension] as? NSNumber)?.intValue ?? 0
+        if exifWidth > 0, exifHeight > 0, exifWidth * exifHeight > width * height {
+            width = exifWidth
+            height = exifHeight
+        }
+
+        // EXIF 也不可靠时（长边仍不足 2000，明显不可能是相机原图），
+        // 用 Core Image 的 RAW 滤镜读一次传感器原生尺寸。
+        if isRawFile, max(width, height) > 0, max(width, height) < 2000,
+           let rawFilter = CIRAWFilter(imageURL: url) {
+            let native = rawFilter.nativeSize
+            if Int(native.width) * Int(native.height) > width * height {
+                width = Int(native.width)
+                height = Int(native.height)
+            }
+        }
+
+        // 属性里的宽高是传感器方向的；RAW 竖拍要按 EXIF 方向换算，
+        // 否则 4000×6000 的竖图会显示成 6000×4000。
+        // （HEIF/JPEG 保持原样，避免个别机型已经转正过的尺寸被再交换一次）
+        if isRawFile, [5, 6, 7, 8].contains(Int(rawOrientation)) {
+            swap(&width, &height)
+        }
 
         let dateString = exif[kCGImagePropertyExifDateTimeOriginal] as? String
             ?? tiff[kCGImagePropertyTIFFDateTime] as? String

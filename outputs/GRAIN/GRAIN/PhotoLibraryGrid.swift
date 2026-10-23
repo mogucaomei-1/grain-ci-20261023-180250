@@ -10,9 +10,16 @@ final class PhotoLibraryViewModel: NSObject, ObservableObject, PHPhotoLibraryCha
     @Published private(set) var isDownloadingOriginal = false
     @Published private(set) var formatLabels: [String: String] = [:]
     private var hasLoaded = false
+    /// 磁盘缓存的格式标签：localIdentifier → RAW/HEIF/PNG…
+    /// 每次启动不必再对所有照片调用 PHAssetResource（几千张时非常慢）。
+    private var cachedLabels: [String: String] = [:]
+    private var isSavingLabels = false
+    private var labelsDirty = false
 
     override init() {
         super.init()
+        cachedLabels = Self.loadLabelCache()
+        formatLabels = cachedLabels
         PHPhotoLibrary.shared().register(self)
     }
 
@@ -53,17 +60,74 @@ final class PhotoLibraryViewModel: NSObject, ObservableObject, PHPhotoLibraryCha
         refreshFormatLabels(for: fetchedAssets)
     }
 
-    /// 缩略图格式徽标与「只看某种格式」都依赖资源类型，统一在后台算好
+    /// 缩略图格式徽标与「只看某种格式」都依赖资源类型。
+    /// 先用本地缓存秒开，再只对缓存里没有的新照片做一次后台扫描。
     private func refreshFormatLabels(for assets: [PHAsset]) {
+        let cached = cachedLabels
+        var seeded: [String: String] = [:]
+        seeded.reserveCapacity(assets.count)
+        var missing: [PHAsset] = []
+        for asset in assets {
+            if let label = cached[asset.localIdentifier] {
+                seeded[asset.localIdentifier] = label
+            } else {
+                missing.append(asset)
+            }
+        }
+        formatLabels = seeded
+
+        let pending = missing
+        guard !pending.isEmpty else { return }
+
         Task.detached(priority: .utility) { [weak self] in
-            var labels: [String: String] = [:]
-            labels.reserveCapacity(assets.count)
-            for asset in assets {
+            var labels = cached
+            for asset in pending {
                 labels[asset.localIdentifier] = Self.formatLabel(for: asset)
             }
             let snapshot = labels
             await MainActor.run { [weak self] in
-                self?.formatLabels = snapshot
+                guard let self else { return }
+                self.cachedLabels = snapshot
+                self.formatLabels = snapshot
+                self.persistLabelCache()
+            }
+        }
+    }
+
+    // MARK: - 格式标签缓存
+
+    nonisolated private static var labelCacheURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("GRAIN", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base.appendingPathComponent("library-format-labels.json")
+    }
+
+    nonisolated private static func loadLabelCache() -> [String: String] {
+        guard let data = try? Data(contentsOf: labelCacheURL),
+              let decoded = try? JSONDecoder().decode([String: String].self, from: data)
+        else { return [:] }
+        return decoded
+    }
+
+    private func persistLabelCache() {
+        guard !isSavingLabels else {
+            labelsDirty = true
+            return
+        }
+        isSavingLabels = true
+        labelsDirty = false
+        let snapshot = cachedLabels
+        Task.detached(priority: .utility) { [weak self] in
+            if let data = try? JSONEncoder().encode(snapshot) {
+                try? data.write(to: Self.labelCacheURL, options: .atomic)
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.isSavingLabels = false
+                if self.labelsDirty {
+                    self.persistLabelCache()
+                }
             }
         }
     }
