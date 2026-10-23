@@ -391,6 +391,7 @@ struct AppSettingsView: View {
     @AppStorage("showHistogram") private var showHistogram = true
     @AppStorage("showCameraButton") private var showCameraButton = true
     @AppStorage("showFileImportButton") private var showFileImportButton = true
+    @AppStorage("showCollageButton") private var showCollageButton = true
 
     var body: some View {
         ZStack {
@@ -505,6 +506,30 @@ struct AppSettingsView: View {
                     }
                     Spacer()
                     Toggle("", isOn: $showFileImportButton)
+                        .labelsHidden()
+                        .tint(GrainTheme.accent)
+                }
+                .padding(16)
+                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 17)
+                        .stroke(GrainTheme.line, lineWidth: 0.8)
+                }
+
+                HStack(spacing: 12) {
+                    Image(systemName: "puzzlepiece.extension.fill")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(GrainTheme.accent)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("主页拼图入口")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        Text("控制主页右上角的拼图创建入口")
+                            .font(.system(size: 9, design: .rounded))
+                            .foregroundStyle(GrainTheme.muted)
+                    }
+                    Spacer()
+                    Toggle("", isOn: $showCollageButton)
                         .labelsHidden()
                         .tint(GrainTheme.accent)
                 }

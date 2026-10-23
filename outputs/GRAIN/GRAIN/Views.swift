@@ -8,11 +8,13 @@ struct RootView: View {
     @AppStorage("showHistogram") private var showHistogram = true
     @AppStorage("showCameraButton") private var showCameraButton = true
     @AppStorage("showFileImportButton") private var showFileImportButton = true
+    @AppStorage("showCollageButton") private var showCollageButton = true
     @State private var showDocumentPicker = false
     @State private var showExportSheet = false
     @State private var showInfoSheet = false
     @State private var showSettings = false
     @State private var showCamera = false
+    @State private var showHomeCollage = false
     @State private var libraryImportTask: Task<Void, Never>?
     @State private var libraryImportGeneration = 0
 
@@ -26,6 +28,7 @@ struct RootView: View {
                         hasPhoto: false,
                         onCamera: showCameraButton ? { showCamera = true } : nil,
                         onFiles: showFileImportButton ? { showDocumentPicker = true } : nil,
+                        onCollage: showCollageButton ? { showHomeCollage = true } : nil,
                         onInfo: { showInfoSheet = true },
                         onSettings: { showSettings = true },
                         histogramVisible: showHistogram,
@@ -46,6 +49,7 @@ struct RootView: View {
                             hasPhoto: true,
                             onCamera: nil,
                             onFiles: { showDocumentPicker = true },
+                            onCollage: nil,
                             onInfo: { showInfoSheet = true },
                             onSettings: { showSettings = true },
                             histogramVisible: showHistogram,
@@ -94,11 +98,14 @@ struct RootView: View {
         }
         .sheet(isPresented: $showSettings) {
             AppSettingsView()
-                .presentationDetents([.height(610)])
+                .presentationDetents([.height(700)])
                 .presentationDragIndicator(.visible)
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraView()
+        }
+        .fullScreenCover(isPresented: $showHomeCollage) {
+            CollageEditorView(assets: [])
         }
         .alert(
             "无法打开照片",
@@ -201,6 +208,7 @@ private struct MinimalTopBar: View {
     let hasPhoto: Bool
     let onCamera: (() -> Void)?
     let onFiles: (() -> Void)?
+    let onCollage: (() -> Void)?
     let onInfo: () -> Void
     let onSettings: () -> Void
     let histogramVisible: Bool
@@ -247,6 +255,18 @@ private struct MinimalTopBar: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("从文件导入")
+            }
+
+            if let onCollage {
+                Button(action: onCollage) {
+                    Image(systemName: "puzzlepiece.extension.fill")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(GrainTheme.accent)
+                        .frame(width: 38, height: 38)
+                        .background(GrainTheme.raised, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("打开拼图")
             }
 
             if let onToggleHistogram {

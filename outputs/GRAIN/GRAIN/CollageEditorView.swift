@@ -1,4 +1,5 @@
 import Photos
+import PhotosUI
 import SwiftUI
 import UIKit
 
@@ -24,9 +25,8 @@ enum CollageDirection: String, CaseIterable, Identifiable {
 }
 
 struct CollageEditorView: View {
-    let assets: [PHAsset]
-
     @Environment(\.dismiss) private var dismiss
+    @State private var selectedAssets: [PHAsset]
     @State private var direction: CollageDirection = .vertical
     @State private var previewImages: [String: UIImage] = [:]
     @State private var isLoading = true
@@ -34,11 +34,14 @@ struct CollageEditorView: View {
     @State private var exportURL: URL?
     @State private var shareURL: URL?
     @State private var showShareSheet = false
+    @State private var pickerItems: [PhotosPickerItem] = []
+    @State private var pickerError: String?
     @State private var notice: String?
     @State private var errorMessage: String?
 
-    private var limitedAssets: [PHAsset] {
-        Array(assets.prefix(10))
+    init(assets: [PHAsset]) {
+        _selectedAssets = State(initialValue: Array(assets.prefix(10)))
+        _isLoading = State(initialValue: !assets.isEmpty)
     }
 
     var body: some View {
@@ -83,6 +86,9 @@ struct CollageEditorView: View {
         .task {
             await loadPreviewImages()
         }
+        .onChange(of: pickerItems) { _, items in
+            Task { await addPickedAssets(items) }
+        }
         .onDisappear {
             if let exportURL {
                 try? FileManager.default.removeItem(at: exportURL)
@@ -90,7 +96,7 @@ struct CollageEditorView: View {
         }
         .sheet(isPresented: $showShareSheet, onDismiss: { shareURL = nil }) {
             if let shareURL {
-                CollageActivityView(items: [shareURL])
+                GrainShareSheet(items: [shareURL])
                     .ignoresSafeArea()
             }
         }
@@ -104,6 +110,17 @@ struct CollageEditorView: View {
             Button("知道了", role: .cancel) {}
         } message: {
             Text(errorMessage ?? "")
+        }
+        .alert(
+            "无法添加照片",
+            isPresented: Binding(
+                get: { pickerError != nil },
+                set: { if !$0 { pickerError = nil } }
+            )
+        ) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text(pickerError ?? "")
         }
     }
 
@@ -124,18 +141,37 @@ struct CollageEditorView: View {
                 Text("拼图")
                     .font(.system(size: 23, weight: .bold, design: .serif))
                     .foregroundStyle(GrainTheme.paper)
-                Text("\(limitedAssets.count) 张 · 最多 10 张")
+                Text("\(selectedAssets.count) 张 · 最多 10 张")
                     .font(.system(size: 8.5, weight: .medium, design: .monospaced))
                     .foregroundStyle(GrainTheme.muted)
             }
 
             Spacer()
 
-            Image(systemName: "puzzlepiece.extension.fill")
-                .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(GrainTheme.accent)
-                .frame(width: 38, height: 38)
-                .background(GrainTheme.raised, in: Circle())
+            if selectedAssets.count < 10 {
+                PhotosPicker(
+                    selection: $pickerItems,
+                    maxSelectionCount: max(1, 10 - selectedAssets.count),
+                    matching: .images,
+                    photoLibrary: .shared()
+                ) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "plus")
+                        Text("添加")
+                    }
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .foregroundStyle(GrainTheme.paper)
+                    .padding(.horizontal, 11)
+                    .frame(height: 34)
+                    .background(GrainTheme.raised, in: Capsule())
+                }
+            } else {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(GrainTheme.accent)
+                    .frame(width: 34, height: 34)
+                    .background(GrainTheme.raised, in: Circle())
+            }
         }
         .padding(.horizontal, 18)
         .padding(.top, 12)
@@ -144,7 +180,7 @@ struct CollageEditorView: View {
 
     private var collagePreview: some View {
         GeometryReader { proxy in
-            let count = max(limitedAssets.count, 1)
+            let count = max(selectedAssets.count, 1)
             let gap: CGFloat = 2
             let horizontalWidth = (proxy.size.width - gap * CGFloat(count - 1)) / CGFloat(count)
             let verticalHeight = (proxy.size.height - gap * CGFloat(count - 1)) / CGFloat(count)
@@ -152,16 +188,38 @@ struct CollageEditorView: View {
             let verticalCell = min(verticalHeight, proxy.size.width)
 
             Group {
-                if direction == .horizontal {
+                if selectedAssets.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "rectangle.stack.badge.plus")
+                            .font(.system(size: 34, weight: .light))
+                            .foregroundStyle(GrainTheme.muted)
+                        Text("添加照片开始制作拼图")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(GrainTheme.muted)
+                        PhotosPicker(
+                            selection: $pickerItems,
+                            maxSelectionCount: 10,
+                            matching: .images,
+                            photoLibrary: .shared()
+                        ) {
+                            Text("从照片图库添加")
+                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                .foregroundStyle(GrainTheme.black)
+                                .padding(.horizontal, 16)
+                                .frame(height: 38)
+                                .background(GrainTheme.paper, in: Capsule())
+                        }
+                    }
+                } else if direction == .horizontal {
                     HStack(spacing: gap) {
-                        ForEach(limitedAssets, id: \.localIdentifier) { asset in
+                        ForEach(selectedAssets, id: \.localIdentifier) { asset in
                             collageCell(asset)
                                 .frame(width: horizontalCell, height: horizontalCell)
                         }
                     }
                 } else {
                     VStack(spacing: gap) {
-                        ForEach(limitedAssets, id: \.localIdentifier) { asset in
+                        ForEach(selectedAssets, id: \.localIdentifier) { asset in
                             collageCell(asset)
                                 .frame(width: verticalCell, height: verticalCell)
                         }
@@ -240,7 +298,7 @@ struct CollageEditorView: View {
                         .background(GrainTheme.raised, in: Capsule())
                 }
                 .buttonStyle(.plain)
-                .disabled(isLoading || isRendering)
+                .disabled(isLoading || isRendering || selectedAssets.isEmpty)
 
                 Button {
                     prepareShare()
@@ -253,7 +311,7 @@ struct CollageEditorView: View {
                         .background(GrainTheme.paper, in: Capsule())
                 }
                 .buttonStyle(.plain)
-                .disabled(isLoading || isRendering)
+                .disabled(isLoading || isRendering || selectedAssets.isEmpty)
             }
         }
         .padding(.horizontal, 18)
@@ -263,8 +321,12 @@ struct CollageEditorView: View {
 
     @MainActor
     private func loadPreviewImages() async {
-        guard isLoading else { return }
-        for asset in limitedAssets {
+        guard !selectedAssets.isEmpty else {
+            isLoading = false
+            return
+        }
+        isLoading = true
+        for asset in selectedAssets where previewImages[asset.localIdentifier] == nil {
             let image = await CollageImageLoader.image(
                 for: asset,
                 targetSize: CGSize(width: 900, height: 900)
@@ -274,6 +336,33 @@ struct CollageEditorView: View {
             }
         }
         isLoading = false
+    }
+
+    @MainActor
+    private func addPickedAssets(_ items: [PhotosPickerItem]) async {
+        guard !items.isEmpty else { return }
+        let identifiers = items.compactMap(\.itemIdentifier)
+        let fetched = PHAsset.fetchAssets(
+            withLocalIdentifiers: identifiers,
+            options: nil
+        )
+        var lookup: [String: PHAsset] = [:]
+        fetched.enumerateObjects { asset, _, _ in
+            lookup[asset.localIdentifier] = asset
+        }
+        let additions = identifiers.compactMap { lookup[$0] }.filter { asset in
+            !selectedAssets.contains {
+                $0.localIdentifier == asset.localIdentifier
+            }
+        }
+        guard !additions.isEmpty else {
+            pickerError = "没有找到可添加的照片，请重新选择。"
+            pickerItems = []
+            return
+        }
+        selectedAssets.append(contentsOf: additions.prefix(10 - selectedAssets.count))
+        pickerItems = []
+        await loadPreviewImages()
     }
 
     private func saveToLibrary() {
@@ -313,7 +402,7 @@ struct CollageEditorView: View {
     }
 
     private func renderCollage() async throws -> URL {
-        let assets = limitedAssets
+        let assets = selectedAssets
         let selectedDirection = direction
         guard !assets.isEmpty, assets.count <= 10 else {
             throw CollageError.invalidPhotoCount
@@ -519,7 +608,7 @@ private enum CollageError: LocalizedError {
     }
 }
 
-private struct CollageActivityView: UIViewControllerRepresentable {
+struct GrainShareSheet: UIViewControllerRepresentable {
     let items: [Any]
 
     func makeUIViewController(context: Context) -> UIActivityViewController {

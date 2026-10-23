@@ -179,8 +179,12 @@ struct PhotoLibraryHome: View {
     @State private var showDeleteConfirmation = false
     @State private var showCollageEditor = false
     @State private var collageAssets: [PHAsset] = []
-    @State private var showSelectionLimitNotice = false
+    @State private var showCollageLimitNotice = false
     @State private var isDeleting = false
+    @State private var isPreparingShare = false
+    @State private var shareURLs: [URL] = []
+    @State private var showShareSheet = false
+    @State private var shareError: String?
     @State private var deleteError: String?
     @State private var tileFrames: [String: CGRect] = [:]
     @State private var lastSelectionDragPoint: CGPoint?
@@ -239,7 +243,10 @@ struct PhotoLibraryHome: View {
             }
         }
         .overlay {
-            if library.isLoading || library.isDownloadingOriginal || isDeleting {
+            if library.isLoading
+                || library.isDownloadingOriginal
+                || isDeleting
+                || isPreparingShare {
                 VStack(spacing: 10) {
                     ProgressView().tint(GrainTheme.paper)
                     Text(statusText)
@@ -274,13 +281,28 @@ struct PhotoLibraryHome: View {
         } message: {
             Text(deleteError ?? "")
         }
-        .alert("最多选择 10 张", isPresented: $showSelectionLimitNotice) {
+        .alert(
+            "无法分享照片",
+            isPresented: Binding(
+                get: { shareError != nil },
+                set: { if !$0 { shareError = nil } }
+            )
+        ) {
             Button("知道了", role: .cancel) {}
         } message: {
-            Text("拼图数量上限为 10 张，请取消部分照片后再添加。")
+            Text(shareError ?? "")
+        }
+        .alert("拼图最多 10 张", isPresented: $showCollageLimitNotice) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text("主页现已支持选择更多照片分享或删除。制作拼图时请只选择最多 10 张。")
         }
         .fullScreenCover(isPresented: $showCollageEditor) {
             CollageEditorView(assets: collageAssets)
+        }
+        .sheet(isPresented: $showShareSheet, onDismiss: clearShareFiles) {
+            GrainShareSheet(items: shareURLs)
+                .ignoresSafeArea()
         }
     }
 
@@ -326,6 +348,27 @@ struct PhotoLibraryHome: View {
             .accessibilityLabel("制作拼图")
 
             Button {
+                shareSelectedAssets()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "square.and.arrow.up")
+                    Text("分享")
+                }
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(
+                    !selectedIdentifiers.isEmpty
+                        ? GrainTheme.accent
+                        : GrainTheme.muted
+                )
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(GrainTheme.raised, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(selectedIdentifiers.isEmpty || isDeleting || isPreparingShare)
+            .accessibilityLabel("分享所选照片")
+
+            Button {
                 showDeleteConfirmation = true
             } label: {
                 Image(systemName: "trash")
@@ -346,6 +389,7 @@ struct PhotoLibraryHome: View {
     }
 
     private var statusText: String {
+        if isPreparingShare { return "正在准备分享" }
         if isDeleting { return "正在删除照片" }
         if library.isDownloadingOriginal { return "正在从 iCloud 下载原图" }
         return "正在载入照片"
@@ -466,12 +510,6 @@ struct PhotoLibraryHome: View {
             if selectedIdentifiers.contains(identifier) {
                 continue
             }
-            if selectedIdentifiers.count >= 10 {
-                if !showSelectionLimitNotice {
-                    showSelectionLimitNotice = true
-                }
-                break
-            }
             selectedIdentifiers.insert(identifier)
             selectionOrder.append(identifier)
             didAddSelection = true
@@ -502,13 +540,6 @@ struct PhotoLibraryHome: View {
 
     private func addSelection(_ identifier: String) {
         guard !selectedIdentifiers.contains(identifier) else { return }
-        guard selectedIdentifiers.count < 10 else {
-            if !showSelectionLimitNotice {
-                showSelectionLimitNotice = true
-            }
-            GrainHaptics.mediumImpact(enabled: hapticsEnabled)
-            return
-        }
         selectedIdentifiers.insert(identifier)
         selectionOrder.append(identifier)
     }
@@ -526,8 +557,52 @@ struct PhotoLibraryHome: View {
             }
             : ordered
         guard !assets.isEmpty else { return }
+        guard assets.count <= 10 else {
+            showCollageLimitNotice = true
+            return
+        }
         collageAssets = Array(assets.prefix(10))
         showCollageEditor = true
+    }
+
+    private func shareSelectedAssets() {
+        let assetLookup = Dictionary(
+            uniqueKeysWithValues: library.assets.map {
+                ($0.localIdentifier, $0)
+            }
+        )
+        let assets = selectionOrder
+            .compactMap { assetLookup[$0] }
+            .filter { selectedIdentifiers.contains($0.localIdentifier) }
+        guard !assets.isEmpty else { return }
+        isPreparingShare = true
+        shareError = nil
+        clearShareFiles()
+
+        Task { @MainActor in
+            var urls: [URL] = []
+            do {
+                for asset in assets {
+                    let url = try await PhotoLibraryAssetLoader.loadOriginal(asset: asset)
+                    urls.append(url)
+                }
+                shareURLs = urls
+                showShareSheet = true
+            } catch {
+                for url in urls {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                shareError = error.localizedDescription
+            }
+            isPreparingShare = false
+        }
+    }
+
+    private func clearShareFiles() {
+        for url in shareURLs {
+            try? FileManager.default.removeItem(at: url)
+        }
+        shareURLs = []
     }
 
     private func deleteSelectedAssets() {
