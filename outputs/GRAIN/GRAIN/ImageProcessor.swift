@@ -410,11 +410,29 @@ struct RawImageProcessor {
         grainScale: Double,
         suppressVignette: Bool = false
     ) -> CIImage {
-        let amount = min(max(intensity, 0), 1)
+        // 强度支持 0…2（100% 为标准浓度，150%/200% 为加浓）。
+        let amount = min(max(intensity, 0), 2)
+        let baseAmount = min(amount, 1)
+        // 超过 100% 的部分：在满强度结果上再叠一层同样的胶片底色，
+        // 让色彩矩阵、层次和颗粒真正“变浓”，而不是简单拉对比。
+        let extraAmount = max(amount - 1, 0)
         let extent = input.extent
         let source = input.clampedToExtent()
 
-        var graded = blend(base: source, with: neutralize(source, profile: profile), amount: amount)
+        var graded = blend(base: source, with: neutralize(source, profile: profile), amount: baseAmount)
+
+        if extraAmount > 0.001 {
+            graded = blend(
+                base: graded,
+                with: neutralize(graded, profile: profile),
+                amount: extraAmount
+            )
+            graded = graded.applyingFilter("CIColorControls", parameters: [
+                kCIInputContrastKey: 1 + 0.16 * extraAmount,
+                kCIInputSaturationKey: 1 + 0.14 * extraAmount,
+                kCIInputBrightnessKey: 0
+            ])
+        }
 
         // 取样白平衡是手动校正，不受胶片强度影响
         graded = AdvancedGrade.applyWhiteBalance(graded, settings: settings)

@@ -14,7 +14,7 @@ struct PhotoRecipe: Codable, Equatable, Sendable {
 
     var isNeutral: Bool {
         profile == .neutral
-            && intensity >= 0.999
+            && abs(intensity - 1) < 0.001
             && crop.isIdentity
             && overlays.isEmpty
             && mosaics.isEmpty

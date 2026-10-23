@@ -390,7 +390,7 @@ struct AppSettingsView: View {
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
     @AppStorage("showHistogram") private var showHistogram = true
     @AppStorage("showCameraButton") private var showCameraButton = true
-    @AppStorage("showFileImportButton") private var showFileImportButton = true
+    @AppStorage("showFileImportButton") private var showFileImportButton = false
     @AppStorage("showCollageButton") private var showCollageButton = true
     @AppStorage("captureLocationEnabled") private var captureLocationEnabled = true
     @AppStorage("captureDeviceInfoEnabled") private var captureDeviceInfoEnabled = true

@@ -7,7 +7,7 @@ struct RootView: View {
     @StateObject private var photoLibrary = PhotoLibraryViewModel()
     @AppStorage("showHistogram") private var showHistogram = true
     @AppStorage("showCameraButton") private var showCameraButton = true
-    @AppStorage("showFileImportButton") private var showFileImportButton = true
+    @AppStorage("showFileImportButton") private var showFileImportButton = false
     @AppStorage("showCollageButton") private var showCollageButton = true
     @State private var showDocumentPicker = false
     @State private var showExportSheet = false
@@ -59,6 +59,7 @@ struct RootView: View {
                             onToggleHistogram: nil,
                             onExport: {
                                 editor.exportResult = nil
+                                editor.exportShareURL = nil
                                 showExportSheet = true
                             },
                             onDelete: { showDeleteConfirmation = true }
@@ -95,7 +96,7 @@ struct RootView: View {
         .sheet(isPresented: $showExportSheet) {
             ExportSettingsSheet()
                 .environmentObject(editor)
-                .presentationDetents([.height(660)])
+                .presentationDetents([.height(620)])
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showInfoSheet) {
@@ -344,7 +345,7 @@ private struct MinimalTopBar: View {
                 Button(action: onCollage) {
                     Image(systemName: "puzzlepiece.extension.fill")
                         .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(GrainTheme.accent)
+                        .foregroundStyle(GrainTheme.paper)
                         .frame(width: 38, height: 38)
                         .background(GrainTheme.raised, in: Circle())
                 }
@@ -420,33 +421,57 @@ private struct EditorWorkspace: View {
     @State private var isPickingWhiteBalance = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            PhotoEditorCanvas(
-                showHistogram: showHistogram,
-                selectedTextID: $selectedTextID,
-                isPickingWhiteBalance: $isPickingWhiteBalance,
-                onSwitchPhoto: onSwitchPhoto
-            ) { id in
-                editingTextID = id
-                selectedTextID = id
-                showTextEditor = true
-            }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            EditorToolsPager(
-                page: $editorToolPage,
-                onCrop: { showCropEditor = true },
-                onMosaic: { showMosaicEditor = true },
-                onAdvanced: { showAdvancedGrade = true },
-                onAddText: {
-                    let id = editor.addTextOverlay()
+        ZStack(alignment: .bottom) {
+            VStack(spacing: 0) {
+                PhotoEditorCanvas(
+                    showHistogram: showHistogram,
+                    selectedTextID: $selectedTextID,
+                    isPickingWhiteBalance: $isPickingWhiteBalance,
+                    onSwitchPhoto: onSwitchPhoto
+                ) { id in
                     editingTextID = id
                     selectedTextID = id
                     showTextEditor = true
                 }
-            )
-            .frame(height: 150)
-            .padding(.bottom, 14)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                EditorToolsPager(
+                    page: $editorToolPage,
+                    onCrop: { showCropEditor = true },
+                    onMosaic: { showMosaicEditor = true },
+                    onAdvanced: {
+                        withAnimation(.snappy(duration: 0.28)) {
+                            showAdvancedGrade = true
+                        }
+                    },
+                    onAddText: {
+                        let id = editor.addTextOverlay()
+                        editingTextID = id
+                        selectedTextID = id
+                        showTextEditor = true
+                    }
+                )
+                .frame(height: 150)
+                .padding(.bottom, 14)
+            }
+
+            if showAdvancedGrade {
+                AdvancedGradePanel(
+                    onClose: {
+                        withAnimation(.snappy(duration: 0.26)) {
+                            showAdvancedGrade = false
+                        }
+                    },
+                    onStartPickingWhiteBalance: {
+                        showAdvancedGrade = false
+                        isPickingWhiteBalance = true
+                    }
+                )
+                .environmentObject(editor)
+                .frame(height: 412)
+                .transition(.move(edge: .bottom))
+                .zIndex(2)
+            }
         }
         .fullScreenCover(isPresented: $showCropEditor) {
             CropEditorView()
@@ -455,15 +480,6 @@ private struct EditorWorkspace: View {
         .fullScreenCover(isPresented: $showMosaicEditor) {
             MosaicEditorView()
                 .environmentObject(editor)
-        }
-        .sheet(isPresented: $showAdvancedGrade) {
-            AdvancedGradeSheet {
-                showAdvancedGrade = false
-                isPickingWhiteBalance = true
-            }
-            .environmentObject(editor)
-            .presentationDetents([.fraction(0.86)])
-            .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showTextEditor, onDismiss: { editingTextID = nil }) {
             if let editingTextID {
@@ -1293,7 +1309,7 @@ private struct FilmPresetBar: View {
 
                 Slider(
                     value: intensityBinding,
-                    in: 0...100,
+                    in: 0...200,
                     onEditingChanged: { editing in
                         if editing {
                             editor.recordUndoSnapshot()
@@ -1305,10 +1321,36 @@ private struct FilmPresetBar: View {
                 .tint(editor.selectedProfile == .neutral ? GrainTheme.muted : GrainTheme.accent)
                 .disabled(editor.selectedProfile == .neutral)
 
-                Text("\(Int((editor.intensity * 100).rounded()))%")
-                    .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                Menu {
+                    ForEach([50, 82, 100, 125, 150, 175, 200], id: \.self) { preset in
+                        Button {
+                            editor.recordUndoSnapshot()
+                            editor.intensity = Double(preset) / 100
+                            editor.markManualAdjustment()
+                            lastIntensityHaptic = Double(preset)
+                            GrainHaptics.selection(enabled: hapticsEnabled)
+                            editor.schedulePreview()
+                        } label: {
+                            if Int((editor.intensity * 100).rounded()) == preset {
+                                Label("\(preset)%", systemImage: "checkmark")
+                            } else {
+                                Text("\(preset)%")
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 2) {
+                        Text("\(Int((editor.intensity * 100).rounded()))%")
+                            .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 6, weight: .bold))
+                    }
                     .foregroundStyle(GrainTheme.paper)
-                    .frame(width: 34, alignment: .trailing)
+                    .frame(width: 44, alignment: .trailing)
+                }
+                .disabled(editor.selectedProfile == .neutral)
+                .accessibilityLabel("胶片浓度")
+                .accessibilityHint("可快速选择 100%、150% 或 200%")
             }
             .padding(.horizontal, 18)
             .opacity(editor.selectedProfile == .neutral ? 0.38 : 1)
@@ -1591,7 +1633,7 @@ private struct AdjustPanel: View {
 
     private var activeRange: ClosedRange<Double> {
         switch selectedTool {
-        case .intensity: 0...100
+        case .intensity: 0...200
         case .exposure: -2...2
         case .temperature: 3500...9000
         case .grain, .vignette, .fade, .sharpness: 0...100
@@ -1787,15 +1829,36 @@ private struct ExportSettingsSheet: View {
     @EnvironmentObject private var editor: EditorViewModel
     @Environment(\.dismiss) private var dismiss
 
-    @ViewBuilder
     var body: some View {
-        if let result = editor.exportResult {
-            ExportResultSheet(result: result)
-        } else {
+        Group {
+            if let result = editor.exportResult {
+                ExportResultSheet(result: result, savedToPhotos: editor.exportSavedToAlbum)
+            } else {
+                exportForm
+            }
+        }
+        .sheet(
+            isPresented: sharingBinding,
+            onDismiss: { editor.finishFileExportSharing() }
+        ) {
+            if let url = editor.exportShareURL {
+                GrainShareSheet(items: [url])
+            }
+        }
+    }
+
+    private var sharingBinding: Binding<Bool> {
+        Binding(
+            get: { editor.exportShareURL != nil },
+            set: { if !$0 { editor.exportShareURL = nil } }
+        )
+    }
+
+    private var exportForm: some View {
             ZStack {
                 GrainTheme.black.ignoresSafeArea()
 
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("导出")
@@ -1939,36 +2002,85 @@ private struct ExportSettingsSheet: View {
                 }
                 .tint(GrainTheme.accent)
 
-                Button {
-                    editor.export()
-                } label: {
-                    HStack(spacing: 9) {
-                        if editor.isExporting {
-                            ProgressView().tint(GrainTheme.black)
-                        } else {
-                            Image(systemName: "arrow.up")
-                        }
-                        Text(editor.isExporting ? "正在导出…" : "导出原始尺寸")
-                            .font(.system(size: 13, weight: .bold, design: .rounded))
-                        Spacer()
-                        Text(editor.exportOptions.format.title)
-                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-                            .foregroundStyle(GrainTheme.black.opacity(0.48))
-                    }
-                    .foregroundStyle(GrainTheme.black)
-                    .padding(.horizontal, 16)
-                    .frame(height: 51)
-                    .background(GrainTheme.paper, in: RoundedRectangle(cornerRadius: 15))
-                }
-                .buttonStyle(.plain)
-                .disabled(!editor.canExport)
-                .opacity(editor.canExport ? 1 : 0.42)
+                Spacer(minLength: 8)
 
-                    Spacer(minLength: 0)
+                if let message = editor.errorMessage {
+                    Text(message)
+                        .font(.system(size: 9.5, design: .rounded))
+                        .foregroundStyle(GrainTheme.danger)
+                        .lineLimit(2)
                 }
-                .padding(20)
+
+                // 左：保存到文件；右：保存到相册（默认主操作）
+                HStack(spacing: 10) {
+                    ExportActionButton(
+                        title: "保存到文件",
+                        symbol: "folder",
+                        isPrimary: false,
+                        isLoading: editor.isExporting && editor.exportDestination == .files,
+                        isEnabled: editor.canExport
+                    ) {
+                        editor.export(to: .files)
+                    }
+
+                    ExportActionButton(
+                        title: "保存到相册",
+                        symbol: "photo.badge.arrow.down",
+                        isPrimary: true,
+                        isLoading: editor.isExporting && editor.exportDestination == .photos,
+                        isEnabled: editor.canExport
+                    ) {
+                        editor.export(to: .photos)
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 28)
+            .padding(.bottom, 14)
+            }
+    }
+}
+
+private struct ExportActionButton: View {
+    let title: String
+    let symbol: String
+    let isPrimary: Bool
+    let isLoading: Bool
+    let isEnabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if isLoading {
+                    ProgressView()
+                        .tint(isPrimary ? GrainTheme.black : GrainTheme.paper)
+                } else {
+                    Image(systemName: symbol)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                Text(isLoading ? "处理中…" : title)
+                    .font(.system(size: 12.5, weight: .bold, design: .rounded))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .foregroundStyle(isPrimary ? GrainTheme.black : GrainTheme.paper)
+            .frame(maxWidth: .infinity)
+            .frame(height: 50)
+            .background(
+                isPrimary ? GrainTheme.paper : GrainTheme.raised,
+                in: RoundedRectangle(cornerRadius: 15)
+            )
+            .overlay {
+                if !isPrimary {
+                    RoundedRectangle(cornerRadius: 15)
+                        .stroke(GrainTheme.line, lineWidth: 0.9)
+                }
             }
         }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.42)
     }
 }
 
@@ -1993,6 +2105,7 @@ private struct ExportFact: View {
 
 private struct ExportResultSheet: View {
     let result: ExportResult
+    let savedToPhotos: Bool
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -2006,7 +2119,7 @@ private struct ExportResultSheet: View {
                     .background(GrainTheme.accent.opacity(0.12), in: Circle())
 
                 VStack(spacing: 4) {
-                    Text("导出完成")
+                    Text(savedToPhotos ? "已保存到相册" : "已导出文件")
                         .font(.system(size: 24, weight: .bold, design: .serif))
                     Text("\(result.dimensions) · \(result.format.title) · 100%")
                         .font(.system(size: 9.5, design: .monospaced))
@@ -2015,8 +2128,8 @@ private struct ExportResultSheet: View {
 
                 ShareLink(item: result.url) {
                     HStack {
-                        Image(systemName: "square.and.arrow.up")
-                        Text("存储或分享")
+                        Image(systemName: savedToPhotos ? "square.and.arrow.up" : "folder")
+                        Text(savedToPhotos ? "再次存储或分享" : "存储到文件")
                         Spacer()
                     }
                     .font(.system(size: 13, weight: .bold, design: .rounded))

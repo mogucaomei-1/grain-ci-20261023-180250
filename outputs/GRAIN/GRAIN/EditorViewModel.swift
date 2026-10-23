@@ -6,6 +6,26 @@ import SwiftUI
 import UIKit
 #endif
 
+/// 导出落点：系统相册 / 文件
+enum ExportDestination: Equatable {
+    case photos
+    case files
+}
+
+enum ExportError: LocalizedError {
+    case photoLibraryDenied
+    case photoLibraryWriteFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .photoLibraryDenied:
+            "没有相册写入权限，请在系统设置中允许 GRAIN 添加照片。"
+        case .photoLibraryWriteFailed:
+            "写入相册失败，请检查存储空间后重试。"
+        }
+    }
+}
+
 @MainActor
 final class EditorViewModel: ObservableObject {
     @Published private(set) var photo: PhotoAsset?
@@ -28,6 +48,12 @@ final class EditorViewModel: ObservableObject {
     @Published var mosaicStrokes: [MosaicStroke] = []
     @Published var errorMessage: String?
     @Published var exportResult: ExportResult?
+    /// 导出目标的执行状态：相册 / 文件
+    @Published private(set) var exportDestination: ExportDestination = .photos
+    /// 结果页用来区分「已保存到相册」与「已生成文件」
+    @Published private(set) var exportSavedToAlbum = false
+    /// 需要弹出系统分享（存储到文件）时使用
+    @Published var exportShareURL: URL?
     @Published var noticeMessage: String?
     /// 当前照片对应的系统相册标识；从文件导入时为 nil
     @Published var sourceAssetIdentifier: String?
@@ -36,6 +62,8 @@ final class EditorViewModel: ObservableObject {
 
     private var previewTask: Task<Void, Never>?
     private var importTask: Task<Void, Never>?
+    /// 文件导出完成后暂存，等分享面板关闭再展示结果页
+    private var pendingFileExport: ExportResult?
     private var recipeSaveTask: Task<Void, Never>?
     private var recipeIdentity: String?
     private var noticeTask: Task<Void, Never>?
@@ -574,10 +602,13 @@ final class EditorViewModel: ObservableObject {
         }
     }
 
-    func export() {
+    func export(to destination: ExportDestination = .photos) {
         guard let photo, !isExporting else { return }
         isExporting = true
         errorMessage = nil
+        exportDestination = destination
+        exportSavedToAlbum = false
+        exportShareURL = nil
 
         let profile = selectedProfile
         let settings = settings
@@ -611,11 +642,51 @@ final class EditorViewModel: ObservableObject {
                         to: outputURL
                     )
                 }.value
-                exportResult = result
+
+                switch destination {
+                case .photos:
+                    try await Self.saveToPhotoLibrary(result.url)
+                    exportSavedToAlbum = true
+                    exportResult = result
+                case .files:
+                    pendingFileExport = result
+                    exportShareURL = result.url
+                }
             } catch {
                 errorMessage = error.localizedDescription
             }
             isExporting = false
+        }
+    }
+
+    /// 文件导出的系统分享面板关闭后，切到结果页
+    func finishFileExportSharing() {
+        exportShareURL = nil
+        guard let pending = pendingFileExport else { return }
+        pendingFileExport = nil
+        exportResult = pending
+    }
+
+    /// 把导出的成品写入系统相册（只申请「添加照片」权限）
+    private static func saveToPhotoLibrary(_ fileURL: URL) async throws {
+        let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+        guard status == .authorized || status == .limited else {
+            throw ExportError.photoLibraryDenied
+        }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            PHPhotoLibrary.shared().performChanges {
+                let request = PHAssetCreationRequest.forAsset()
+                let options = PHAssetResourceCreationOptions()
+                options.shouldMoveFile = false
+                request.addResource(with: .photo, fileURL: fileURL, options: options)
+            } completionHandler: { success, error in
+                if success {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: error ?? ExportError.photoLibraryWriteFailed)
+                }
+            }
         }
     }
 

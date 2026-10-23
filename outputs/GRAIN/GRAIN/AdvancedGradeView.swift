@@ -1,9 +1,11 @@
 import SwiftUI
 
-/// 进阶调色面板：影调曲线、8 段 HSL、白平衡取样
-struct AdvancedGradeSheet: View {
+/// 进阶调色面板：影调曲线、8 段 HSL、白平衡取样。
+/// 以底部抽屉的形式覆盖在编辑页下方，上方的照片始终可见，
+/// 调节时可以直接看到实时效果。
+struct AdvancedGradePanel: View {
     @EnvironmentObject private var editor: EditorViewModel
-    @Environment(\.dismiss) private var dismiss
+    let onClose: () -> Void
     let onStartPickingWhiteBalance: () -> Void
 
     @State private var band = 1
@@ -21,51 +23,97 @@ struct AdvancedGradeSheet: View {
     ]
 
     var body: some View {
-        ZStack {
-            GrainTheme.black.ignoresSafeArea()
+        VStack(spacing: 0) {
+            header
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    header
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 13) {
                     curveSection
                     hslSection
                     whiteBalanceSection
                     footer
                 }
-                .padding(20)
+                .padding(.horizontal, 18)
+                .padding(.top, 2)
+                .padding(.bottom, 26)
             }
-            .scrollIndicators(.hidden)
         }
+        .background(GrainTheme.surface)
+        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 26, topTrailingRadius: 26))
+        .overlay(alignment: .top) {
+            UnevenRoundedRectangle(topLeadingRadius: 26, topTrailingRadius: 26)
+                .stroke(GrainTheme.line, lineWidth: 0.8)
+                .allowsHitTesting(false)
+        }
+        .shadow(color: .black.opacity(0.45), radius: 22, y: -8)
     }
 
     private var header: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("进阶调色")
-                    .font(.system(size: 25, weight: .bold, design: .serif))
-                    .foregroundStyle(GrainTheme.paper)
-                Text("曲线 · 分色 HSL · 白平衡取样")
-                    .font(.system(size: 10, design: .rounded))
-                    .foregroundStyle(GrainTheme.muted)
+        VStack(spacing: 7) {
+            Capsule()
+                .fill(GrainTheme.line)
+                .frame(width: 38, height: 4)
+                .padding(.top, 8)
+
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("进阶调色")
+                        .font(.system(size: 18, weight: .bold, design: .serif))
+                        .foregroundStyle(GrainTheme.paper)
+                    Text("曲线 · 分色 HSL · 白平衡")
+                        .font(.system(size: 8.5, design: .rounded))
+                        .foregroundStyle(GrainTheme.muted)
+                }
+
+                Spacer()
+
+                // 小尺寸实时预览：即使抽屉盖住画面下半部也能看到变化
+                if let preview = editor.editedPreview {
+                    Image(decorative: preview, scale: 1)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 36, height: 36)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(GrainTheme.line, lineWidth: 0.7)
+                        }
+                        .accessibilityLabel("实时预览")
+                }
+
+                Button(action: onClose) {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(GrainTheme.paper)
+                        .frame(width: 30, height: 30)
+                        .background(GrainTheme.raised, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("收起进阶调色")
             }
-            Spacer()
-            Button { dismiss() } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .bold))
-                    .frame(width: 30, height: 30)
-                    .background(GrainTheme.raised, in: Circle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(GrainTheme.paper)
+            .padding(.horizontal, 18)
         }
+        .padding(.bottom, 10)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 12)
+                .onEnded { value in
+                    if value.translation.height > 46 {
+                        onClose()
+                    }
+                }
+        )
     }
 
     private var curveSection: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 7) {
             HStack {
                 Text("影调曲线")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
                     .foregroundStyle(GrainTheme.paper)
+                Text("拖动中间三点")
+                    .font(.system(size: 8, design: .rounded))
+                    .foregroundStyle(GrainTheme.muted)
                 Spacer()
                 Button("重置") {
                     editor.recordUndoSnapshot()
@@ -73,7 +121,7 @@ struct AdvancedGradeSheet: View {
                     editor.markManualAdjustment()
                     editor.schedulePreview()
                 }
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .font(.system(size: 9.5, weight: .semibold, design: .rounded))
                 .foregroundStyle(GrainTheme.muted)
                 .buttonStyle(.plain)
                 .disabled(!editor.settings.hasCustomCurve)
@@ -83,25 +131,21 @@ struct AdvancedGradeSheet: View {
                 curve: curveBinding,
                 onEditStart: { editor.recordUndoSnapshot() }
             )
-            .frame(height: 168)
-            .padding(6)
-            .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+            .frame(height: 132)
+            .padding(5)
+            .background(GrainTheme.black.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
             .overlay {
-                RoundedRectangle(cornerRadius: 14)
+                RoundedRectangle(cornerRadius: 12)
                     .stroke(GrainTheme.line, lineWidth: 0.8)
             }
-
-            Text("拖动中间三个控制点：阴影 → 中间调 → 高光")
-                .font(.system(size: 8.5, design: .rounded))
-                .foregroundStyle(GrainTheme.muted)
         }
     }
 
     private var hslSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("HSL 分色")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
                     .foregroundStyle(GrainTheme.paper)
                 Spacer()
                 Button("重置") {
@@ -112,24 +156,24 @@ struct AdvancedGradeSheet: View {
                     editor.markManualAdjustment()
                     editor.schedulePreview()
                 }
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .font(.system(size: 9.5, weight: .semibold, design: .rounded))
                 .foregroundStyle(GrainTheme.muted)
                 .buttonStyle(.plain)
                 .disabled(!editor.settings.hasHSLAdjustment)
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 7) {
+                HStack(spacing: 6) {
                     ForEach(0..<FilmSettings.hslBandCount, id: \.self) { index in
                         Button {
                             withAnimation(.easeOut(duration: 0.14)) {
                                 band = index
                             }
                         } label: {
-                            VStack(spacing: 4) {
+                            VStack(spacing: 3) {
                                 Circle()
                                     .fill(bandColors[index])
-                                    .frame(width: 15, height: 15)
+                                    .frame(width: 14, height: 14)
                                     .overlay {
                                         Circle()
                                             .stroke(
@@ -138,12 +182,12 @@ struct AdvancedGradeSheet: View {
                                             )
                                     }
                                 Text(bandTitles[index])
-                                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                                    .font(.system(size: 8.5, weight: .semibold, design: .rounded))
                                     .foregroundStyle(
                                         band == index ? GrainTheme.paper : GrainTheme.muted
                                     )
                             }
-                            .frame(width: 32, height: 42)
+                            .frame(width: 32, height: 38)
                             .background(
                                 band == index ? GrainTheme.raised : .clear,
                                 in: RoundedRectangle(cornerRadius: 9)
@@ -176,9 +220,9 @@ struct AdvancedGradeSheet: View {
     }
 
     private var whiteBalanceSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("白平衡取样")
-                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .font(.system(size: 10.5, weight: .bold, design: .rounded))
                 .foregroundStyle(GrainTheme.paper)
 
             Text(
@@ -189,10 +233,11 @@ struct AdvancedGradeSheet: View {
                         editor.settings.whiteBalanceGreen,
                         editor.settings.whiteBalanceBlue
                     )
-                    : "在画面中点击中性色（灰卡、白墙、阴天天空），即可去除色偏"
+                    : "点击画面中的中性色（灰卡、白墙、阴天天空）去除色偏"
             )
-            .font(.system(size: 9, design: .monospaced))
+            .font(.system(size: 8.5, design: .monospaced))
             .foregroundStyle(GrainTheme.muted)
+            .lineLimit(2)
 
             HStack(spacing: 9) {
                 Button {
@@ -202,11 +247,11 @@ struct AdvancedGradeSheet: View {
                         Image(systemName: "eyedropper.halffull")
                         Text("到画面取样")
                     }
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
                     .foregroundStyle(GrainTheme.black)
-                    .padding(.horizontal, 14)
-                    .frame(height: 38)
-                    .background(GrainTheme.paper, in: RoundedRectangle(cornerRadius: 11))
+                    .padding(.horizontal, 13)
+                    .frame(height: 34)
+                    .background(GrainTheme.paper, in: RoundedRectangle(cornerRadius: 10))
                 }
                 .buttonStyle(.plain)
 
@@ -219,15 +264,15 @@ struct AdvancedGradeSheet: View {
                     editor.schedulePreview()
                 } label: {
                     Text("重置")
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .font(.system(size: 10.5, weight: .semibold, design: .rounded))
                         .foregroundStyle(
                             editor.settings.hasWhiteBalanceShift
                                 ? GrainTheme.paper
                                 : GrainTheme.muted
                         )
-                        .padding(.horizontal, 14)
-                        .frame(height: 38)
-                        .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 11))
+                        .padding(.horizontal, 13)
+                        .frame(height: 34)
+                        .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 10))
                 }
                 .buttonStyle(.plain)
                 .disabled(!editor.settings.hasWhiteBalanceShift)
@@ -239,18 +284,18 @@ struct AdvancedGradeSheet: View {
         Button {
             editor.resetAdvancedGrade()
         } label: {
-            HStack {
+            HStack(spacing: 6) {
                 Image(systemName: "arrow.counterclockwise")
                 Text("重置全部进阶调整")
                 Spacer()
             }
-            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .font(.system(size: 10.5, weight: .semibold, design: .rounded))
             .foregroundStyle(
                 editor.settings.hasAdvancedGrade ? GrainTheme.danger : GrainTheme.muted
             )
-            .padding(.horizontal, 14)
-            .frame(height: 42)
-            .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 13)
+            .frame(height: 38)
+            .background(GrainTheme.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 11))
         }
         .buttonStyle(.plain)
         .disabled(!editor.settings.hasAdvancedGrade)
@@ -448,6 +493,6 @@ private struct GradeSlider: View {
                 .foregroundStyle(GrainTheme.paper)
                 .frame(width: 46, alignment: .trailing)
         }
-        .frame(height: 30)
+        .frame(height: 26)
     }
 }

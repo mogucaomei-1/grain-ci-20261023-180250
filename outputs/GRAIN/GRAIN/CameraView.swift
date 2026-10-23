@@ -2312,32 +2312,20 @@ struct CameraView: View {
 
     private var framingOverlay: some View {
         GeometryReader { proxy in
-            let available = CGSize(
-                width: proxy.size.width - 18,
-                height: proxy.size.height - 18
-            )
-            let fitted = fittedFrame(for: aspect.ratio, in: available)
-            let rect = fitted.offsetBy(dx: 9, dy: 9)
-
-            ZStack {
-                if showGrid {
-                    Path { path in
-                        for index in 1...2 {
-                            let x = rect.minX + rect.width * CGFloat(index) / 3
-                            path.move(to: CGPoint(x: x, y: rect.minY))
-                            path.addLine(to: CGPoint(x: x, y: rect.maxY))
-                            let y = rect.minY + rect.height * CGFloat(index) / 3
-                            path.move(to: CGPoint(x: rect.minX, y: y))
-                            path.addLine(to: CGPoint(x: rect.maxX, y: y))
-                        }
+            // 只保留三分构图线；不再画取景框边线，
+            // 因为那条线比实际成像范围内缩，容易让人误判边缘。
+            if showGrid {
+                Path { path in
+                    for index in 1...2 {
+                        let x = proxy.size.width * CGFloat(index) / 3
+                        path.move(to: CGPoint(x: x, y: 0))
+                        path.addLine(to: CGPoint(x: x, y: proxy.size.height))
+                        let y = proxy.size.height * CGFloat(index) / 3
+                        path.move(to: CGPoint(x: 0, y: y))
+                        path.addLine(to: CGPoint(x: proxy.size.width, y: y))
                     }
-                    .stroke(Color.white.opacity(0.18), lineWidth: 0.7)
                 }
-
-                Rectangle()
-                    .stroke(Color.white.opacity(0.44), lineWidth: 1)
-                    .frame(width: rect.width, height: rect.height)
-                    .position(x: rect.midX, y: rect.midY)
+                .stroke(Color.white.opacity(0.18), lineWidth: 0.7)
             }
         }
         .allowsHitTesting(false)
