@@ -89,7 +89,7 @@ struct LivePhotoViewer: View {
 
         let loaded: PHLivePhoto? = await withCheckedContinuation { continuation in
             let guardBox = ResumeGuard()
-            PHLivePhoto.requestLivePhoto(
+            _ = PHLivePhoto.requestLivePhoto(
                 with: asset,
                 targetSize: CGSize(width: 2000, height: 2000),
                 contentMode: .aspectFit,
