@@ -1,6 +1,6 @@
 # GRAIN 1.1 — Sony RAW 胶片工作台
 
-GRAIN 是一个面向 iPhone 的 SwiftUI RAW 调色 App。主流程围绕 Sony ARW 导入、胶片色彩模拟、原尺寸高质量导出和 GPS 隐私开关设计。当前测试包为 1.1 (57)。
+GRAIN 是一个面向 iPhone 的 SwiftUI RAW 调色 App。主流程围绕 Sony ARW 导入、胶片色彩模拟、原尺寸高质量导出和 GPS 隐私开关设计。当前测试包为 1.1 (60)。
 
 ## 打开方式
 
