@@ -1843,6 +1843,7 @@ private struct ExportSettingsSheet: View {
         ) {
             if let url = editor.exportShareURL {
                 GrainShareSheet(items: [url])
+                    .ignoresSafeArea()
             }
         }
     }
