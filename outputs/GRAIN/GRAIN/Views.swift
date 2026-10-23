@@ -102,8 +102,6 @@ struct RootView: View {
         .sheet(isPresented: $showInfoSheet) {
             ImageInfoSheet()
                 .environmentObject(editor)
-                .presentationDetents([.height(520)])
-                .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showSettings) {
             AppSettingsView()
@@ -678,6 +676,10 @@ private struct PhotoEditorCanvas: View {
     @State private var showFullscreen = false
     @State private var compareFraction: CGFloat?
     @State private var showLivePhoto = false
+    /// 双指放大查看照片；双击复位
+    @State private var zoomScale: CGFloat = 1
+    @State private var isPinching = false
+    @GestureState private var pinchZoom: CGFloat = 1
 
     var body: some View {
         GeometryReader { proxy in
@@ -691,7 +693,8 @@ private struct PhotoEditorCanvas: View {
                 photoLayer(viewport: proxy.size, imageSize: imageSize)
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .scaleEffect(
-                        photoScale(viewport: proxy.size, imageSize: imageSize),
+                        photoScale(viewport: proxy.size, imageSize: imageSize)
+                            * zoomScale * pinchZoom,
                         anchor: .center
                     )
                     .offset(y: photoOffset(viewport: proxy.size, imageSize: imageSize))
@@ -799,6 +802,7 @@ private struct PhotoEditorCanvas: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
             .simultaneousGesture(switchPhotoGesture)
+            .simultaneousGesture(pinchZoomGesture)
         }
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
@@ -882,9 +886,13 @@ private struct PhotoEditorCanvas: View {
                     )
                 },
                 onTapEmpty: {
+                    // 放大查看时单击不进入全屏，此时双击才是复位
+                    guard zoomScale <= 1.01 else { return }
                     selectedTextID = nil
                     showFullscreen = true
-                }
+                },
+                onDoubleTap: resetZoom,
+                isZoomed: zoomScale > 1.01
             )
             .frame(width: imageSize.width, height: imageSize.height)
             .position(x: viewport.width / 2, y: viewport.height / 2)
@@ -911,11 +919,47 @@ private struct PhotoEditorCanvas: View {
             .position(x: viewport.width / 2, y: viewport.height / 2)
     }
 
+    /// 双指放大查看；松手后由双击复位（单击不会进入全屏）
+    private var pinchZoomGesture: some Gesture {
+        MagnificationGesture()
+            .updating($pinchZoom) { value, state, _ in
+                state = value
+            }
+            .onChanged { _ in
+                if !isPinching {
+                    isPinching = true
+                }
+            }
+            .onEnded { value in
+                isPinching = false
+                let updated = zoomScale * value
+                if updated <= 1.02 {
+                    withAnimation(.easeOut(duration: 0.24)) {
+                        zoomScale = 1
+                    }
+                } else {
+                    zoomScale = min(updated, 6)
+                }
+            }
+    }
+
+    private func resetZoom() {
+        guard zoomScale > 1.01 else { return }
+        withAnimation(.easeOut(duration: 0.26)) {
+            zoomScale = 1
+        }
+        GrainHaptics.lightImpact(enabled: hapticsEnabled)
+    }
+
     /// 在照片上左右滑动切换图库里的相邻照片；左侧边缘右滑仍留给返回手势
     private var switchPhotoGesture: some Gesture {
         DragGesture(minimumDistance: 26)
             .onEnded { value in
-                guard selectedTextID == nil, compareFraction == nil else { return }
+                guard selectedTextID == nil,
+                      compareFraction == nil,
+                      zoomScale <= 1.01,
+                      !isPinching
+                else { return }
                 let horizontal = value.translation.width
                 let vertical = value.translation.height
                 guard abs(horizontal) > 68,

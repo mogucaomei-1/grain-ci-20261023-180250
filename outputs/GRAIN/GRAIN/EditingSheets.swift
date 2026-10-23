@@ -185,10 +185,13 @@ extension PhotoTextFont {
 struct ImageInfoSheet: View {
     @EnvironmentObject private var editor: EditorViewModel
     @Environment(\.dismiss) private var dismiss
+    /// 按内容实际高度撑开 sheet，避免信息区下面留出一大片空白
+    @State private var contentHeight: CGFloat = 0
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             GrainTheme.black.ignoresSafeArea()
+
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     Text("图片信息")
@@ -204,26 +207,40 @@ struct ImageInfoSheet: View {
                     }
                     .buttonStyle(.plain)
                 }
-                .padding(.bottom, 16)
+                .padding(.bottom, 10)
 
                 if let photo = editor.photo {
-                    ScrollView {
-                        VStack(spacing: 0) {
-                            infoRow("文件名", photo.displayName)
-                            infoRow("图片尺寸", photo.dimensionsLabel)
-                            infoRow("像素", photo.megapixelsLabel)
-                            infoRow("文件大小", photo.fileSizeLabel)
-                            infoRow("机型", photo.cameraLabel.isEmpty ? "未记录" : photo.cameraLabel)
-                            infoRow("镜头", photo.lensModel.isEmpty ? "未记录" : photo.lensModel)
-                            infoRow("拍摄时间", formattedDate(photo.capturedAt))
-                            infoRow("位置", locationText(photo), isLast: true)
-                        }
+                    VStack(spacing: 0) {
+                        infoRow("文件名", photo.displayName)
+                        infoRow("图片尺寸", photo.dimensionsLabel)
+                        infoRow("像素", photo.megapixelsLabel)
+                        infoRow("文件大小", photo.fileSizeLabel)
+                        infoRow("机型", photo.cameraLabel.isEmpty ? "未记录" : photo.cameraLabel)
+                        infoRow("镜头", photo.lensModel.isEmpty ? "未记录" : photo.lensModel)
+                        infoRow("拍摄时间", formattedDate(photo.capturedAt))
+                        infoRow("位置", locationText(photo), isLast: true)
                     }
-                    .scrollIndicators(.hidden)
                 }
             }
-            .padding(20)
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: ImageInfoHeightKey.self,
+                        value: proxy.size.height
+                    )
+                }
+            }
         }
+        .onPreferenceChange(ImageInfoHeightKey.self) { height in
+            guard height > 240, abs(height - contentHeight) > 0.5 else { return }
+            contentHeight = height
+        }
+        .presentationDetents([.height(contentHeight > 0 ? contentHeight + 20 : 470)])
+        .presentationDragIndicator(.visible)
     }
 
     private func infoRow(_ title: String, _ value: String, isLast: Bool = false) -> some View {
@@ -262,6 +279,13 @@ struct ImageInfoSheet: View {
             return "未记录"
         }
         return String(format: "%.6f, %.6f", latitude, longitude)
+    }
+}
+
+private struct ImageInfoHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 

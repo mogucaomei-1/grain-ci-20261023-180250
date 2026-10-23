@@ -164,15 +164,20 @@ struct PermissionOnboardingView: View {
                         Text(deniedTitle)
                     }
                 }
-                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .font(.system(size: 10.5, weight: .bold, design: .rounded))
                 .foregroundStyle(state == .granted ? GrainTheme.accent : GrainTheme.paper)
                 .frame(width: 72, height: 32)
                 .background(
-                    state == .granted
-                        ? GrainTheme.accent.opacity(0.14)
-                        : GrainTheme.raised,
+                    GrainTheme.raised,
                     in: Capsule()
                 )
+                .overlay {
+                    // 不再用橙色底衬托文字：底色一深，右侧“已开启”看起来就比左侧图标暗。
+                    // 改成中性底 + 细描边，文字保持与图标完全相同的橙色。
+                    if state == .granted {
+                        Capsule().stroke(GrainTheme.accent.opacity(0.45), lineWidth: 0.8)
+                    }
+                }
             }
             .buttonStyle(.plain)
             .disabled(state == .requesting || state == .granted)

@@ -325,7 +325,6 @@ final class EditorViewModel: ObservableObject {
             }
             schedulePreview()
             isRecommending = false
-            showNotice("已按画面参数调整 · \(recommendation.reason)")
         }
     }
 

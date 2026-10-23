@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreImage
 import CoreLocation
 import ImageIO
 import Photos
@@ -136,11 +137,25 @@ final class CameraController: ObservableObject {
     private let processorLock = NSLock()
     private var captureGeneration = 0
 
+    // 峰值对焦：按需挂一个视频数据输出，关闭时立刻移除，
+    // 默认关闭，保证不开启时相机管线与之前完全一致。
+    private let peakingOutput = AVCaptureVideoDataOutput()
+    private let peakingQueue = DispatchQueue(
+        label: "studio.grain.camera.peaking",
+        qos: .userInitiated
+    )
+    private let peakingProcessor = FocusPeakingProcessor()
+    private var peakingAttached = false
+    private var hintGeneration = 0
+
     @Published private(set) var isReady = false
     @Published private(set) var isCapturing = false
     @Published private(set) var countdown: Int?
-    @Published private(set) var notice: String?
     @Published private(set) var errorMessage: String?
+    /// 峰值对焦：红色描边标出合焦区域
+    @Published private(set) var isFocusPeakingEnabled = false
+    @Published private(set) var peakingMask: CGImage?
+    @Published private(set) var peakingHint: String?
     @Published private(set) var isLivePhotoSupported = false
     @Published private(set) var isLivePhotoArmed = false
     @Published private(set) var isRawSupported = false
@@ -192,6 +207,107 @@ final class CameraController: ObservableObject {
         }
         sessionQueue.async { [weak self] in
             self?.session.stopRunning()
+        }
+    }
+
+    // MARK: - 峰值对焦
+
+    /// 开启时临时挂一个视频数据输出分析边缘；关闭时立即移除，
+    /// 保证默认状态下的拍照管线与之前完全一致。
+    func setFocusPeaking(_ enabled: Bool) {
+        guard enabled != isFocusPeakingEnabled else { return }
+        isFocusPeakingEnabled = enabled
+        peakingHint = nil
+        if !enabled {
+            peakingMask = nil
+        }
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            if enabled {
+                self.attachPeakingOutput()
+            } else {
+                self.detachPeakingOutput()
+            }
+        }
+    }
+
+    private func attachPeakingOutput() {
+        guard !peakingAttached else { return }
+        guard isSessionConfigured else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.isFocusPeakingEnabled = false
+                self.showPeakingHint("相机还在启动，请稍后再试")
+            }
+            return
+        }
+        peakingOutput.alwaysDiscardsLateVideoFrames = true
+        peakingOutput.videoSettings = [
+            kCVPixelBufferPixelFormatTypeKey as String:
+                Int(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+        ]
+        peakingOutput.setSampleBufferDelegate(peakingProcessor, queue: peakingQueue)
+        peakingProcessor.onMask = { [weak self] image in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isFocusPeakingEnabled else { return }
+                self.peakingMask = image
+            }
+        }
+
+        session.beginConfiguration()
+        guard session.canAddOutput(peakingOutput) else {
+            session.commitConfiguration()
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.isFocusPeakingEnabled = false
+                self.peakingMask = nil
+                self.showPeakingHint("当前镜头不支持峰值对焦")
+            }
+            return
+        }
+        session.addOutput(peakingOutput)
+        peakingAttached = true
+        updatePeakingConnection()
+        // 视频输出不参与静态拍照，但会话重配后同步一次照片尺寸，避免 48MP 被重置
+        if let device = cameraDevice, let dims = maximumPhotoDimensions(for: device) {
+            photoOutput.maxPhotoDimensions = dims
+        }
+        session.commitConfiguration()
+    }
+
+    private func detachPeakingOutput() {
+        guard peakingAttached else { return }
+        session.beginConfiguration()
+        session.removeOutput(peakingOutput)
+        session.commitConfiguration()
+        peakingAttached = false
+        peakingProcessor.onMask = nil
+        DispatchQueue.main.async { [weak self] in
+            self?.peakingMask = nil
+        }
+    }
+
+    /// 分析图的方向必须和预览层一致，否则红色描边会和画面对不上
+    private func updatePeakingConnection() {
+        guard let connection = peakingOutput.connection(with: .video) else { return }
+        if connection.isVideoRotationAngleSupported(90) {
+            connection.videoRotationAngle = 90
+        }
+        if connection.isVideoMirroringSupported {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = cameraDevice?.position == .front
+                && frontMirrorEnabled
+        }
+    }
+
+    private func showPeakingHint(_ text: String) {
+        peakingHint = text
+        hintGeneration += 1
+        let generation = hintGeneration
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2.6))
+            guard let self, self.hintGeneration == generation else { return }
+            self.peakingHint = nil
         }
     }
 
@@ -272,6 +388,10 @@ final class CameraController: ObservableObject {
             session.commitConfiguration()
             videoInput = newInput
             cameraDevice = device
+            // 换镜头后峰值输出的方向/镜像必须跟着更新，否则红色描边会错位
+            if peakingAttached {
+                updatePeakingConnection()
+            }
             supportsRawCapture = device.position == .back
                 && (
                     photoOutput.isAppleProRAWSupported
@@ -845,6 +965,7 @@ final class CameraController: ObservableObject {
             if let device = self.cameraDevice {
                 self.applyPhotoMirroring(for: device)
             }
+            self.updatePeakingConnection()
             self.session.commitConfiguration()
         }
     }
@@ -961,11 +1082,6 @@ final class CameraController: ObservableObject {
                 let assetIdentifier = try await saveToPhotoLibrary(processed)
                 latestCaptureAssetIdentifier = assetIdentifier
                 GrainHaptics.mediumImpact(enabled: true)
-                if let size = CameraImageProcessor.pixelSize(of: processed.data) {
-                    notice = "已保存 \(size.width)×\(size.height)"
-                } else {
-                    notice = "已保存到照片图库"
-                }
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -1587,6 +1703,64 @@ private enum CameraError: LocalizedError {
     }
 }
 
+/// 从视频流抽帧做边缘检测，输出透明底 + 红色描边的峰值图。
+/// 只处理缩略尺寸并限制帧率，避免拖慢预览与拍照。
+final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    var onMask: ((CGImage?) -> Void)?
+
+    private let context = CIContext(options: [.cacheIntermediates: false])
+    private let analysisSize: CGFloat = 340
+    private var lastTime: CFAbsoluteTime = 0
+
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - lastTime >= 0.13 else { return }
+        lastTime = now
+
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let source = CIImage(cvPixelBuffer: pixelBuffer)
+        let extent = source.extent
+        guard extent.width > 2, extent.height > 2 else { return }
+
+        let scale = analysisSize / max(extent.width, extent.height)
+        let resized = source.transformed(
+            by: CGAffineTransform(scaleX: scale, y: scale)
+        )
+        let mono = resized.applyingFilter("CIColorControls", parameters: [
+            kCIInputSaturationKey: 0.0,
+            kCIInputContrastKey: 1.4
+        ])
+        let edges = mono.applyingFilter("CIEdges", parameters: [
+            kCIInputIntensityKey: 2.0
+        ])
+        let punched = edges.applyingFilter("CIColorControls", parameters: [
+            kCIInputContrastKey: 2.6,
+            kCIInputBrightnessKey: -0.08
+        ])
+        let outputExtent = punched.extent.integral
+        guard outputExtent.width > 2, outputExtent.height > 2 else { return }
+
+        let clear = CIImage(
+            color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)
+        ).cropped(to: outputExtent)
+        let red = CIImage(
+            color: CIColor(red: 1.0, green: 0.24, blue: 0.14, alpha: 1.0)
+        ).cropped(to: outputExtent)
+        let masked = red.applyingFilter("CIBlendWithRedMask", parameters: [
+            kCIInputBackgroundImageKey: clear,
+            kCIInputMaskImageKey: punched
+        ])
+        guard let image = context.createCGImage(masked, from: outputExtent) else {
+            return
+        }
+        onMask?(image)
+    }
+}
+
 struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
     let mirrored: Bool
@@ -1835,6 +2009,18 @@ struct CameraView: View {
                         .clipped()
                         .position(x: rect.midX, y: rect.midY)
 
+                        // 峰值对焦：红色描边叠在预览上，帮助判断合焦区域
+                        if camera.isFocusPeakingEnabled, let mask = camera.peakingMask {
+                            Image(decorative: mask, scale: 1)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: rect.width, height: rect.height)
+                                .clipped()
+                                .position(x: rect.midX, y: rect.midY)
+                                .opacity(0.92)
+                                .allowsHitTesting(false)
+                        }
+
                         cameraLookOverlay
                         framingOverlay
                     }
@@ -1865,19 +2051,6 @@ struct CameraView: View {
                     .tint(GrainTheme.paper)
                     .padding(16)
                     .background(Color.black.opacity(0.62), in: Circle())
-            }
-
-            if let notice = camera.notice {
-                VStack {
-                    Text(notice)
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .foregroundStyle(GrainTheme.black)
-                        .padding(.horizontal, 13)
-                        .frame(height: 30)
-                        .background(GrainTheme.paper, in: Capsule())
-                        .padding(.top, 62)
-                    Spacer()
-                }
             }
 
             if let error = camera.errorMessage {
@@ -2176,6 +2349,38 @@ struct CameraView: View {
                 } label: {
                     MenuChip(title: format.title, symbol: "doc")
                 }
+
+                Button {
+                    camera.setFocusPeaking(!camera.isFocusPeakingEnabled)
+                    GrainHaptics.selection(enabled: true)
+                } label: {
+                    Image(systemName: "viewfinder")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(
+                            camera.isFocusPeakingEnabled ? GrainTheme.black : GrainTheme.paper
+                        )
+                        .frame(width: 34, height: 30)
+                        .background(
+                            camera.isFocusPeakingEnabled
+                                ? GrainTheme.accent
+                                : Color.black.opacity(0.54),
+                            in: Capsule()
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    camera.isFocusPeakingEnabled ? "关闭峰值对焦" : "开启峰值对焦"
+                )
+            }
+
+            if let hint = camera.peakingHint {
+                Text(hint)
+                    .font(.system(size: 8.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(GrainTheme.black)
+                    .padding(.horizontal, 9)
+                    .frame(height: 22)
+                    .background(GrainTheme.paper, in: Capsule())
+                    .transition(.opacity)
             }
 
             HStack {
