@@ -1,0 +1,66 @@
+name: Build Unsigned Player IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unsigned-ipa:
+    name: Archive GRAIN Player without signing
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build unsigned device archive
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p ci/unsigned-player
+          xcodebuild \
+            -project outputs/GRAINPlayer/GRAINPlayer.xcodeproj \
+            -scheme GRAINPlayer \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath ci/unsigned-player/GRAINPlayer.xcarchive \
+            -derivedDataPath ci/DerivedData-Player \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            archive | tee ci/unsigned-player/archive.log
+
+      - name: Package Payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find ci/unsigned-player/GRAINPlayer.xcarchive/Products/Applications -maxdepth 1 -type d -name "*.app" -print -quit)
+          test -n "$APP_PATH"
+          mkdir -p ci/unsigned-player/Payload
+          cp -R "$APP_PATH" ci/unsigned-player/Payload/
+          cd ci/unsigned-player
+          zip -r -X GRAINPlayer-unsigned.zip Payload
+          mv GRAINPlayer-unsigned.zip GRAINPlayer-unsigned.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: GRAINPlayer-unsigned-ipa
+          path: ci/unsigned-player/GRAINPlayer-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload archive log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GRAINPlayer-unsigned-archive-log
+          path: ci/unsigned-player/archive.log
+          if-no-files-found: ignore
+          retention-days: 7
