@@ -555,7 +555,8 @@ public struct VideoEditorView: View {
         VStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
-                    ForEach(FilmProfile.allCases, id: \.self) { profile in
+                    let profiles = FilmProfile.defaultDisplayOrder
+                    ForEach(profiles) { profile in
                         let isSelected = recipe.filmProfile == profile
                         Button {
                             recipe.filmProfile = profile
@@ -800,9 +801,10 @@ public struct VideoEditorView: View {
             times.append(NSValue(time: t))
         }
 
+        let captureTimes = times
         Task.detached(priority: .utility) {
             var loaded: [UIImage] = []
-            for val in times {
+            for val in captureTimes {
                 let time = val.timeValue
                 if let cgImg = try? generator.copyCGImage(at: time, actualTime: nil) {
                     loaded.append(UIImage(cgImage: cgImg))
@@ -887,7 +889,7 @@ public struct VideoEditorView: View {
     private static func applyFilmLook(to image: CIImage, profile: FilmProfile, intensity: Double) -> CIImage {
         var graded = image
         switch profile {
-        case .classicChrome:
+        case .classicChrome, .classicNegative:
             // 经典正片：反差略高、轻微降低饱和度、暗部偏暖、高光偏青
             graded = graded
                 .applyingFilter("CIColorControls", parameters: [
@@ -898,7 +900,7 @@ public struct VideoEditorView: View {
                     "inputNeutral": CIVector(x: 6500, y: 0),
                     "inputTargetNeutral": CIVector(x: 6900, y: 8)
                 ])
-        case .portra400:
+        case .portra, .portra160, .portra800:
             // 柔和肤色：阴影提亮，肤色微红润暖调
             graded = graded
                 .applyingFilter("CIHighlightShadowAdjust", parameters: [
@@ -909,7 +911,7 @@ public struct VideoEditorView: View {
                     "inputNeutral": CIVector(x: 6500, y: 0),
                     "inputTargetNeutral": CIVector(x: 7100, y: 12)
                 ])
-        case .cine:
+        case .cinestill, .film135t, .vision500t:
             // 电影冷调：暗部青蓝、高光暖调
             graded = graded
                 .applyingFilter("CIColorControls", parameters: [
@@ -920,21 +922,7 @@ public struct VideoEditorView: View {
                     "inputNeutral": CIVector(x: 6500, y: 0),
                     "inputTargetNeutral": CIVector(x: 5800, y: -15)
                 ])
-        case .trix400:
-            // 高反差黑白
-            graded = graded
-                .applyingFilter("CIColorControls", parameters: [
-                    kCIInputSaturationKey: 0.0,
-                    kCIInputContrastKey: 1.35
-                ])
-        case .monokrom:
-            // 细腻纪实黑白
-            graded = graded
-                .applyingFilter("CIColorControls", parameters: [
-                    kCIInputSaturationKey: 0.0,
-                    kCIInputContrastKey: 1.1
-                ])
-        case .warmGold:
+        case .gold, .colorPlus200:
             // 暖金黄昏
             graded = graded
                 .applyingFilter("CITemperatureAndTint", parameters: [
@@ -944,14 +932,14 @@ public struct VideoEditorView: View {
                 .applyingFilter("CIColorControls", parameters: [
                     kCIInputSaturationKey: 1.1
                 ])
-        case .bleach:
-            // 漂白留银：低饱和高对比
+        case .eterna, .nostalgicNeg:
+            // 柔和电影低对比
             graded = graded
                 .applyingFilter("CIColorControls", parameters: [
-                    kCIInputSaturationKey: 0.38,
-                    kCIInputContrastKey: 1.42
+                    kCIInputContrastKey: 0.92,
+                    kCIInputSaturationKey: 0.88
                 ])
-        case .neutral:
+        default:
             break
         }
 
@@ -1001,7 +989,7 @@ public struct VideoEditorView: View {
                     Task {
                         do {
                             try await Self.saveExportedVideoToLibrary(outputURL)
-                            GrainHaptics.notification(type: .success, enabled: true)
+                            GrainHaptics.mediumImpact(enabled: true)
                             self.cleanupPlayer()
                             self.onClose()
                         } catch {

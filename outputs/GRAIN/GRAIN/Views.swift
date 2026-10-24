@@ -128,10 +128,13 @@ struct RootView: View {
                 .presentationDragIndicator(.visible)
         }
         .fullScreenCover(isPresented: $showCamera) {
-            CameraView { identifier in
-                pendingCapturedAssetID = identifier
-                showCamera = false
-            }
+            CameraView(
+                onClose: { showCamera = false },
+                onOpenCapture: { identifier in
+                    pendingCapturedAssetID = identifier
+                    showCamera = false
+                }
+            )
         }
         .fullScreenCover(isPresented: $showHomeCollage) {
             CollageEditorView(assets: [])
