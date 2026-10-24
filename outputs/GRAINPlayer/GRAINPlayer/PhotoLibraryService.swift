@@ -135,7 +135,7 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
         return false
     }
 
-    /// 重新加载所有相册分类及当前选中的视频 (全后台异步并发，彻底杜绝主线程卡死)
+    /// 重新加载所有相册分类及当前选中的视频 (三级深度隐藏扫描 + 全后台异步，彻底杜绝主线程卡死)
     public func reloadAlbumsAndVideos() async {
         guard authorizationStatus == .authorized || authorizationStatus == .limited else {
             return
@@ -146,46 +146,66 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
 
         // 在分离式后台任务中执行 PhotoKit 枚举与检索
         let (albumList, current, hidden) = await Task.detached(priority: .userInitiated) { () -> ([AlbumCategory], [PHAsset], [PHAsset]) in
-            // 1. 全部视频 (按创建时间倒序)
+            // 1. 全局视频扫描 (显式开启 includeHiddenAssets = true)
             let allOptions = PHFetchOptions()
+            allOptions.includeHiddenAssets = true
             allOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
             let allVideosFetch = PHAsset.fetchAssets(with: .video, options: allOptions)
 
-            var list: [AlbumCategory] = [
-                AlbumCategory(id: "all_videos", title: "全部视频", icon: "video.fill", count: allVideosFetch.count)
-            ]
-
-            // 2. 核心：相册已隐藏相册 (smartAlbumAllHidden + 全局 includeHiddenAssets 检索)
-            let hiddenFetch = PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .smartAlbumAllHidden, options: nil)
-            var hiddenCount = 0
-            var hiddenCollection: PHAssetCollection? = nil
+            var normalAssets: [PHAsset] = []
             var hiddenAssets: [PHAsset] = []
+            var hiddenIds = Set<String>()
+
+            allVideosFetch.enumerateObjects { asset, _, _ in
+                if asset.isHidden {
+                    hiddenAssets.append(asset)
+                    hiddenIds.insert(asset.localIdentifier)
+                } else {
+                    normalAssets.append(asset)
+                }
+            }
+
+            // 2. 检查 smartAlbumAllHidden 智能相册
+            let hiddenFetch = PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .smartAlbumAllHidden, options: nil)
+            var hiddenCollection: PHAssetCollection? = nil
 
             hiddenFetch.enumerateObjects { collection, _, _ in
                 hiddenCollection = collection
                 let fetchOptions = PHFetchOptions()
-                fetchOptions.includeHiddenAssets = true // 必须启用隐藏资产包含
-                fetchOptions.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.video.rawValue)
+                fetchOptions.includeHiddenAssets = true
                 fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
                 let res = PHAsset.fetchAssets(in: collection, options: fetchOptions)
-                hiddenCount = res.count
                 res.enumerateObjects { asset, _, _ in
-                    hiddenAssets.append(asset)
+                    if asset.mediaType == .video && !hiddenIds.contains(asset.localIdentifier) {
+                        hiddenAssets.append(asset)
+                        hiddenIds.insert(asset.localIdentifier)
+                    }
                 }
             }
 
-            // 兜底策略：如果 smartAlbumAllHidden 集合未被系统直接返回，使用包含隐藏属性的全局检索
-            if hiddenAssets.isEmpty {
-                let backupOptions = PHFetchOptions()
-                backupOptions.includeHiddenAssets = true
-                backupOptions.predicate = NSPredicate(format: "mediaType == %d AND isHidden == YES", PHAssetMediaType.video.rawValue)
-                backupOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-                let backupResult = PHAsset.fetchAssets(with: backupOptions)
-                hiddenCount = backupResult.count
-                backupResult.enumerateObjects { asset, _, _ in
-                    hiddenAssets.append(asset)
+            // 3. 扫描全部智能分类中的隐藏相册 (支持英文系统与各系统版本)
+            let allSmart = PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .any, options: nil)
+            allSmart.enumerateObjects { collection, _, _ in
+                let sub = collection.assetCollectionSubtype
+                if sub == .smartAlbumAllHidden || collection.localizedTitle == "已隐藏" || collection.localizedTitle == "Hidden" {
+                    if hiddenCollection == nil {
+                        hiddenCollection = collection
+                    }
+                    let colOptions = PHFetchOptions()
+                    colOptions.includeHiddenAssets = true
+                    let res = PHAsset.fetchAssets(in: collection, options: colOptions)
+                    res.enumerateObjects { asset, _, _ in
+                        if asset.mediaType == .video && !hiddenIds.contains(asset.localIdentifier) {
+                            hiddenAssets.append(asset)
+                            hiddenIds.insert(asset.localIdentifier)
+                        }
+                    }
                 }
             }
+
+            var list: [AlbumCategory] = [
+                AlbumCategory(id: "all_videos", title: "全部视频", icon: "video.fill", count: normalAssets.count)
+            ]
 
             let hiddenCategory = AlbumCategory(
                 id: "smart_album_hidden",
@@ -193,11 +213,11 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
                 icon: "eye.slash.fill",
                 isHiddenAlbum: true,
                 collection: hiddenCollection,
-                count: hiddenCount
+                count: hiddenAssets.count
             )
             list.append(hiddenCategory)
 
-            // 3. 常用智能分类
+            // 4. 常用智能分类
             let smartSubtypes: [(PHAssetCollectionSubtype, String, String)] = [
                 (.smartAlbumRecentlyAdded, "最近项目", "clock.fill"),
                 (.smartAlbumFavorites, "个人收藏", "heart.fill"),
@@ -218,7 +238,7 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
                 }
             }
 
-            // 4. 用户自建相册
+            // 5. 用户自建相册
             let userAlbums = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: nil)
             userAlbums.enumerateObjects { collection, _, _ in
                 let fetchOptions = PHFetchOptions()
@@ -235,14 +255,7 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
                 }
             }
 
-            // 5. 将“全部视频”游标轻量转换
-            var allAssets: [PHAsset] = []
-            allAssets.reserveCapacity(allVideosFetch.count)
-            allVideosFetch.enumerateObjects { asset, _, _ in
-                allAssets.append(asset)
-            }
-
-            return (list, allAssets, hiddenAssets)
+            return (list, normalAssets, hiddenAssets)
         }.value
 
         self.albums = albumList
@@ -254,7 +267,6 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
     public func selectAlbum(id: String) async {
         selectedAlbumId = id
         if id == "smart_album_hidden" {
-            // 已预取隐藏相册资产，必要时后台重新载入一次
             await loadHiddenAlbumVideos()
             return
         }
@@ -290,42 +302,55 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
         self.currentAssets = fetched
     }
 
-    /// 加载相册隐藏相册内的视频列表 (带 includeHiddenAssets = true 与双重兜底)
-    public func loadHiddenAlbumVideos(collection: PHAssetCollection? = nil) async {
+    /// 加载相册隐藏相册内的视频列表 (三级深度过滤，确保隐私视频完整呈现)
+    public func loadHiddenAlbumVideos() async {
         let fetched: [PHAsset] = await Task.detached(priority: .userInitiated) {
-            var fetchedAssets: [PHAsset] = []
+            var hiddenAssets: [PHAsset] = []
+            var hiddenIds = Set<String>()
 
-            let col: PHAssetCollection?
-            if let collection {
-                col = collection
-            } else {
-                let hiddenFetch = PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .smartAlbumAllHidden, options: nil)
-                col = hiddenFetch.firstObject
-            }
-
-            if let col {
-                let options = PHFetchOptions()
-                options.includeHiddenAssets = true
-                options.predicate = NSPredicate(format: "mediaType == %d", PHAssetMediaType.video.rawValue)
-                options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-                let result = PHAsset.fetchAssets(in: col, options: options)
-                result.enumerateObjects { asset, _, _ in
-                    fetchedAssets.append(asset)
+            // 1. 全局视频扫描带 includeHiddenAssets = true 与 isHidden 过滤
+            let allOptions = PHFetchOptions()
+            allOptions.includeHiddenAssets = true
+            allOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+            let allVideosFetch = PHAsset.fetchAssets(with: .video, options: allOptions)
+            allVideosFetch.enumerateObjects { asset, _, _ in
+                if asset.isHidden {
+                    hiddenAssets.append(asset)
+                    hiddenIds.insert(asset.localIdentifier)
                 }
             }
 
-            if fetchedAssets.isEmpty {
-                let backupOptions = PHFetchOptions()
-                backupOptions.includeHiddenAssets = true
-                backupOptions.predicate = NSPredicate(format: "mediaType == %d AND isHidden == YES", PHAssetMediaType.video.rawValue)
-                backupOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-                let backupResult = PHAsset.fetchAssets(with: backupOptions)
-                backupResult.enumerateObjects { asset, _, _ in
-                    fetchedAssets.append(asset)
+            // 2. smartAlbumAllHidden 集合扫描
+            let hiddenFetch = PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .smartAlbumAllHidden, options: nil)
+            hiddenFetch.enumerateObjects { collection, _, _ in
+                let fetchOptions = PHFetchOptions()
+                fetchOptions.includeHiddenAssets = true
+                let res = PHAsset.fetchAssets(in: collection, options: fetchOptions)
+                res.enumerateObjects { asset, _, _ in
+                    if asset.mediaType == .video && !hiddenIds.contains(asset.localIdentifier) {
+                        hiddenAssets.append(asset)
+                        hiddenIds.insert(asset.localIdentifier)
+                    }
                 }
             }
 
-            return fetchedAssets
+            // 3. 扫描全部智能分类中的隐藏相册
+            let allSmart = PHAssetCollection.fetchAssetCollections(with: .smartAlbum, subtype: .any, options: nil)
+            allSmart.enumerateObjects { collection, _, _ in
+                if collection.assetCollectionSubtype == .smartAlbumAllHidden || collection.localizedTitle == "已隐藏" || collection.localizedTitle == "Hidden" {
+                    let colOptions = PHFetchOptions()
+                    colOptions.includeHiddenAssets = true
+                    let res = PHAsset.fetchAssets(in: collection, options: colOptions)
+                    res.enumerateObjects { asset, _, _ in
+                        if asset.mediaType == .video && !hiddenIds.contains(asset.localIdentifier) {
+                            hiddenAssets.append(asset)
+                            hiddenIds.insert(asset.localIdentifier)
+                        }
+                    }
+                }
+            }
+
+            return hiddenAssets
         }.value
 
         self.hiddenAssets = fetched
@@ -379,14 +404,14 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
         )
     }
 
-    /// 获取视频用于播放的 AVPlayerItem 与精准技术参数 (支持已隐藏相册直读)
+    /// 获取视频用于播放的 AVPlayerItem 与基础技术参数 (全格式硬件加速支持：H.264、HEVC、ProRes 等)
     public func preparePlayerItem(for item: VideoItem) async throws -> (AVPlayerItem, VideoMetadata) {
         guard case .photoLibrary(let localIdentifier, _, _) = item.source else {
             throw NSError(domain: "GRAINPlayer", code: 404, userInfo: [NSLocalizedDescriptionKey: "非相册资产"])
         }
 
         let fetchOptions = PHFetchOptions()
-        fetchOptions.includeHiddenAssets = true // 必须启用隐藏资产包含，否则相册隐藏视频返回空
+        fetchOptions.includeHiddenAssets = true
         let assets = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: fetchOptions)
         guard let asset = assets.firstObject else {
             throw NSError(domain: "GRAINPlayer", code: 404, userInfo: [NSLocalizedDescriptionKey: "无法在相册中找到该视频资产"])
@@ -394,25 +419,86 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
 
         let options = PHVideoRequestOptions()
         options.isNetworkAccessAllowed = true
-        options.deliveryMode = .highQualityFormat
+        options.deliveryMode = .automatic
 
-        return try await withCheckedThrowingContinuation { continuation in
-            imageManager.requestPlayerItem(forVideo: asset, options: options) { playerItem, info in
-                if let error = info?[PHImageErrorKey] as? Error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                guard let playerItem else {
-                    continuation.resume(throwing: NSError(domain: "GRAINPlayer", code: 500, userInfo: [NSLocalizedDescriptionKey: "加载相册视频流失败"]))
-                    return
-                }
+        // 策略 1: 优先使用 requestAVAsset 获取硬件解码原生地图，完美播放 H.264 与 HEVC
+        do {
+            let (avAsset, audioMix): (AVAsset, AVAudioMix?) = try await withCheckedThrowingContinuation { continuation in
+                var hasResumed = false
+                let lock = NSLock()
 
-                Task {
-                    var metadata = item.metadata
-                    if let avAsset = playerItem.asset as? AVURLAsset {
-                        metadata = await VideoMetadataExtractor.extract(from: avAsset, fallbackDuration: asset.duration)
+                imageManager.requestAVAsset(forVideo: asset, options: options) { loadedAsset, loadedMix, info in
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard !hasResumed else { return }
+
+                    if let error = info?[PHImageErrorKey] as? Error {
+                        hasResumed = true
+                        continuation.resume(throwing: error)
+                        return
                     }
-                    continuation.resume(returning: (playerItem, metadata))
+
+                    if let loadedAsset {
+                        hasResumed = true
+                        continuation.resume(returning: (loadedAsset, loadedMix))
+                        return
+                    }
+
+                    if let cancelled = info?[PHImageCancelledKey] as? Bool, cancelled {
+                        hasResumed = true
+                        continuation.resume(throwing: NSError(domain: "GRAINPlayer", code: -1, userInfo: [NSLocalizedDescriptionKey: "加载已取消"]))
+                        return
+                    }
+
+                    hasResumed = true
+                    continuation.resume(throwing: NSError(domain: "GRAINPlayer", code: -2, userInfo: [NSLocalizedDescriptionKey: "未获取到底层视频资产"]))
+                }
+            }
+
+            let playerItem = AVPlayerItem(asset: avAsset)
+            if let audioMix {
+                playerItem.audioMix = audioMix
+            }
+
+            var meta = item.metadata
+            meta.duration = asset.duration
+            meta.naturalSize = CGSize(width: asset.pixelWidth, height: asset.pixelHeight)
+            meta.creationDate = asset.creationDate ?? Date()
+
+            return (playerItem, meta)
+        } catch {
+            // 策略 2: 兜底使用 requestPlayerItem
+            return try await withCheckedThrowingContinuation { continuation in
+                var hasResumed = false
+                let lock = NSLock()
+
+                let fallbackOptions = PHVideoRequestOptions()
+                fallbackOptions.isNetworkAccessAllowed = true
+                fallbackOptions.deliveryMode = .automatic
+
+                imageManager.requestPlayerItem(forVideo: asset, options: fallbackOptions) { playerItem, info in
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard !hasResumed else { return }
+
+                    if let err = info?[PHImageErrorKey] as? Error {
+                        hasResumed = true
+                        continuation.resume(throwing: err)
+                        return
+                    }
+
+                    if let playerItem {
+                        hasResumed = true
+                        var meta = item.metadata
+                        meta.duration = asset.duration
+                        meta.naturalSize = CGSize(width: asset.pixelWidth, height: asset.pixelHeight)
+                        meta.creationDate = asset.creationDate ?? Date()
+                        continuation.resume(returning: (playerItem, meta))
+                        return
+                    }
+
+                    hasResumed = true
+                    continuation.resume(throwing: error)
                 }
             }
         }

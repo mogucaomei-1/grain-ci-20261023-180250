@@ -46,6 +46,66 @@ public struct PlayerOverlayView: View {
                 // 3. 屏幕中心状态 HUD 浮层 (亮度、音量、快进、双击快退/快进、截帧提示)
                 centerStatusHUDs
 
+                // 3.1 缓冲指示器
+                if viewModel.isBuffering && viewModel.errorMessage == nil {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: GrainTheme.accent))
+                            .scaleEffect(1.2)
+                        Text("正在缓冲视频...")
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .foregroundColor(GrainTheme.paper)
+                    }
+                    .padding(18)
+                    .background(Color.black.opacity(0.75))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+
+                // 3.2 错误状态弹层
+                if let err = viewModel.errorMessage {
+                    VStack(spacing: 14) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 34))
+                            .foregroundColor(GrainTheme.danger)
+                        Text("视频无法播放")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundColor(GrainTheme.paper)
+                        Text(err)
+                            .font(.system(size: 12))
+                            .foregroundColor(GrainTheme.muted)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
+                        HStack(spacing: 12) {
+                            Button("关闭") {
+                                onDismiss()
+                            }
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(GrainTheme.paper)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(GrainTheme.surface)
+                            .clipShape(Capsule())
+
+                            Button("重新尝试") {
+                                if let item = viewModel.currentItem {
+                                    Task { await viewModel.loadVideo(item: item) }
+                                }
+                            }
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(GrainTheme.black)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(GrainTheme.accent)
+                            .clipShape(Capsule())
+                        }
+                    }
+                    .padding(24)
+                    .background(GrainTheme.card.opacity(0.96))
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(GrainTheme.line, lineWidth: 1))
+                    .padding(32)
+                }
+
                 // 4. 屏幕左侧垂直居中独立悬浮锁定按钮 (绝对不被顶部与底部控制栏遮挡)
                 floatingLockToggle
 

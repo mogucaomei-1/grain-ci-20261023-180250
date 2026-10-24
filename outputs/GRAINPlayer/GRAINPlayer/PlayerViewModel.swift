@@ -116,15 +116,18 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
         cleanup()
         self.currentItem = item
         self.currentMetadata = item.metadata
+        self.duration = item.metadata.duration
         self.errorMessage = nil
         self.isReadyToPlay = false
         self.isBuffering = true
         self.showControls = true
 
         do {
-            let (playerItem, fullMetadata) = try await resolvePlayerItem(for: item)
-            self.currentMetadata = fullMetadata
-            self.duration = fullMetadata.duration
+            let (playerItem, initialMeta) = try await resolvePlayerItem(for: item)
+            self.currentMetadata = initialMeta
+            if initialMeta.duration > 0 {
+                self.duration = initialMeta.duration
+            }
 
             let newPlayer = AVPlayer(playerItem: playerItem)
             newPlayer.actionAtItemEnd = .none
@@ -142,6 +145,21 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
 
             GrainHaptics.success()
             scheduleControlsDismissal()
+
+            // 异步后台提取高级规格 (码率、色彩空间、HDR 等)，绝不阻塞即刻起播
+            Task.detached(priority: .utility) { [weak self] in
+                guard let self else { return }
+                let detailed = await VideoMetadataExtractor.extract(
+                    from: playerItem.asset,
+                    fallbackDuration: initialMeta.duration
+                )
+                await MainActor.run {
+                    self.currentMetadata = detailed
+                    if self.duration == 0 && detailed.duration > 0 {
+                        self.duration = detailed.duration
+                    }
+                }
+            }
         } catch {
             self.errorMessage = "视频加载失败: \(error.localizedDescription)"
             self.isBuffering = false
@@ -154,10 +172,8 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
         case .photoLibrary:
             return try await PhotoLibraryService.shared.preparePlayerItem(for: item)
         case .fileDirectory(let url), .externalPicked(let url):
-            let asset = AVURLAsset(url: url)
-            let meta = await VideoMetadataExtractor.extract(from: asset, fileURL: url, fallbackDuration: item.metadata.duration)
-            let playerItem = AVPlayerItem(asset: asset)
-            return (playerItem, meta)
+            let playerItem = AVPlayerItem(url: url)
+            return (playerItem, item.metadata)
         }
     }
 
@@ -457,14 +473,19 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
     // MARK: - 字幕控制
 
     private func parseEmbeddedSubtitles(from asset: AVAsset) {
-        var tracks: [SubtitleTrack] = []
-        if let mediaSelectionGroup = asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
-            for option in mediaSelectionGroup.options {
-                let title = option.displayName
-                tracks.append(SubtitleTrack(id: option.locale?.identifier ?? title, title: title, isExternal: false))
+        Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            var tracks: [SubtitleTrack] = []
+            if let mediaSelectionGroup = try? await asset.loadMediaSelectionGroup(for: .legible) {
+                for option in mediaSelectionGroup.options {
+                    let title = option.displayName
+                    tracks.append(SubtitleTrack(id: option.locale?.identifier ?? title, title: title, isExternal: false))
+                }
+            }
+            await MainActor.run {
+                self.subtitleTracks = tracks
             }
         }
-        self.subtitleTracks = tracks
     }
 
     public func loadExternalSubtitle(url: URL) {
