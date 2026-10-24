@@ -6,7 +6,7 @@ import Photos
 import SwiftUI
 import UIKit
 
-// MARK: - 纯视频播放器核心控制器
+// MARK: - 纯视频播放器核心控制器 (高性能解耦)
 
 @MainActor
 public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictureControllerDelegate {
@@ -79,6 +79,25 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
         currentBrightness = UIScreen.main.brightness
     }
 
+    // MARK: - 规格简述文字 (优雅极简 Pro Cinema 风格)
+
+    public var specsSummaryText: String {
+        var parts: [String] = []
+        if !currentMetadata.resolutionPill.isEmpty {
+            parts.append(currentMetadata.resolutionPill)
+        }
+        if !currentMetadata.fpsPill.isEmpty {
+            parts.append(currentMetadata.fpsPill)
+        }
+        if currentMetadata.isHDR {
+            parts.append("HDR")
+        }
+        if !currentMetadata.codecName.isEmpty {
+            parts.append(currentMetadata.codecName)
+        }
+        return parts.joined(separator: " · ")
+    }
+
     // MARK: - 初始化后台音频与 Session
 
     private func setupAudioSession() {
@@ -142,11 +161,10 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
         }
     }
 
-    // MARK: - 监听播放器状态
+    // MARK: - 监听播放器状态 (平滑低功耗 5Hz 调度，彻底杜绝掉帧)
 
     private func setupPlayerObservations(player: AVPlayer, playerItem: AVPlayerItem) {
-        // 时间监听器 (约 30fps 精准刷新，平滑移动进度条与字幕)
-        let interval = CMTime(seconds: 0.05, preferredTimescale: 600)
+        let interval = CMTime(seconds: 0.2, preferredTimescale: 600)
         timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             guard let self, !self.isScrubbing else { return }
             let seconds = CMTimeGetSeconds(time)
@@ -236,6 +254,20 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
         self.currentTime = clamped
     }
 
+    public func seekRelative(_ deltaSeconds: Double) {
+        guard duration > 0 else { return }
+        seek(to: currentTime + deltaSeconds)
+        let text = deltaSeconds > 0 ? "+\(Int(deltaSeconds))s" : "\(Int(deltaSeconds))s"
+        seekRipple = (isForward: deltaSeconds > 0, text: text)
+        GrainHaptics.medium()
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            if self?.seekRipple?.text == text {
+                self?.seekRipple = nil
+            }
+        }
+    }
+
     public func setSpeed(_ speed: PlaybackSpeed) {
         self.playbackSpeed = speed
         if isPlaying && !isFastForwarding {
@@ -276,20 +308,8 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
     // MARK: - 手势 1: 双击快进 / 快退 ±10s
 
     public func doubleTapSeek(forward: Bool) {
-        guard duration > 0 else { return }
         let interval = Double(doubleTapSeekInterval)
-        let target = forward ? (currentTime + interval) : (currentTime - interval)
-        seek(to: target)
-
-        let text = forward ? "+\(doubleTapSeekInterval)s" : "-\(doubleTapSeekInterval)s"
-        seekRipple = (isForward: forward, text: text)
-        GrainHaptics.medium()
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) { [weak self] in
-            if self?.seekRipple?.text == text {
-                self?.seekRipple = nil
-            }
-        }
+        seekRelative(forward ? interval : -interval)
     }
 
     // MARK: - 手势 2: 垂直拖动调节亮度 (左半屏)
@@ -338,8 +358,8 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
 
     public func updateScrubbing(fraction: CGFloat, translationX: CGFloat) {
         guard duration > 0 else { return }
-        let delta = Double(translationX) * 0.2
-        let target = max(0, min(duration, scrubTargetTime + delta))
+        let delta = Double(translationX) * 0.15
+        let target = max(0, min(duration, currentTime + delta))
         scrubDeltaSeconds = Int((target - currentTime).rounded())
         scrubTargetTime = target
     }
@@ -383,7 +403,6 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
             let cgImage = try await generator.image(at: cmTime).image
             let uiImage = UIImage(cgImage: cgImage)
 
-            // 存入系统相册
             try await PHPhotoLibrary.shared().performChanges {
                 PHAssetChangeRequest.creationRequestForAsset(from: uiImage)
             }
@@ -438,7 +457,6 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
     // MARK: - 字幕控制
 
     private func parseEmbeddedSubtitles(from asset: AVAsset) {
-        // 读取内嵌字幕轨道
         var tracks: [SubtitleTrack] = []
         if let mediaSelectionGroup = asset.mediaSelectionGroup(forMediaCharacteristic: .legible) {
             for option in mediaSelectionGroup.options {
@@ -483,7 +501,11 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
     // MARK: - HUD 显隐调度
 
     public func toggleControlsVisibility() {
-        guard !isControlsLocked else { return }
+        guard !isControlsLocked else {
+            // 锁定状态下点击屏幕晃动锁图标提示
+            GrainHaptics.light()
+            return
+        }
         showControls.toggle()
         if showControls && isPlaying {
             scheduleControlsDismissal()

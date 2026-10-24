@@ -4,12 +4,10 @@ import SwiftUI
 
 public struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var biometricService = BiometricLockService.shared
 
     @AppStorage("doubleTapSeekInterval") private var doubleTapSeekInterval: Int = 10
     @AppStorage("autoPictureInPicture") private var autoPiPEnabled: Bool = true
     @AppStorage("enableBackgroundAudio") private var backgroundAudioEnabled: Bool = true
-    @AppStorage("requireBiometricForHiddenVault") private var isBiometricRequired: Bool = true
 
     public init() {}
 
@@ -47,27 +45,23 @@ public struct SettingsView: View {
                         .listRowBackground(GrainTheme.surface)
                     }
 
-                    // 隐私与生物识别设置
-                    Section(header: Text("隐私与加密").foregroundColor(GrainTheme.muted)) {
-                        Toggle(isOn: $isBiometricRequired) {
-                            Label("访问隐藏相册与保险箱需 \(biometricService.biometricName)", systemImage: biometricService.biometricIcon)
+                    // 目录与相册说明
+                    Section(header: Text("相册与目录说明").foregroundColor(GrainTheme.muted)) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("支持播放「已隐藏」相册")
+                                .font(.system(size: 14, weight: .semibold))
                                 .foregroundColor(GrainTheme.paper)
-                        }
-                        .tint(GrainTheme.accent)
-                        .listRowBackground(GrainTheme.surface)
 
-                        HStack {
-                            Text("退入后台自动上锁")
-                                .foregroundColor(GrainTheme.paper)
-                            Spacer()
-                            Text("始终开启")
-                                .font(.subheadline)
-                                .foregroundColor(GrainTheme.accent)
+                            Text("在「相册目录」横滑栏中选择「已隐藏」，可直接浏览并播放系统已隐藏的所有视频，无需在系统相册中手动恢复。")
+                                .font(.system(size: 12))
+                                .foregroundColor(GrainTheme.muted)
+                                .lineSpacing(3)
                         }
+                        .padding(.vertical, 4)
                         .listRowBackground(GrainTheme.surface)
                     }
 
-                    // 文件传输指南
+                    // 电脑文件导入指南
                     Section(header: Text("电脑文件导入指南").foregroundColor(GrainTheme.muted)) {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Mac 访达 / Windows iTunes 共享")
@@ -89,7 +83,7 @@ public struct SettingsView: View {
                             Text("应用版本")
                                 .foregroundColor(GrainTheme.paper)
                             Spacer()
-                            Text("1.0 (Build 1)")
+                            Text("1.0 (Build 2)")
                                 .font(.system(size: 13, design: .monospaced))
                                 .foregroundColor(GrainTheme.muted)
                         }

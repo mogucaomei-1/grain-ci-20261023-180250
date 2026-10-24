@@ -1,10 +1,10 @@
 import SwiftUI
 
-// MARK: - 主容器视图 (承载顶栏、三大目录分类与全屏播放器)
+// MARK: - 主容器视图 (相册目录与文件目录瞬切，无私密冗余，极速流畅)
 
 public struct RootView: View {
     @StateObject private var playerViewModel = PlayerViewModel()
-    @State private var selectedTab: Int = 0 // 0: 相册, 1: 文件, 2: 私密
+    @State private var selectedTab: Int = 0 // 0: 相册目录 (含已隐藏相册), 1: 文件目录
     @State private var playingVideo: VideoItem? = nil
     @State private var infoVideo: VideoItem? = nil
     @State private var showSettings = false
@@ -19,30 +19,26 @@ public struct RootView: View {
                 // 顶部品牌栏与设置入口
                 topNavigationBar
 
-                // 三大主目录分段切换条
+                // 两大主目录分段切换条 (相册目录 / 文件目录)
                 tabSegmentBar
 
-                // 主内容区
-                TabView(selection: $selectedTab) {
+                // 主内容区 (利用 ZStack 预热并瞬时切换，杜绝 TabView 销毁重建卡顿)
+                ZStack {
                     PhotoLibraryView(
                         onSelectVideo: { video in startPlayback(video) },
                         onShowInfo: { video in infoVideo = video }
                     )
-                    .tag(0)
+                    .opacity(selectedTab == 0 ? 1 : 0)
+                    .allowsHitTesting(selectedTab == 0)
 
                     FileDirectoryView(
                         onSelectVideo: { video in startPlayback(video) },
                         onShowInfo: { video in infoVideo = video }
                     )
-                    .tag(1)
-
-                    HiddenVaultView(
-                        onSelectVideo: { video in startPlayback(video) },
-                        onShowInfo: { video in infoVideo = video }
-                    )
-                    .tag(2)
+                    .opacity(selectedTab == 1 ? 1 : 0)
+                    .allowsHitTesting(selectedTab == 1)
                 }
-                .tabViewStyle(.page(indexDisplayMode: .never))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
             // 全屏播放器模态层
@@ -67,8 +63,8 @@ public struct RootView: View {
 
     private var topNavigationBar: some View {
         HStack(spacing: 12) {
-            // GRAIN 品牌标识
-            HStack(spacing: 5) {
+            // GRAIN PLAYER 品牌标识
+            HStack(spacing: 6) {
                 Text("GRAIN")
                     .font(.system(size: 19, weight: .black, design: .monospaced))
                     .tracking(2.5)
@@ -82,7 +78,7 @@ public struct RootView: View {
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .tracking(2)
                     .foregroundColor(GrainTheme.accent)
-                    .padding(.horizontal, 5)
+                    .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(GrainTheme.accent.opacity(0.15))
                     .cornerRadius(4)
@@ -103,16 +99,15 @@ public struct RootView: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)
-        .padding(.bottom, 8)
+        .padding(.bottom, 6)
     }
 
-    // MARK: - 三大目录切换条
+    // MARK: - 两大主目录切换条
 
     private var tabSegmentBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             segmentTabButton(title: "相册目录", icon: "photo.on.rectangle.angled", tag: 0)
             segmentTabButton(title: "文件目录", icon: "folder.fill", tag: 1)
-            segmentTabButton(title: "私密空间", icon: "lock.shield.fill", tag: 2)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -121,9 +116,7 @@ public struct RootView: View {
     private func segmentTabButton(title: String, icon: String, tag: Int) -> some View {
         let isSelected = selectedTab == tag
         return Button(action: {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                selectedTab = tag
-            }
+            selectedTab = tag
             GrainHaptics.selection()
         }) {
             HStack(spacing: 6) {
@@ -144,14 +137,21 @@ public struct RootView: View {
         }
     }
 
-    // MARK: - 全屏播放器层
+    // MARK: - 全屏播放器层 (性能解耦)
 
     private func fullscreenPlayerView(for video: VideoItem) -> some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            CustomVideoPlayerView(viewModel: playerViewModel)
-                .ignoresSafeArea()
+            CustomVideoPlayerView(
+                player: playerViewModel.player,
+                scaleMode: playerViewModel.scaleMode,
+                pipDelegate: playerViewModel,
+                onPiPReady: { pip in
+                    playerViewModel.pipController = pip
+                }
+            )
+            .ignoresSafeArea()
 
             PlayerOverlayView(
                 viewModel: playerViewModel,

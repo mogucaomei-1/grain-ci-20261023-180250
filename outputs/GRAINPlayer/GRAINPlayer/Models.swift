@@ -8,18 +8,16 @@ import UIKit
 public enum VideoSourceType: Equatable, Hashable {
     /// 来自相册目录 (包括普通相册、自建相册、已隐藏相册)
     case photoLibrary(localIdentifier: String, isHidden: Bool, albumTitle: String? = nil)
-    /// 来自 App 文件目录 (沙盒 Documents/Videos 或 Documents/.vault 私密保险箱)
-    case fileDirectory(url: URL, isVault: Bool)
+    /// 来自 App 文件目录 (沙盒 Documents/Videos)
+    case fileDirectory(url: URL)
     /// 临时自系统文件选择器打开的外部视频 (in-place)
     case externalPicked(url: URL)
 
-    public var isHiddenOrVault: Bool {
+    public var isHidden: Bool {
         switch self {
         case .photoLibrary(_, let isHidden, _):
             return isHidden
-        case .fileDirectory(_, let isVault):
-            return isVault
-        case .externalPicked:
+        case .fileDirectory, .externalPicked:
             return false
         }
     }
@@ -31,8 +29,8 @@ public enum VideoSourceType: Equatable, Hashable {
                 return "相册 · 已隐藏"
             }
             return album.map { "相册 · \($0)" } ?? "系统相册"
-        case .fileDirectory(_, let isVault):
-            return isVault ? "私密保险箱" : "本地文件"
+        case .fileDirectory:
+            return "本地文件"
         case .externalPicked:
             return "外部文件"
         }
@@ -177,7 +175,7 @@ public struct VideoItem: Identifiable, Equatable, Hashable {
     }
 
     public var isHidden: Bool {
-        source.isHiddenOrVault
+        source.isHidden
     }
 }
 

@@ -1,7 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - 文件目录视频管理与浏览视图
+// MARK: - 文件目录视频管理与浏览视图 (含长按多选、批量操作、子文件夹)
 
 public struct FileDirectoryView: View {
     @ObservedObject var fileService = FileManagerService.shared
@@ -18,6 +18,13 @@ public struct FileDirectoryView: View {
     @State private var showMoveSheet = false
     @State private var sortOption: SortOption = .dateDesc
 
+    // 多选状态
+    @State private var isMultiSelecting = false
+    @State private var selectedVideoPaths = Set<String>()
+    @State private var showDeleteConfirmation = false
+    @State private var showShareSheet = false
+    @State private var shareURLs: [URL] = []
+
     public init(onSelectVideo: @escaping (VideoItem) -> Void, onShowInfo: @escaping (VideoItem) -> Void) {
         self.onSelectVideo = onSelectVideo
         self.onShowInfo = onShowInfo
@@ -31,8 +38,8 @@ public struct FileDirectoryView: View {
             // 文件列表内容
             ScrollView {
                 VStack(spacing: 16) {
-                    // 若在根目录，展示文件夹网格
-                    if fileService.currentFolder == nil && !fileService.folders.isEmpty {
+                    // 若在根目录且非多选状态，展示文件夹分类
+                    if fileService.currentFolder == nil && !fileService.folders.isEmpty && !isMultiSelecting {
                         foldersSection
                     }
 
@@ -40,16 +47,24 @@ public struct FileDirectoryView: View {
                     videosSection
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.vertical, 10)
             }
             .refreshable {
                 await fileService.reloadAll()
             }
         }
-        .task {
-            await fileService.reloadAll()
+        .overlay(alignment: .bottom) {
+            if isMultiSelecting {
+                multiSelectBottomBar
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
-        // 系统文件选择器 (导入视频到 App 目录)
+        .task {
+            if fileService.rootVideos.isEmpty {
+                await fileService.reloadAll()
+            }
+        }
+        // 系统文件选择器
         .fileImporter(
             isPresented: $showDocumentPicker,
             allowedContentTypes: [.movie, .video, .quickTimeMovie, .mpeg4Movie],
@@ -80,6 +95,17 @@ public struct FileDirectoryView: View {
                 }
             }
         }
+        // 批量删除确认弹窗
+        .confirmationDialog(
+            "确定要删除所选的 \(selectedVideoPaths.count) 个视频吗？",
+            isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("删除视频", role: .destructive) {
+                deleteSelectedVideos()
+            }
+            Button("取消", role: .cancel) {}
+        }
         // 移动到文件夹 Sheet
         .sheet(isPresented: $showMoveSheet) {
             MoveToFolderSheet(video: moveTargetVideo, folders: fileService.folders) { targetFolder in
@@ -96,6 +122,9 @@ public struct FileDirectoryView: View {
                     }
                 }
             }
+        }
+        .sheet(isPresented: $showShareSheet) {
+            GrainShareSheet(items: shareURLs)
         }
     }
 
@@ -128,26 +157,50 @@ public struct FileDirectoryView: View {
 
             Spacer()
 
+            // 多选开关按钮
+            Button(action: {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                    isMultiSelecting.toggle()
+                    if !isMultiSelecting {
+                        selectedVideoPaths.removeAll()
+                    }
+                }
+                GrainHaptics.selection()
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: isMultiSelecting ? "checkmark.circle.fill" : "checklist")
+                    Text(isMultiSelecting ? "完成" : "多选")
+                }
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(isMultiSelecting ? GrainTheme.black : GrainTheme.paper)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(isMultiSelecting ? GrainTheme.accent : GrainTheme.surface)
+                .clipShape(Capsule())
+            }
+
             // 新建文件夹按钮
-            if fileService.currentFolder == nil {
+            if fileService.currentFolder == nil && !isMultiSelecting {
                 Button(action: { showCreateFolderAlert = true }) {
                     Image(systemName: "folder.badge.plus")
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.system(size: 14, weight: .medium))
                         .foregroundColor(GrainTheme.paper)
-                        .frame(width: 34, height: 34)
+                        .frame(width: 32, height: 32)
                         .background(GrainTheme.surface)
                         .clipShape(Circle())
                 }
             }
 
             // 导入外部文件按钮
-            Button(action: { showDocumentPicker = true }) {
-                Image(systemName: "square.and.arrow.down")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundColor(GrainTheme.paper)
-                    .frame(width: 34, height: 34)
-                    .background(GrainTheme.surface)
-                    .clipShape(Circle())
+            if !isMultiSelecting {
+                Button(action: { showDocumentPicker = true }) {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(GrainTheme.paper)
+                        .frame(width: 32, height: 32)
+                        .background(GrainTheme.surface)
+                        .clipShape(Circle())
+                }
             }
 
             // 排序菜单
@@ -165,15 +218,15 @@ public struct FileDirectoryView: View {
                 }
             } label: {
                 Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundColor(GrainTheme.accent)
-                    .frame(width: 34, height: 34)
+                    .frame(width: 32, height: 32)
                     .background(GrainTheme.surface)
                     .clipShape(Circle())
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
         .background(GrainTheme.surface.opacity(0.4))
     }
 
@@ -256,9 +309,27 @@ public struct FileDirectoryView: View {
                 .padding(.vertical, 40)
             } else {
                 ForEach(sortedVideos) { video in
+                    let isSelected = selectedVideoPaths.contains(video.id)
                     FileVideoRow(
                         video: video,
-                        onTap: { onSelectVideo(video) },
+                        isMultiSelecting: isMultiSelecting,
+                        isSelected: isSelected,
+                        onTap: {
+                            if isMultiSelecting {
+                                toggleSelection(for: video.id)
+                            } else {
+                                onSelectVideo(video)
+                            }
+                        },
+                        onLongPress: {
+                            if !isMultiSelecting {
+                                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                                    isMultiSelecting = true
+                                    selectedVideoPaths.insert(video.id)
+                                }
+                                GrainHaptics.medium()
+                            }
+                        },
                         onInfo: { onShowInfo(video) },
                         onRename: {
                             renamingVideo = video
@@ -268,11 +339,6 @@ public struct FileDirectoryView: View {
                         onMove: {
                             moveTargetVideo = video
                             showMoveSheet = true
-                        },
-                        onMoveToVault: {
-                            Task {
-                                try? await fileService.moveToVault(item: video)
-                            }
                         },
                         onDelete: {
                             Task {
@@ -301,6 +367,81 @@ public struct FileDirectoryView: View {
         }
     }
 
+    private func toggleSelection(for path: String) {
+        if selectedVideoPaths.contains(path) {
+            selectedVideoPaths.remove(path)
+        } else {
+            selectedVideoPaths.insert(path)
+        }
+        GrainHaptics.selection()
+    }
+
+    // MARK: - 多选悬浮底栏
+
+    private var multiSelectBottomBar: some View {
+        HStack(spacing: 20) {
+            Button(action: {
+                if selectedVideoPaths.count == sortedVideos.count {
+                    selectedVideoPaths.removeAll()
+                } else {
+                    selectedVideoPaths = Set(sortedVideos.map(\.id))
+                }
+                GrainHaptics.selection()
+            }) {
+                Text(selectedVideoPaths.count == sortedVideos.count ? "取消全选" : "全选")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(GrainTheme.paper)
+            }
+
+            Spacer()
+
+            Text("已选 \(selectedVideoPaths.count) 个")
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .foregroundColor(GrainTheme.accent)
+
+            Spacer()
+
+            // 批量分享
+            Button(action: {
+                let urls = selectedVideoPaths.map { URL(fileURLWithPath: $0) }
+                self.shareURLs = urls
+                self.showShareSheet = true
+            }) {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(selectedVideoPaths.isEmpty ? GrainTheme.muted : GrainTheme.paper)
+            }
+            .disabled(selectedVideoPaths.isEmpty)
+
+            // 批量删除
+            Button(action: { showDeleteConfirmation = true }) {
+                Image(systemName: "trash")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(selectedVideoPaths.isEmpty ? GrainTheme.muted : GrainTheme.danger)
+            }
+            .disabled(selectedVideoPaths.isEmpty)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 14)
+        .background(GrainTheme.hudBackground)
+        .grainGlass(cornerRadius: 24)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 16)
+    }
+
+    private func deleteSelectedVideos() {
+        let pathsToDelete = Array(selectedVideoPaths)
+        Task {
+            for path in pathsToDelete {
+                try? FileManager.default.removeItem(atPath: path)
+            }
+            selectedVideoPaths.removeAll()
+            isMultiSelecting = false
+            await fileService.reloadAll()
+            GrainHaptics.success()
+        }
+    }
+
     private func handleImportResult(_ result: Result<[URL], Error>) {
         if case .success(let urls) = result {
             Task {
@@ -312,43 +453,52 @@ public struct FileDirectoryView: View {
     }
 }
 
-// MARK: - 文件视频行条目
+// MARK: - 文件视频行条目 (支持长按多选)
 
 struct FileVideoRow: View {
     let video: VideoItem
+    let isMultiSelecting: Bool
+    let isSelected: Bool
     var onTap: () -> Void
+    var onLongPress: () -> Void
     var onInfo: () -> Void
     var onRename: () -> Void
     var onMove: () -> Void
-    var onMoveToVault: () -> Void
     var onDelete: () -> Void
 
     @State private var thumbnail: UIImage? = nil
 
     var body: some View {
         Button(action: onTap) {
-            HStack(spacing: 14) {
-                // 缩略图
+            HStack(spacing: 12) {
+                // 多选勾选圆圈
+                if isMultiSelecting {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 19, weight: .bold))
+                        .foregroundColor(isSelected ? GrainTheme.accent : GrainTheme.muted)
+                }
+
+                // 16:9 无畸变固定画幅缩略图
                 ZStack(alignment: .bottomTrailing) {
-                    Group {
-                        if let thumbnail {
-                            Image(uiImage: thumbnail)
-                                .resizable()
-                                .aspectRatio(16/9, contentMode: .fill)
-                        } else {
-                            Rectangle()
-                                .fill(GrainTheme.card)
-                                .aspectRatio(16/9, contentMode: .fit)
-                                .overlay(
+                    Color.clear
+                        .aspectRatio(16/9, contentMode: .fit)
+                        .overlay(
+                            ZStack {
+                                GrainTheme.card
+                                if let thumbnail {
+                                    Image(uiImage: thumbnail)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                        .clipped()
+                                } else {
                                     Image(systemName: "play.circle.fill")
-                                        .font(.system(size: 22))
+                                        .font(.system(size: 20))
                                         .foregroundColor(GrainTheme.accent)
-                                )
-                        }
-                    }
-                    .frame(width: 90, height: 56)
-                    .cornerRadius(8)
-                    .clipped()
+                                }
+                            }
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                     Text(video.durationFormatted)
                         .font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -359,9 +509,10 @@ struct FileVideoRow: View {
                         .cornerRadius(3)
                         .padding(3)
                 }
+                .frame(width: 88, height: 50)
 
                 // 详情
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(video.title)
                         .font(.system(size: 14, weight: .medium))
                         .foregroundColor(GrainTheme.paper)
@@ -400,21 +551,31 @@ struct FileVideoRow: View {
 
                 Spacer()
 
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(GrainTheme.muted.opacity(0.4))
+                if !isMultiSelecting {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(GrainTheme.muted.opacity(0.4))
+                }
             }
-            .padding(12)
-            .grainCard(cornerRadius: 12)
+            .padding(10)
+            .grainCard(cornerRadius: 12, strokeColor: isSelected ? GrainTheme.accent : GrainTheme.line)
         }
         .buttonStyle(.plain)
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.35)
+                .onEnded { _ in
+                    onLongPress()
+                }
+        )
         .contextMenu {
-            Button(action: onTap) { Label("立即播放", systemImage: "play.fill") }
-            Button(action: onInfo) { Label("视频详细参数", systemImage: "info.circle") }
-            Button(action: onMoveToVault) { Label("移入私密保险箱", systemImage: "lock.shield") }
-            Button(action: onMove) { Label("移动到文件夹...", systemImage: "folder") }
-            Button(action: onRename) { Label("重命名", systemImage: "pencil") }
-            Button(role: .destructive, action: onDelete) { Label("删除视频", systemImage: "trash") }
+            if !isMultiSelecting {
+                Button(action: onTap) { Label("立即播放", systemImage: "play.fill") }
+                Button(action: onInfo) { Label("视频详细参数", systemImage: "info.circle") }
+                Button(action: onLongPress) { Label("多选", systemImage: "checklist") }
+                Button(action: onMove) { Label("移动到文件夹...", systemImage: "folder") }
+                Button(action: onRename) { Label("重命名", systemImage: "pencil") }
+                Button(role: .destructive, action: onDelete) { Label("删除视频", systemImage: "trash") }
+            }
         }
         .task {
             if case .fileDirectory(let url, _) = video.source {

@@ -3,7 +3,7 @@ import Foundation
 import SwiftUI
 import UIKit
 
-// MARK: - 本地文件目录与私密保险箱管理服务
+// MARK: - 本地文件目录与文件夹管理服务 (高速稳定，支持 iTunes/Finder 共享)
 
 @MainActor
 public final class FileManagerService: ObservableObject {
@@ -11,7 +11,6 @@ public final class FileManagerService: ObservableObject {
 
     @Published public private(set) var rootVideos: [VideoItem] = []
     @Published public private(set) var folders: [VideoFolder] = []
-    @Published public private(set) var vaultVideos: [VideoItem] = []
     @Published public private(set) var currentFolderVideos: [VideoItem] = []
     @Published public private(set) var currentFolder: VideoFolder? = nil
     @Published public private(set) var isLoading: Bool = false
@@ -31,20 +30,15 @@ public final class FileManagerService: ObservableObject {
         documentsDirectory.appendingPathComponent("Videos", isDirectory: true)
     }
 
-    public var vaultDirectory: URL {
-        documentsDirectory.appendingPathComponent(".vault", isDirectory: true)
-    }
-
     public init() {
         createDefaultDirectoriesIfNeeded()
     }
 
     private func createDefaultDirectoriesIfNeeded() {
         try? fileManager.createDirectory(at: videosDirectory, withIntermediateDirectories: true)
-        try? fileManager.createDirectory(at: vaultDirectory, withIntermediateDirectories: true)
     }
 
-    /// 重新扫描本地文件、文件夹及私密保险箱
+    /// 重新扫描本地文件与文件夹
     public func reloadAll() async {
         isLoading = true
         defer { isLoading = false }
@@ -73,25 +67,22 @@ public final class FileManagerService: ObservableObject {
         self.folders = fetchedFolders.sorted(by: { $0.name.localizedStandardCompare($1.name) == .orderedAscending })
 
         // 2. 加载 Videos 根目录下的视频
-        self.rootVideos = await loadVideos(in: videosDirectory, isVault: false)
+        self.rootVideos = await loadVideos(in: videosDirectory)
 
         // 3. 加载当前文件夹下的视频（若有选中）
         if let currentFolder {
-            self.currentFolderVideos = await loadVideos(in: currentFolder.url, isVault: false)
+            self.currentFolderVideos = await loadVideos(in: currentFolder.url)
         } else {
             self.currentFolderVideos = self.rootVideos
         }
-
-        // 4. 加载私密保险箱视频
-        self.vaultVideos = await loadVideos(in: vaultDirectory, isVault: true)
     }
 
     /// 扫描指定目录下的视频
-    private func loadVideos(in directory: URL, isVault: Bool) async -> [VideoItem] {
+    private func loadVideos(in directory: URL) async -> [VideoItem] {
         guard let fileUrls = try? fileManager.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: [.fileSizeKey, .creationDateKey, .contentModificationDateKey],
-            options: isVault ? [] : [.skipsHiddenFiles]
+            options: [.skipsHiddenFiles]
         ) else { return [] }
 
         var items: [VideoItem] = []
@@ -106,7 +97,7 @@ public final class FileManagerService: ObservableObject {
             let item = VideoItem(
                 id: url.path,
                 title: title,
-                source: .fileDirectory(url: url, isVault: isVault),
+                source: .fileDirectory(url: url),
                 metadata: meta
             )
             items.append(item)
@@ -119,7 +110,7 @@ public final class FileManagerService: ObservableObject {
     public func enterFolder(_ folder: VideoFolder?) async {
         currentFolder = folder
         if let folder {
-            currentFolderVideos = await loadVideos(in: folder.url, isVault: false)
+            currentFolderVideos = await loadVideos(in: folder.url)
         } else {
             currentFolderVideos = rootVideos
         }
@@ -156,7 +147,7 @@ public final class FileManagerService: ObservableObject {
     }
 
     /// 导入外部文件（来自系统文件选择器，处理安全访问书签）
-    public func importExternalFile(from sourceURL: URL, toFolder: VideoFolder? = nil, moveToVault: Bool = false) async throws {
+    public func importExternalFile(from sourceURL: URL, toFolder: VideoFolder? = nil) async throws {
         let shouldStopAccessing = sourceURL.startAccessingSecurityScopedResource()
         defer {
             if shouldStopAccessing {
@@ -164,11 +155,10 @@ public final class FileManagerService: ObservableObject {
             }
         }
 
-        let targetDir = moveToVault ? vaultDirectory : (toFolder?.url ?? videosDirectory)
+        let targetDir = toFolder?.url ?? videosDirectory
         var fileName = sourceURL.lastPathComponent
         var destinationURL = targetDir.appendingPathComponent(fileName)
 
-        // 避免文件名冲突
         var counter = 1
         let baseName = sourceURL.deletingPathExtension().lastPathComponent
         let ext = sourceURL.pathExtension
@@ -183,30 +173,9 @@ public final class FileManagerService: ObservableObject {
         await reloadAll()
     }
 
-    /// 移入私密保险箱
-    public func moveToVault(item: VideoItem) async throws {
-        guard case .fileDirectory(let url, let isVault) = item.source, !isVault else { return }
-
-        let destinationURL = vaultDirectory.appendingPathComponent(url.lastPathComponent)
-        try fileManager.moveItem(at: url, to: destinationURL)
-        GrainHaptics.success()
-        await reloadAll()
-    }
-
-    /// 从私密保险箱移出到常规文件目录
-    public func moveOutOfVault(item: VideoItem, toFolder: VideoFolder? = nil) async throws {
-        guard case .fileDirectory(let url, let isVault) = item.source, isVault else { return }
-
-        let targetDir = toFolder?.url ?? videosDirectory
-        let destinationURL = targetDir.appendingPathComponent(url.lastPathComponent)
-        try fileManager.moveItem(at: url, to: destinationURL)
-        GrainHaptics.success()
-        await reloadAll()
-    }
-
     /// 删除文件
     public func deleteVideo(item: VideoItem) async throws {
-        guard case .fileDirectory(let url, _) = item.source else { return }
+        guard case .fileDirectory(let url) = item.source else { return }
         try fileManager.removeItem(at: url)
         GrainHaptics.medium()
         await reloadAll()
@@ -214,7 +183,7 @@ public final class FileManagerService: ObservableObject {
 
     /// 重命名文件
     public func renameVideo(item: VideoItem, newTitle: String) async throws {
-        guard case .fileDirectory(let url, _) = item.source else { return }
+        guard case .fileDirectory(let url) = item.source else { return }
         let trimmed = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
@@ -232,7 +201,7 @@ public final class FileManagerService: ObservableObject {
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: 480, height: 480)
+        generator.maximumSize = CGSize(width: 360, height: 200)
 
         return try? await withCheckedThrowingContinuation { continuation in
             generator.generateCGImagesAsynchronously(forTimes: [NSValue(time: time)]) { _, cgImage, _, _, error in

@@ -23,7 +23,7 @@ public struct AlbumCategory: Identifiable, Hashable {
     }
 }
 
-// MARK: - 相册服务 (包含智能相册、用户相册及隐藏相册)
+// MARK: - 高性能相册服务 (千万级资产秒级加载与内存缓存)
 
 @MainActor
 public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibraryChangeObserver {
@@ -31,16 +31,17 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
 
     @Published public private(set) var authorizationStatus: PHAuthorizationStatus = .notDetermined
     @Published public private(set) var albums: [AlbumCategory] = []
-    @Published public private(set) var currentAlbumVideos: [VideoItem] = []
-    @Published public private(set) var hiddenAlbumVideos: [VideoItem] = []
+    @Published public private(set) var currentAssets: [PHAsset] = []
+    @Published public private(set) var hiddenAssets: [PHAsset] = []
     @Published public private(set) var isLoading: Bool = false
     @Published public private(set) var selectedAlbumId: String = "all_videos"
 
     private let imageManager = PHCachingImageManager()
-    private var cachedAssets: [String: PHAsset] = [:]
+    private let thumbnailCache = NSCache<NSString, UIImage>()
 
     public override init() {
         super.init()
+        thumbnailCache.countLimit = 300 // 最多缓存 300 张缩略图
         self.authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         PHPhotoLibrary.shared().register(self)
     }
@@ -75,13 +76,13 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
         isLoading = true
         defer { isLoading = false }
 
-        // 1. 获取所有视频数量
+        // 1. 获取所有视频数量 (PHFetchResult 仅持有轻量游标，毫秒级返回)
         let allVideosFetch = PHAsset.fetchAssets(with: .video, options: nil)
         var albumList: [AlbumCategory] = [
             AlbumCategory(id: "all_videos", title: "全部视频", icon: "video.fill", count: allVideosFetch.count)
         ]
 
-        // 2. 获取智能相册 (最近、个人收藏、慢动作、延时、电影效果)
+        // 2. 常用智能分类
         let smartSubtypes: [(PHAssetCollectionSubtype, String, String)] = [
             (.smartAlbumRecentlyAdded, "最近项目", "clock.fill"),
             (.smartAlbumFavorites, "个人收藏", "heart.fill"),
@@ -144,7 +145,7 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
 
         // 加载当前选中相册的视频列表
         await loadVideosForSelectedAlbum()
-        // 同时静默加载或更新隐藏相册数据
+        // 加载隐藏相册数据
         await loadHiddenAlbumVideos(collection: hiddenCollection)
     }
 
@@ -154,7 +155,7 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
         await loadVideosForSelectedAlbum()
     }
 
-    /// 加载当前相册的视频列表
+    /// 高性能加载当前相册的视频列表 (杜绝 KVC 阻塞，秒级返回)
     private func loadVideosForSelectedAlbum() async {
         guard let album = albums.first(where: { $0.id == selectedAlbumId }) else { return }
 
@@ -171,31 +172,12 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
             fetchResult = PHAsset.fetchAssets(with: .video, options: options)
         }
 
-        var items: [VideoItem] = []
-        items.reserveCapacity(fetchResult.count)
-
-        fetchResult.enumerateObjects { [weak self] asset, _, _ in
-            guard let self else { return }
-            self.cachedAssets[asset.localIdentifier] = asset
-
-            let title = asset.value(forKey: "filename") as? String
-                ?? "视频 \(FormatUtils.formatDate(asset.creationDate ?? Date()))"
-
-            var meta = VideoMetadata()
-            meta.duration = asset.duration
-            meta.naturalSize = CGSize(width: asset.pixelWidth, height: asset.pixelHeight)
-            meta.creationDate = asset.creationDate ?? Date()
-
-            let item = VideoItem(
-                id: asset.localIdentifier,
-                title: title,
-                source: .photoLibrary(localIdentifier: asset.localIdentifier, isHidden: album.isHiddenAlbum, albumTitle: album.title),
-                metadata: meta
-            )
-            items.append(item)
+        var fetched: [PHAsset] = []
+        fetched.reserveCapacity(fetchResult.count)
+        fetchResult.enumerateObjects { asset, _, _ in
+            fetched.append(asset)
         }
-
-        self.currentAlbumVideos = items
+        self.currentAssets = fetched
     }
 
     /// 加载相册隐藏相册内的视频列表
@@ -209,7 +191,7 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
         }
 
         guard let targetCollection = col else {
-            self.hiddenAlbumVideos = []
+            self.hiddenAssets = []
             return
         }
 
@@ -218,55 +200,70 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
 
         let result = PHAsset.fetchAssets(in: targetCollection, options: options)
-        var items: [VideoItem] = []
-        items.reserveCapacity(result.count)
-
-        result.enumerateObjects { [weak self] asset, _, _ in
-            guard let self else { return }
-            self.cachedAssets[asset.localIdentifier] = asset
-
-            let title = asset.value(forKey: "filename") as? String
-                ?? "已隐藏视频 \(FormatUtils.formatDate(asset.creationDate ?? Date()))"
-
-            var meta = VideoMetadata()
-            meta.duration = asset.duration
-            meta.naturalSize = CGSize(width: asset.pixelWidth, height: asset.pixelHeight)
-            meta.creationDate = asset.creationDate ?? Date()
-
-            let item = VideoItem(
-                id: asset.localIdentifier,
-                title: title,
-                source: .photoLibrary(localIdentifier: asset.localIdentifier, isHidden: true, albumTitle: "已隐藏"),
-                metadata: meta
-            )
-            items.append(item)
+        var fetched: [PHAsset] = []
+        fetched.reserveCapacity(result.count)
+        result.enumerateObjects { asset, _, _ in
+            fetched.append(asset)
         }
-
-        self.hiddenAlbumVideos = items
+        self.hiddenAssets = fetched
     }
 
-    /// 请求加载高清或缩略图
-    public func requestThumbnail(for item: VideoItem, targetSize: CGSize = CGSize(width: 400, height: 400), completion: @escaping (UIImage?) -> Void) {
-        guard case .photoLibrary(let localIdentifier, _, _) = item.source,
-              let asset = cachedAssets[localIdentifier] ?? PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject else {
-            completion(nil)
-            return
+    /// 请求加载缩略图 (带内存高速缓存与可取消 RequestID)
+    @discardableResult
+    public func requestThumbnail(for asset: PHAsset, targetSize: CGSize = CGSize(width: 320, height: 180), completion: @escaping (UIImage?) -> Void) -> PHImageRequestID? {
+        let key = NSString(string: "\(asset.localIdentifier)_\(Int(targetSize.width))")
+        if let cached = thumbnailCache.object(forKey: key) {
+            completion(cached)
+            return nil
         }
 
         let options = PHImageRequestOptions()
         options.isNetworkAccessAllowed = true
-        options.deliveryMode = .highQualityFormat
+        options.deliveryMode = .opportunistic
         options.resizeMode = .fast
 
-        imageManager.requestImage(for: asset, targetSize: targetSize, contentMode: .aspectFill, options: options) { image, _ in
-            completion(image)
+        return imageManager.requestImage(for: asset, targetSize: targetSize, contentMode: .aspectFill, options: options) { [weak self] image, info in
+            if let degraded = info?[PHImageResultIsDegradedKey] as? Bool, degraded {
+                completion(image)
+                return
+            }
+            if let image {
+                self?.thumbnailCache.setObject(image, forKey: key)
+                DispatchQueue.main.async {
+                    completion(image)
+                }
+            }
         }
+    }
+
+    public func cancelThumbnailRequest(_ id: PHImageRequestID) {
+        imageManager.cancelImageRequest(id)
+    }
+
+    /// 构建轻量级 VideoItem 模型 (避免提前解析大图)
+    public func makeVideoItem(from asset: PHAsset, isHidden: Bool = false, albumTitle: String? = nil) -> VideoItem {
+        let title = "视频 · \(FormatUtils.formatDate(asset.creationDate ?? Date()))"
+        var meta = VideoMetadata()
+        meta.duration = asset.duration
+        meta.naturalSize = CGSize(width: asset.pixelWidth, height: asset.pixelHeight)
+        meta.creationDate = asset.creationDate ?? Date()
+
+        return VideoItem(
+            id: asset.localIdentifier,
+            title: title,
+            source: .photoLibrary(localIdentifier: asset.localIdentifier, isHidden: isHidden, albumTitle: albumTitle),
+            metadata: meta
+        )
     }
 
     /// 获取视频用于播放的 AVPlayerItem 与精准技术参数
     public func preparePlayerItem(for item: VideoItem) async throws -> (AVPlayerItem, VideoMetadata) {
-        guard case .photoLibrary(let localIdentifier, _, _) = item.source,
-              let asset = cachedAssets[localIdentifier] ?? PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject else {
+        guard case .photoLibrary(let localIdentifier, _, _) = item.source else {
+            throw NSError(domain: "GRAINPlayer", code: 404, userInfo: [NSLocalizedDescriptionKey: "非相册资产"])
+        }
+
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil)
+        guard let asset = assets.firstObject else {
             throw NSError(domain: "GRAINPlayer", code: 404, userInfo: [NSLocalizedDescriptionKey: "无法在相册中找到该视频资产"])
         }
 
@@ -296,13 +293,8 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
         }
     }
 
-    /// 从相册中删除视频 (带系统确认提示)
-    public func deleteVideo(item: VideoItem) async throws {
-        guard case .photoLibrary(let localIdentifier, _, _) = item.source,
-              let asset = cachedAssets[localIdentifier] ?? PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier], options: nil).firstObject else {
-            return
-        }
-
+    /// 从相册中删除视频
+    public func deleteAsset(_ asset: PHAsset) async throws {
         try await withCheckedThrowingContinuation { continuation in
             PHPhotoLibrary.shared().performChanges {
                 PHAssetChangeRequest.deleteAssets([asset] as NSArray)
