@@ -2461,23 +2461,23 @@ struct CameraView: View {
     }
 
     private var cameraControls: some View {
-        VStack(spacing: 7) {
+        VStack(spacing: 4) {
             if showCameraFilters {
                 cameraFilterTray
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 ForEach(zoomOptions, id: \.self) { zoom in
                     Button {
                         camera.setZoom(zoom)
                     } label: {
                         Text(zoomLabel(zoom))
-                            .font(.system(size: zoom == camera.selectedZoom ? 12 : 10, weight: .bold, design: .rounded))
+                            .font(.system(size: zoom == camera.selectedZoom ? 10.5 : 9, weight: .bold, design: .rounded))
                             .foregroundStyle(
                                 zoom == camera.selectedZoom ? GrainTheme.black : GrainTheme.paper
                             )
-                            .frame(width: zoom == camera.selectedZoom ? 42 : 34, height: 34)
+                            .frame(width: zoom == camera.selectedZoom ? 34 : 28, height: 28)
                             .background(
                                 zoom == camera.selectedZoom
                                     ? GrainTheme.paper
@@ -2494,9 +2494,9 @@ struct CameraView: View {
                 }
             }
 
-            HStack(spacing: 9) {
+            HStack(spacing: 6) {
                 Image(systemName: "sun.min")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(GrainTheme.muted)
                 Slider(
                     value: Binding(
@@ -2507,23 +2507,25 @@ struct CameraView: View {
                     step: 0.1
                 )
                 .tint(GrainTheme.accent)
+                .scaleEffect(0.82, anchor: .center)
+                .frame(height: 22)
                 Text(String(format: "%+.1f", camera.exposureBias))
-                    .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
                     .foregroundStyle(GrainTheme.paper)
-                    .frame(width: 34, alignment: .trailing)
+                    .frame(width: 30, alignment: .trailing)
                 Image(systemName: "sun.max")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(GrainTheme.muted)
             }
 
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 ForEach(CameraResolution.allCases) { option in
                     Button(option.title) {
                         resolution = option
                     }
-                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                     .foregroundStyle(resolution == option ? GrainTheme.black : GrainTheme.paper)
-                    .frame(width: 50, height: 30)
+                    .frame(width: 44, height: 26)
                     .background(
                         resolution == option ? GrainTheme.paper : Color.black.opacity(0.54),
                         in: Capsule()
@@ -2540,10 +2542,10 @@ struct CameraView: View {
                 // 实况照片固定 12MP（系统限制），明确标出来避免误以为设置未生效
                 if livePhoto {
                     Text("实况 12MP")
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .font(.system(size: 7.5, weight: .bold, design: .monospaced))
                         .foregroundStyle(GrainTheme.black)
-                        .padding(.horizontal, 7)
-                        .frame(height: 22)
+                        .padding(.horizontal, 6)
+                        .frame(height: 20)
                         .background(GrainTheme.accent, in: Capsule())
                 }
 
@@ -2567,17 +2569,17 @@ struct CameraView: View {
                     camera.setFocusPeaking(!camera.isFocusPeakingEnabled)
                     GrainHaptics.selection(enabled: true)
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 3) {
                         Image(systemName: "viewfinder")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(.system(size: 9, weight: .semibold))
                         Text("峰值")
-                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .font(.system(size: 8.5, weight: .bold, design: .rounded))
                     }
                     .foregroundStyle(
                         camera.isFocusPeakingEnabled ? GrainTheme.black : GrainTheme.paper
                     )
-                    .padding(.horizontal, 9)
-                    .frame(height: 30)
+                    .padding(.horizontal, 8)
+                    .frame(height: 26)
                     .background(
                         camera.isFocusPeakingEnabled
                             ? GrainTheme.accent
@@ -2593,10 +2595,10 @@ struct CameraView: View {
 
             if let hint = camera.peakingHint {
                 Text(hint)
-                    .font(.system(size: 8.5, weight: .semibold, design: .rounded))
+                    .font(.system(size: 8, weight: .semibold, design: .rounded))
                     .foregroundStyle(GrainTheme.black)
-                    .padding(.horizontal, 9)
-                    .frame(height: 22)
+                    .padding(.horizontal, 8)
+                    .frame(height: 20)
                     .background(GrainTheme.paper, in: Capsule())
                     .transition(.opacity)
             }
@@ -2610,22 +2612,22 @@ struct CameraView: View {
                     }
                 } label: {
                     ZStack {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .fill(Color.black.opacity(0.54))
                         if let thumbnail = camera.latestCaptureThumbnail {
                             Image(uiImage: thumbnail)
                                 .resizable()
                                 .scaledToFill()
-                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                         } else {
                             Image(systemName: "photo.on.rectangle")
-                                .font(.system(size: 16, weight: .medium))
+                                .font(.system(size: 13, weight: .medium))
                                 .foregroundStyle(GrainTheme.paper)
                         }
                     }
-                    .frame(width: 46, height: 46)
+                    .frame(width: 38, height: 38)
                     .overlay {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .stroke(Color.white.opacity(0.18), lineWidth: 0.8)
                     }
                 }
@@ -2652,13 +2654,14 @@ struct CameraView: View {
                 } label: {
                     ZStack {
                         Circle()
-                            .stroke(GrainTheme.paper, lineWidth: 4)
-                            .frame(width: 76, height: 76)
+                            .stroke(GrainTheme.paper, lineWidth: 3)
+                            .frame(width: 58, height: 58)
                         Circle()
                             .fill(camera.isCapturing ? GrainTheme.muted : GrainTheme.paper)
-                            .frame(width: 62, height: 62)
+                            .frame(width: 46, height: 46)
                         if camera.isCapturing {
                             ProgressView()
+                                .controlSize(.small)
                                 .tint(GrainTheme.black)
                         }
                     }
@@ -2673,46 +2676,48 @@ struct CameraView: View {
                     GrainHaptics.mediumImpact(enabled: true)
                 } label: {
                     Image(systemName: "arrow.triangle.2.circlepath.camera")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(GrainTheme.paper)
-                        .frame(width: 46, height: 46)
+                        .frame(width: 38, height: 38)
                         .background(Color.black.opacity(0.54), in: Circle())
                 }
                 .buttonStyle(.plain)
-                .frame(width: 58)
+                .frame(width: 50)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 16)
-        .padding(.bottom, 18)
-        .background(Color.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 28))
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 12)
+        .background(Color.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 22))
         .overlay {
-            RoundedRectangle(cornerRadius: 28)
+            RoundedRectangle(cornerRadius: 22)
                 .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 10)
         .padding(.bottom, 0)
     }
 
     private var cameraFilterTray: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 8) {
+        VStack(spacing: 4) {
+            HStack(spacing: 6) {
                 Text(cameraProfile.shortName)
-                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                    .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundStyle(cameraProfile == .neutral ? GrainTheme.muted : GrainTheme.accent)
-                    .frame(width: 70, alignment: .leading)
+                    .frame(width: 62, alignment: .leading)
                     .lineLimit(1)
                 Slider(value: $cameraIntensity, in: 0...2)
                     .tint(GrainTheme.accent)
                     .disabled(cameraProfile == .neutral)
+                    .scaleEffect(0.82, anchor: .center)
+                    .frame(height: 22)
                 Text("\(Int((cameraIntensity * 100).rounded()))%")
                     .font(.system(size: 8, weight: .semibold, design: .monospaced))
                     .foregroundStyle(GrainTheme.paper)
-                    .frame(width: 32, alignment: .trailing)
+                    .frame(width: 28, alignment: .trailing)
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 5) {
+                HStack(spacing: 4) {
                     ForEach(cameraProfiles) { profile in
                         Button {
                             if profile != .neutral, cameraProfile == profile {
@@ -2727,7 +2732,7 @@ struct CameraView: View {
                         } label: {
                             VStack(spacing: 2) {
                                 ZStack {
-                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
                                         .fill(Color(hex: 0x171714))
                                     RadialGradient(
                                         colors: [
@@ -2736,7 +2741,7 @@ struct CameraView: View {
                                         ],
                                         center: .center,
                                         startRadius: 2,
-                                        endRadius: 34
+                                        endRadius: 28
                                     )
                                     FilmCameraGlyph(
                                         profile: profile,
@@ -2745,26 +2750,26 @@ struct CameraView: View {
                                         .padding(.horizontal, 2)
                                         .padding(.vertical, 1)
                                 }
-                                .frame(width: 56, height: 31)
+                                .frame(width: 48, height: 26)
                                 .overlay {
-                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
                                         .stroke(
                                             cameraProfile == profile
                                                 ? GrainTheme.accent
                                                 : Color.white.opacity(0.08),
-                                            lineWidth: cameraProfile == profile ? 2 : 0.7
+                                            lineWidth: cameraProfile == profile ? 1.8 : 0.7
                                         )
                                 }
 
                                 Text(profile.shortName)
-                                    .font(.system(size: 7.2, weight: .semibold, design: .rounded))
+                                    .font(.system(size: 7, weight: .semibold, design: .rounded))
                                     .foregroundStyle(
                                         cameraProfile == profile
                                             ? GrainTheme.paper
                                             : GrainTheme.muted
                                     )
                                     .lineLimit(1)
-                                    .frame(width: 58)
+                                    .frame(width: 50)
                             }
                         }
                         .buttonStyle(.plain)
@@ -2773,10 +2778,10 @@ struct CameraView: View {
             }
         }
         .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 14))
+        .padding(.vertical, 5)
+        .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 12))
         .overlay {
-            RoundedRectangle(cornerRadius: 14)
+            RoundedRectangle(cornerRadius: 12)
                 .stroke(GrainTheme.line, lineWidth: 0.7)
         }
     }
@@ -2919,15 +2924,15 @@ private struct MenuChip: View {
     let symbol: String
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 3) {
             Image(systemName: symbol)
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: 8, weight: .semibold))
             Text(title)
-                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .font(.system(size: 8.5, weight: .bold, design: .rounded))
         }
         .foregroundStyle(GrainTheme.paper)
-        .padding(.horizontal, 10)
-        .frame(height: 30)
+        .padding(.horizontal, 8)
+        .frame(height: 26)
         .background(Color.black.opacity(0.54), in: Capsule())
     }
 }
