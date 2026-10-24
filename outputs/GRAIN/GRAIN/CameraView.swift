@@ -153,6 +153,20 @@ final class CameraController: ObservableObject {
     /// 预览视图直接从这里取峰值帧，绕开 SwiftUI 的状态刷新
     let peakingOverlay = PeakingOverlaySink()
 
+    // 自动追焦：主体检测 + 连续对焦，手动点按时自动让位
+    private let metadataOutput = AVCaptureMetadataOutput()
+    private let metadataQueue = DispatchQueue(
+        label: "studio.grain.camera.metadata",
+        qos: .utility
+    )
+    private let trackingProcessor = FocusTrackingProcessor()
+    private var metadataAttached = false
+    /// 预览视图从这里取主体框，换算成图层坐标后画追焦框
+    let trackingSink = FocusTrackingSink()
+    private var lastTrackingPoint = CGPoint(x: 0.5, y: 0.5)
+    private var manualFocusActive = false
+    private var subjectAreaObserver: NSObjectProtocol?
+
     @Published private(set) var isReady = false
     @Published private(set) var isCapturing = false
     @Published private(set) var countdown: Int?
@@ -160,6 +174,10 @@ final class CameraController: ObservableObject {
     /// 峰值对焦：彩色描边标出合焦区域
     @Published private(set) var isFocusPeakingEnabled = false
     @Published private(set) var peakingHint: String?
+    /// 自动追焦：开机会话后默认开启，主体变化自动跟焦
+    @Published private(set) var focusTrackingEnabled = true
+    /// 用户手动点按/锁定对焦后，追焦暂停，等待手动恢复
+    @Published private(set) var isManualFocusActive = false
     @Published private(set) var isLivePhotoSupported = false
     @Published private(set) var isLivePhotoArmed = false
     @Published private(set) var isRawSupported = false
@@ -454,6 +472,16 @@ final class CameraController: ObservableObject {
             session.commitConfiguration()
             videoInput = newInput
             cameraDevice = device
+            // 换镜头后原来的手动对焦点已失效，回到自动追焦
+            manualFocusActive = false
+            lastTrackingPoint = CGPoint(x: 0.5, y: 0.5)
+            trackingSink.submit(nil)
+            DispatchQueue.main.async { [weak self] in
+                self?.isManualFocusActive = false
+            }
+            if focusTrackingEnabled {
+                applyContinuousAutoFocus(true)
+            }
             // 换镜头后峰值输出的方向/镜像必须跟着更新，否则红色描边会错位
             if peakingAttached {
                 updatePeakingConnection()
@@ -482,7 +510,14 @@ final class CameraController: ObservableObject {
 
     func focus(at devicePoint: CGPoint, lock: Bool) {
         sessionQueue.async { [weak self] in
-            guard let cameraDevice = self?.cameraDevice else { return }
+            guard let self, let cameraDevice = self.cameraDevice else { return }
+            // 手动对焦接管：立刻停掉追焦覆盖，直到用户点“追焦”恢复
+            self.manualFocusActive = true
+            self.lastTrackingPoint = devicePoint
+            self.trackingSink.submit(nil)
+            DispatchQueue.main.async { [weak self] in
+                self?.isManualFocusActive = true
+            }
             do {
                 try cameraDevice.lockForConfiguration()
                 if cameraDevice.isFocusPointOfInterestSupported {
@@ -498,6 +533,152 @@ final class CameraController: ObservableObject {
                 DispatchQueue.main.async { [weak self] in
                     self?.errorMessage = "无法设置对焦区域。"
                 }
+            }
+        }
+    }
+
+    // MARK: - 自动追焦
+
+    /// 开关追焦；已开启状态下再次点击表示“从手动对焦恢复自动追焦”
+    func setFocusTracking(_ enabled: Bool) {
+        guard enabled != focusTrackingEnabled else {
+            if enabled { resumeAutoFocus() }
+            return
+        }
+        focusTrackingEnabled = enabled
+        manualFocusActive = false
+        isManualFocusActive = false
+        trackingSink.submit(nil)
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            if enabled {
+                self.attachMetadataOutput()
+                self.applyContinuousAutoFocus(true)
+            } else {
+                self.detachMetadataOutput()
+            }
+        }
+    }
+
+    /// 手动对焦之后恢复自动追焦
+    func resumeAutoFocus() {
+        trackingSink.submit(nil)
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.manualFocusActive = false
+            self.lastTrackingPoint = CGPoint(x: 0.5, y: 0.5)
+            DispatchQueue.main.async { [weak self] in
+                self?.isManualFocusActive = false
+            }
+            self.applyContinuousAutoFocus(true)
+        }
+    }
+
+    /// 追焦把对焦点移到主体上；位移太小就不打断当前对焦，避免来回拉风箱
+    func applyTrackingFocus(_ point: CGPoint) {
+        sessionQueue.async { [weak self] in
+            guard let self,
+                  self.focusTrackingEnabled,
+                  !self.manualFocusActive,
+                  let device = self.cameraDevice
+            else { return }
+            let dx = abs(point.x - self.lastTrackingPoint.x)
+            let dy = abs(point.y - self.lastTrackingPoint.y)
+            guard dx + dy > 0.035 else { return }
+            self.lastTrackingPoint = point
+            guard device.isFocusPointOfInterestSupported else { return }
+            do {
+                try device.lockForConfiguration()
+                device.focusPointOfInterest = point
+                if device.isFocusModeSupported(.continuousAutoFocus) {
+                    device.focusMode = .continuousAutoFocus
+                }
+                if device.isExposurePointOfInterestSupported {
+                    device.exposurePointOfInterest = point
+                }
+                device.unlockForConfiguration()
+            } catch {
+                // 对焦配置偶发失败不打断拍照流程
+            }
+        }
+    }
+
+    private func applyContinuousAutoFocus(_ on: Bool) {
+        guard let device = cameraDevice else { return }
+        do {
+            try device.lockForConfiguration()
+            if on {
+                if device.isFocusModeSupported(.continuousAutoFocus) {
+                    device.focusMode = .continuousAutoFocus
+                }
+                if device.isExposureModeSupported(.continuousAutoExposure) {
+                    device.exposureMode = .continuousAutoExposure
+                }
+                // 画面主体变化时系统会回调，用于重新合焦
+                if device.isSubjectAreaChangeMonitoringEnabled != on {
+                    device.isSubjectAreaChangeMonitoringEnabled = on
+                }
+            }
+            device.unlockForConfiguration()
+        } catch {
+            // 忽略
+        }
+    }
+
+    private func attachMetadataOutput() {
+        guard !metadataAttached, isSessionConfigured else { return }
+        metadataOutput.setMetadataObjectsDelegate(trackingProcessor, queue: metadataQueue)
+        trackingProcessor.onSubject = { [weak self] rect in
+            guard let self else { return }
+            guard self.focusTrackingEnabled, !self.manualFocusActive else {
+                self.trackingSink.submit(nil)
+                return
+            }
+            self.trackingSink.submit(rect)
+        }
+
+        session.beginConfiguration()
+        guard session.canAddOutput(metadataOutput) else {
+            session.commitConfiguration()
+            return
+        }
+        session.addOutput(metadataOutput)
+        // 只保留会话实际支持的类型；设置为空数组会崩溃
+        let wanted: [AVMetadataObject.ObjectType] = [.face]
+            .filter { metadataOutput.availableMetadataObjectTypes.contains($0) }
+        guard !wanted.isEmpty else {
+            session.removeOutput(metadataOutput)
+            session.commitConfiguration()
+            return
+        }
+        metadataOutput.metadataObjectTypes = wanted
+        metadataAttached = true
+        session.commitConfiguration()
+    }
+
+    private func detachMetadataOutput() {
+        guard metadataAttached else { return }
+        session.beginConfiguration()
+        session.removeOutput(metadataOutput)
+        session.commitConfiguration()
+        metadataAttached = false
+        trackingProcessor.onSubject = nil
+    }
+
+    /// 画面主体明显变化时重新合焦（追焦开启且未手动接管时才响应）
+    private func observeSubjectAreaChanges() {
+        guard subjectAreaObserver == nil else { return }
+        subjectAreaObserver = NotificationCenter.default.addObserver(
+            forName: .AVCaptureDeviceSubjectAreaDidChange,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            guard let self,
+                  self.focusTrackingEnabled,
+                  !self.manualFocusActive
+            else { return }
+            self.sessionQueue.async { [weak self] in
+                self?.applyContinuousAutoFocus(true)
             }
         }
     }
@@ -836,6 +1017,12 @@ final class CameraController: ObservableObject {
             didCommitConfiguration = true
             session.startRunning()
             isSessionConfigured = true
+            // 追焦默认开启：会话就绪后挂上主体检测
+            if self.focusTrackingEnabled {
+                self.attachMetadataOutput()
+                self.applyContinuousAutoFocus(true)
+            }
+            self.observeSubjectAreaChanges()
 
             let report = capabilityReport(device, dimensions: captureDimensions)
             let hasHighResolution = (captureDimensions.map {
@@ -1900,6 +2087,69 @@ final class PeakingOverlaySink {
     }
 }
 
+/// 自动追焦的主体框：把检测到的主体矩形交给预览层换算成图层坐标后画框。
+/// 同样绕开 SwiftUI 刷新，避免频繁重建相机页面。
+final class FocusTrackingSink {
+    var onUpdate: ((CGRect?) -> Void)?
+
+    private var pending: CGRect?
+    private var scheduled = false
+    private let lock = NSLock()
+
+    func submit(_ rect: CGRect?) {
+        lock.lock()
+        pending = rect
+        guard !scheduled else {
+            lock.unlock()
+            return
+        }
+        scheduled = true
+        lock.unlock()
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let rect = self.pending
+            self.scheduled = false
+            self.lock.unlock()
+            self.onUpdate?(rect)
+        }
+    }
+}
+
+/// 人脸 / 主体检测：只取画面中最大的一张脸，节流后交给追焦逻辑。
+final class FocusTrackingProcessor: NSObject, AVCaptureMetadataOutputObjectsDelegate {
+    var onSubject: ((CGRect?) -> Void)?
+
+    private var lastTime: CFAbsoluteTime = 0
+
+    func metadataOutput(
+        _ output: AVCaptureMetadataOutput,
+        didOutput metadataObjects: [AVMetadataObject],
+        from connection: AVCaptureConnection
+    ) {
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - lastTime >= 0.18 else { return }
+        lastTime = now
+
+        var best: AVMetadataFaceObject?
+        var bestArea: CGFloat = 0
+        for object in metadataObjects {
+            guard let face = object as? AVMetadataFaceObject else { continue }
+            let area = face.bounds.width * face.bounds.height
+            if area > bestArea {
+                bestArea = area
+                best = face
+            }
+        }
+        guard let face = best else {
+            onSubject?(nil)
+            return
+        }
+        onSubject?(face.bounds)
+    }
+}
+
 /// 从静态预览图生成峰值图（编辑页使用）
 enum FocusPeakingRenderer {
     private static let context = CIContext(options: [.cacheIntermediates: false])
@@ -1947,6 +2197,10 @@ struct CameraPreviewView: UIViewRepresentable {
     let mirrored: Bool
     /// 峰值叠加层的数据源；直接写预览视图的子图层，避免 SwiftUI 每帧重建
     var peakingSink: PeakingOverlaySink?
+    /// 自动追焦的主体框数据源
+    var trackingSink: FocusTrackingSink?
+    /// 追焦把主体中心换算成设备坐标后回传给控制器设置对焦点
+    var onTrackingFocus: ((CGPoint) -> Void)?
     let onFocus: (_ devicePoint: CGPoint, _ lock: Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -1958,6 +2212,8 @@ struct CameraPreviewView: UIViewRepresentable {
         view.previewLayer.session = session
         view.previewLayer.videoGravity = .resizeAspectFill
         view.attachPeakingSink(peakingSink)
+        view.attachTrackingSink(trackingSink)
+        view.onTrackingFocus = onTrackingFocus
         if let connection = view.previewLayer.connection {
             if connection.isVideoRotationAngleSupported(90) {
                 connection.videoRotationAngle = 90
@@ -1984,6 +2240,7 @@ struct CameraPreviewView: UIViewRepresentable {
 
     static func dismantleUIView(_ uiView: CameraPreviewUIView, coordinator: Coordinator) {
         uiView.attachPeakingSink(nil)
+        uiView.attachTrackingSink(nil)
     }
 
     func updateUIView(_ uiView: CameraPreviewUIView, context: Context) {
@@ -1994,6 +2251,10 @@ struct CameraPreviewView: UIViewRepresentable {
         if uiView.attachedSink !== peakingSink {
             uiView.attachPeakingSink(peakingSink)
         }
+        if uiView.attachedTrackingSink !== trackingSink {
+            uiView.attachTrackingSink(trackingSink)
+        }
+        uiView.onTrackingFocus = onTrackingFocus
         if let connection = uiView.previewLayer.connection,
            connection.isVideoMirroringSupported,
            connection.isVideoMirrored != mirrored {
@@ -2048,6 +2309,11 @@ final class CameraPreviewUIView: UIView {
     private let peakingLayer = CALayer()
     private(set) var attachedSink: PeakingOverlaySink?
 
+    /// 自动追焦的主体框
+    private let trackingLayer = CAShapeLayer()
+    private(set) var attachedTrackingSink: FocusTrackingSink?
+    var onTrackingFocus: ((CGPoint) -> Void)?
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .black
@@ -2058,6 +2324,16 @@ final class CameraPreviewUIView: UIView {
         peakingLayer.zPosition = 3
         peakingLayer.allowsEdgeAntialiasing = false
         layer.addSublayer(peakingLayer)
+
+        trackingLayer.strokeColor = UIColor(
+            red: 0.85, green: 0.47, blue: 0.31, alpha: 0.95
+        ).cgColor
+        trackingLayer.fillColor = UIColor.clear.cgColor
+        trackingLayer.lineWidth = 1.6
+        trackingLayer.lineJoin = .round
+        trackingLayer.isHidden = true
+        trackingLayer.zPosition = 4
+        layer.addSublayer(trackingLayer)
     }
 
     required init?(coder: NSCoder) {
@@ -2077,6 +2353,64 @@ final class CameraPreviewUIView: UIView {
         attachedSink?.detach(peakingLayer)
         attachedSink = sink
         sink?.attach(peakingLayer)
+    }
+
+    func attachTrackingSink(_ sink: FocusTrackingSink?) {
+        guard sink !== attachedTrackingSink else { return }
+        attachedTrackingSink?.onUpdate = nil
+        attachedTrackingSink = sink
+        sink?.onUpdate = { [weak self] rect in
+            self?.updateTracking(rect)
+        }
+        if sink == nil {
+            setTrackingHidden(true)
+        }
+    }
+
+    /// 检测框是元数据坐标系的矩形，用预览层换算成图层坐标，
+    /// 再把中心换成设备坐标回传，设置真正的对焦点。
+    private func updateTracking(_ rect: CGRect?) {
+        guard let rect, bounds.width > 1, bounds.height > 1 else {
+            setTrackingHidden(true)
+            return
+        }
+        var layerRect = previewLayer.layerRectConverted(fromMetadataOutputRect: rect)
+        // 前置预览做了镜像，检测框要跟着翻一次，否则会指到反方向
+        if previewLayer.connection?.isVideoMirrored == true {
+            layerRect = CGRect(
+                x: bounds.width - layerRect.maxX,
+                y: layerRect.minY,
+                width: layerRect.width,
+                height: layerRect.height
+            )
+        }
+        guard layerRect.width > 4, layerRect.height > 4 else {
+            setTrackingHidden(true)
+            return
+        }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        trackingLayer.frame = layerRect
+        trackingLayer.path = CGPath(
+            roundedRect: CGRect(origin: .zero, size: layerRect.size),
+            cornerWidth: 5,
+            cornerHeight: 5,
+            transform: nil
+        )
+        trackingLayer.isHidden = false
+        CATransaction.commit()
+
+        let center = CGPoint(x: layerRect.midX, y: layerRect.midY)
+        let devicePoint = previewLayer.captureDevicePointConverted(fromLayerPoint: center)
+        onTrackingFocus?(devicePoint)
+    }
+
+    private func setTrackingHidden(_ hidden: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        trackingLayer.isHidden = hidden
+        CATransaction.commit()
     }
 
     func showFocusReticle(at point: CGPoint, locked: Bool) {
@@ -2219,6 +2553,10 @@ struct CameraView: View {
                             session: camera.session,
                             mirrored: camera.isUsingFrontCamera && mirrorFront,
                             peakingSink: camera.peakingOverlay,
+                            trackingSink: camera.trackingSink,
+                            onTrackingFocus: { devicePoint in
+                                camera.applyTrackingFocus(devicePoint)
+                            },
                             onFocus: { devicePoint, lock in
                                 camera.focus(at: devicePoint, lock: lock)
                                 GrainHaptics.mediumImpact(enabled: true)
@@ -2332,6 +2670,11 @@ struct CameraView: View {
     /// 数码变焦或前置镜头会在传感器上裁切，拿不到 48MP
     private var is48MPAvailable: Bool {
         camera.selectedZoom <= 1.05 && !camera.isUsingFrontCamera
+    }
+
+    /// 追焦开启且没有被手动对焦接管时高亮
+    private var trackingActive: Bool {
+        camera.focusTrackingEnabled && !camera.isManualFocusActive
     }
 
     private var topBar: some View {
@@ -2492,6 +2835,45 @@ struct CameraView: View {
                         || zoom > camera.maximumZoom
                     )
                 }
+
+                Spacer(minLength: 6)
+
+                Button {
+                    GrainHaptics.selection(enabled: true)
+                    if camera.isManualFocusActive {
+                        camera.resumeAutoFocus()
+                    } else {
+                        camera.setFocusTracking(!camera.focusTrackingEnabled)
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(
+                            systemName: camera.isManualFocusActive
+                                ? "hand.tap"
+                                : "person.crop.rectangle"
+                        )
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(camera.isManualFocusActive ? "手动" : "追焦")
+                            .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                    }
+                    .foregroundStyle(trackingActive ? GrainTheme.black : GrainTheme.paper)
+                    .padding(.horizontal, 8)
+                    .frame(height: 26)
+                    .background(
+                        trackingActive ? GrainTheme.accent : Color.black.opacity(0.54),
+                        in: Capsule()
+                    )
+                    .opacity(
+                        camera.focusTrackingEnabled || camera.isManualFocusActive
+                            ? 1 : 0.5
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    camera.isManualFocusActive
+                        ? "恢复自动追焦"
+                        : (camera.focusTrackingEnabled ? "关闭自动追焦" : "开启自动追焦")
+                )
             }
 
             HStack(spacing: 6) {

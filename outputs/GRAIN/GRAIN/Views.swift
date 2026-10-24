@@ -9,6 +9,9 @@ struct RootView: View {
     @AppStorage("showCameraButton") private var showCameraButton = true
     @AppStorage("showFileImportButton") private var showFileImportButton = false
     @AppStorage("showCollageButton") private var showCollageButton = true
+    /// 设置里选了“相机”时，启动后直接进相机
+    @AppStorage("launchWithCamera") private var launchWithCamera = false
+    @State private var didAutoLaunchCamera = false
     @State private var showDocumentPicker = false
     @State private var showExportSheet = false
     @State private var showInfoSheet = false
@@ -190,6 +193,14 @@ struct RootView: View {
                 Task {
                     await photoLibrary.refresh()
                 }
+            }
+        }
+        .onAppear {
+            guard launchWithCamera, !didAutoLaunchCamera else { return }
+            didAutoLaunchCamera = true
+            // 等首帧渲染完再推出相机，避免和启动转场叠在一起
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+                showCamera = true
             }
         }
     }

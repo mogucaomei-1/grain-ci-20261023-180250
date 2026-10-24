@@ -411,6 +411,25 @@ struct FilmOrderEditorView: View {
 
 struct AppSettingsView: View {
     @Environment(\.dismiss) private var dismiss
+
+    private func launchChip(
+        title: String,
+        selected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(selected ? GrainTheme.black : GrainTheme.muted)
+                .padding(.horizontal, 11)
+                .frame(height: 28)
+                .background(
+                    selected ? GrainTheme.accent : GrainTheme.raised,
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.plain)
+    }
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
     @AppStorage("showHistogram") private var showHistogram = true
     @AppStorage("showCameraButton") private var showCameraButton = true
@@ -420,6 +439,8 @@ struct AppSettingsView: View {
     @AppStorage("captureDeviceInfoEnabled") private var captureDeviceInfoEnabled = true
     @AppStorage("shutterSoundEnabled") private var shutterSoundEnabled = true
     @AppStorage("focusPeakingColor") private var focusPeakingColor = "red"
+    /// 启动时直接进相机（关则停在图库主页）
+    @AppStorage("launchWithCamera") private var launchWithCamera = false
 
     var body: some View {
         ZStack {
@@ -442,6 +463,35 @@ struct AppSettingsView: View {
                             .background(GrainTheme.raised, in: Circle())
                     }
                     .buttonStyle(.plain)
+                }
+
+                HStack(spacing: 12) {
+                    Image(systemName: "power")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(GrainTheme.accent)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("启动时打开")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        Text("打开软件后先进图库还是直接进相机")
+                            .font(.system(size: 9, design: .rounded))
+                            .foregroundStyle(GrainTheme.muted)
+                    }
+                    Spacer()
+                    HStack(spacing: 4) {
+                        launchChip(title: "图库", selected: !launchWithCamera) {
+                            launchWithCamera = false
+                        }
+                        launchChip(title: "相机", selected: launchWithCamera) {
+                            launchWithCamera = true
+                        }
+                    }
+                }
+                .padding(16)
+                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 17)
+                        .stroke(GrainTheme.line, lineWidth: 0.8)
                 }
 
                 HStack(spacing: 12) {
