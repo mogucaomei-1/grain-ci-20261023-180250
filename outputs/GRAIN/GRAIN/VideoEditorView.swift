@@ -988,7 +988,7 @@ public struct VideoEditorView: View {
     // MARK: - 实时 CIFilter 滤镜管线合成器
 
     private func createVideoComposition(for asset: AVAsset, recipe: VideoEditRecipe, compare: Bool) -> AVVideoComposition {
-        let composition = AVVideoComposition(asset: asset) { request in
+        let composition = AVMutableVideoComposition(asset: asset) { request in
             guard !compare else {
                 request.finish(with: request.sourceImage, context: nil)
                 return
