@@ -95,6 +95,9 @@ struct TextOverlayEditorView: View {
                         in: 0.025...0.18
                     )
                     .tint(GrainTheme.accent)
+                    .onChange(of: draft.fontSize) { _, _ in
+                        GrainHaptics.selection()
+                    }
                     Text("\(Int(draft.fontSize * 100))")
                         .font(.system(size: 9, weight: .semibold, design: .monospaced))
                         .foregroundStyle(GrainTheme.paper)

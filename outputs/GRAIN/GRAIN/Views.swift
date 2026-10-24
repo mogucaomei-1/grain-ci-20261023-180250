@@ -24,25 +24,23 @@ struct RootView: View {
     @State private var libraryImportGeneration = 0
     @State private var editingVideoAsset: PHAsset?
 
+    private var isCameraActive: Bool {
+        showCamera || launchCameraActive
+    }
+
     var body: some View {
         ZStack {
             GrainBackground()
 
-            if launchCameraActive {
-                // 启动即相机：直接渲染，不再先出图库再弹出相机的转场动画
-                CameraView(
-                    onClose: { launchCameraActive = false },
-                    onOpenCapture: { identifier in
-                        pendingCapturedAssetID = identifier
-                        launchCameraActive = false
-                    }
-                )
-            } else {
             NavigationStack {
                 VStack(spacing: 0) {
                     MinimalTopBar(
                         hasPhoto: false,
-                        onCamera: showCameraButton ? { showCamera = true } : nil,
+                        onCamera: showCameraButton ? {
+                            withAnimation(.easeInOut(duration: 0.22)) {
+                                showCamera = true
+                            }
+                        } : nil,
                         onFiles: showFileImportButton ? { showDocumentPicker = true } : nil,
                         onCollage: showCollageButton ? { showHomeCollage = true } : nil,
                         onInfo: { showInfoSheet = true },
@@ -100,6 +98,25 @@ struct RootView: View {
                     .toolbar(.hidden, for: .navigationBar)
                 }
             }
+
+            if isCameraActive {
+                CameraView(
+                    onClose: {
+                        withAnimation(.easeInOut(duration: 0.22)) {
+                            showCamera = false
+                            launchCameraActive = false
+                        }
+                    },
+                    onOpenCapture: { identifier in
+                        pendingCapturedAssetID = identifier
+                        withAnimation(.easeInOut(duration: 0.22)) {
+                            showCamera = false
+                            launchCameraActive = false
+                        }
+                    }
+                )
+                .transition(.opacity)
+                .zIndex(10)
             }
         }
         .sheet(isPresented: $showDocumentPicker) {
@@ -127,15 +144,6 @@ struct RootView: View {
                 .presentationDetents([.height(700)])
                 .presentationDragIndicator(.visible)
         }
-        .fullScreenCover(isPresented: $showCamera) {
-            CameraView(
-                onClose: { showCamera = false },
-                onOpenCapture: { identifier in
-                    pendingCapturedAssetID = identifier
-                    showCamera = false
-                }
-            )
-        }
         .fullScreenCover(isPresented: $showHomeCollage) {
             CollageEditorView(assets: [])
         }
@@ -151,10 +159,7 @@ struct RootView: View {
                 }
             )
         }
-        .onChange(of: showCamera) { _, presented in
-            handleCameraDismiss(presented: presented)
-        }
-        .onChange(of: launchCameraActive) { _, active in
+        .onChange(of: isCameraActive) { _, active in
             handleCameraDismiss(presented: active)
         }
         .confirmationDialog(
@@ -1401,7 +1406,7 @@ private struct PhotoEditorCanvas: View {
     }
 }
 
-private struct HistogramView: View {
+struct HistogramView: View {
     let data: RGBHistogram
 
     var body: some View {
@@ -2191,6 +2196,7 @@ struct ResetValueSlider: View {
     let onEditStart: () -> Void
     let onReset: () -> Void
     @State private var isEditing = false
+    @State private var lastHapticStep: Int = 0
 
     var body: some View {
         GeometryReader { proxy in
@@ -2222,11 +2228,24 @@ struct ResetValueSlider: View {
                     .onChanged { gesture in
                         if !isEditing {
                             isEditing = true
+                            GrainHaptics.prepare()
                             onEditStart()
+                            let span = max(range.upperBound - range.lowerBound, 0.0001)
+                            lastHapticStep = Int(((value - range.lowerBound) / span * 50).rounded())
                         }
                         let position = min(max(gesture.location.x - inset, 0), usableWidth)
-                        value = range.lowerBound
-                            + Double(position / usableWidth) * (range.upperBound - range.lowerBound)
+                        let span = max(range.upperBound - range.lowerBound, 0.0001)
+                        let newValue = range.lowerBound + Double(position / usableWidth) * span
+                        let newStep = Int(((newValue - range.lowerBound) / span * 50).rounded())
+                        if newStep != lastHapticStep {
+                            lastHapticStep = newStep
+                            if abs(newValue) < (span / 80) {
+                                GrainHaptics.mediumImpact()
+                            } else {
+                                GrainHaptics.selection()
+                            }
+                        }
+                        value = newValue
                     }
                     .onEnded { _ in
                         isEditing = false
@@ -2236,6 +2255,7 @@ struct ResetValueSlider: View {
                 SpatialTapGesture(count: 2, coordinateSpace: .local)
                     .onEnded { gesture in
                         if abs(gesture.location.x - knobX) <= 22 {
+                            GrainHaptics.mediumImpact()
                             onReset()
                         }
                     }

@@ -29,6 +29,7 @@ public struct VideoEditRecipe: Equatable {
     var rotationDegrees: Int = 0    // 0, 90, 180, 270
     var isMirrored: Bool = false
     var aspect: VideoCropAspect = .original
+    var cropRect: CGRect = CGRect(x: 0, y: 0, width: 1, height: 1) // 归一化裁切区域 (0...1)
 
     var isNeutral: Bool {
         exposure == 0 &&
@@ -42,12 +43,24 @@ public struct VideoEditRecipe: Equatable {
         filmProfile == .neutral &&
         rotationDegrees == 0 &&
         !isMirrored &&
-        aspect == .original
+        aspect == .original &&
+        cropRect == CGRect(x: 0, y: 0, width: 1, height: 1)
+    }
+
+    func cropAspectRatio(for naturalSize: CGSize) -> CGFloat {
+        if let fixed = aspect.fixedRatio {
+            return fixed
+        }
+        let w = cropRect.width * naturalSize.width
+        let h = cropRect.height * naturalSize.height
+        guard h > 0 else { return 9 / 16 }
+        return w / h
     }
 }
 
 public enum VideoCropAspect: String, CaseIterable, Identifiable {
     case original = "原画"
+    case freeform = "自由"
     case portrait9x16 = "9:16"
     case landscape16x9 = "16:9"
     case square1x1 = "1:1"
@@ -55,9 +68,24 @@ public enum VideoCropAspect: String, CaseIterable, Identifiable {
 
     public var id: String { rawValue }
 
+    var fixedRatio: CGFloat? {
+        switch self {
+        case .original, .freeform:
+            return nil
+        case .portrait9x16:
+            return 9 / 16
+        case .landscape16x9:
+            return 16 / 9
+        case .square1x1:
+            return 1 / 1
+        case .portrait4x5:
+            return 4 / 5
+        }
+    }
+
     func ratio(for naturalSize: CGSize) -> CGFloat {
         switch self {
-        case .original:
+        case .original, .freeform:
             guard naturalSize.height > 0 else { return 9 / 16 }
             return naturalSize.width / naturalSize.height
         case .portrait9x16:
@@ -173,6 +201,12 @@ public struct VideoEditorView: View {
     @State private var naturalVideoSize: CGSize = CGSize(width: 1080, height: 1920)
 
     @State private var timeObserverToken: Any?
+    @State private var didSwipeBack = false
+    @State private var showDeleteConfirmation = false
+    @State private var shareURL: URL?
+    @State private var isSharing = false
+    @State private var lastParamHapticStep: Int = 0
+    @State private var lastTrimHapticStep: Int = 0
 
     public init(asset: PHAsset, onClose: @escaping () -> Void) {
         self.asset = asset
@@ -203,6 +237,22 @@ public struct VideoEditorView: View {
             }
         }
         .statusBarHidden()
+        .simultaneousGesture(edgeSwipeBackGesture)
+        .confirmationDialog(
+            "删除此视频？",
+            isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("从相册删除视频", role: .destructive) {
+                deleteVideoAsset()
+            }
+            Button("取消", role: .cancel) {}
+        }
+        .sheet(isPresented: $isSharing) {
+            if let shareURL {
+                ActivityShareSheet(activityItems: [shareURL])
+            }
+        }
         .task {
             await loadVideoAsset()
         }
@@ -214,10 +264,10 @@ public struct VideoEditorView: View {
         }
     }
 
-    // MARK: - 顶栏：取消、对比、时间回显、完成导出
+    // MARK: - 顶栏：取消、对比、时间回显、分享、删除、完成导出
 
     private var topBar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Button("取消") {
                 cleanupPlayer()
                 onClose()
@@ -240,9 +290,9 @@ public struct VideoEditorView: View {
             Button {
             } label: {
                 Image(systemName: isComparing ? "eye.fill" : "eye")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(isComparing ? GrainTheme.accent : GrainTheme.paper)
-                    .frame(width: 34, height: 34)
+                    .frame(width: 32, height: 32)
                     .background(Color.white.opacity(0.12), in: Circle())
             }
             .buttonStyle(.plain)
@@ -252,13 +302,39 @@ public struct VideoEditorView: View {
                     .onEnded { _ in isComparing = false; updateComposition(compare: false) }
             )
 
+            // 分享
+            Button {
+                shareCurrentVideo()
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(GrainTheme.paper)
+                    .frame(width: 32, height: 32)
+                    .background(Color.white.opacity(0.12), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isExporting)
+
+            // 删除
+            Button {
+                showDeleteConfirmation = true
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(GrainTheme.paper)
+                    .frame(width: 32, height: 32)
+                    .background(Color.white.opacity(0.12), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isExporting)
+
             Button {
                 exportVideo()
             } label: {
                 Text("完成")
                     .font(.system(size: 13.5, weight: .bold, design: .rounded))
                     .foregroundStyle(GrainTheme.black)
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, 13)
                     .frame(height: 30)
                     .background(GrainTheme.accent, in: Capsule())
             }
@@ -271,14 +347,15 @@ public struct VideoEditorView: View {
 
     private var videoPreviewCanvas: some View {
         GeometryReader { proxy in
-            let aspect = recipe.aspect.ratio(for: naturalVideoSize)
+            let aspect = activeTab == .crop
+                ? (naturalVideoSize.width / max(naturalVideoSize.height, 1))
+                : recipe.cropAspectRatio(for: naturalVideoSize)
             let frame = fittedRect(for: aspect, in: proxy.size)
 
             ZStack {
                 if let player {
                     VideoPlayerUIView(player: player)
                         .rotationEffect(.degrees(Double(recipe.rotationDegrees)))
-                        .scaleEffect(x: recipe.isMirrored ? -1 : 1, y: 1)
                         .frame(width: frame.width, height: frame.height)
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                         .overlay {
@@ -290,8 +367,17 @@ public struct VideoEditorView: View {
                             togglePlayPause()
                         }
 
+                    if activeTab == .crop {
+                        VideoCropSelectionOverlay(
+                            cropRect: $recipe.cropRect,
+                            aspect: recipe.aspect,
+                            naturalSize: naturalVideoSize,
+                            displaySize: frame
+                        )
+                    }
+
                     // 播放/暂停状态悬浮浮标
-                    if !isPlaying {
+                    if !isPlaying && activeTab != .crop {
                         Button {
                             togglePlayPause()
                         } label: {
@@ -420,6 +506,11 @@ public struct VideoEditorView: View {
                                 let newRatio = min(max(val.location.x / totalW, 0), endRatio - 0.05)
                                 recipe.trimStart = Double(newRatio) * totalDuration
                                 seek(to: recipe.trimStart)
+                                let step = Int(recipe.trimStart * 5)
+                                if step != lastTrimHapticStep {
+                                    lastTrimHapticStep = step
+                                    GrainHaptics.selection()
+                                }
                             }
                     )
 
@@ -439,6 +530,11 @@ public struct VideoEditorView: View {
                                 let newRatio = min(max(val.location.x / totalW, startRatio + 0.05), 1.0)
                                 recipe.trimEnd = Double(newRatio) * totalDuration
                                 seek(to: recipe.trimEnd)
+                                let step = Int(recipe.trimEnd * 5)
+                                if step != lastTrimHapticStep {
+                                    lastTrimHapticStep = step
+                                    GrainHaptics.selection()
+                                }
                             }
                     )
 
@@ -457,6 +553,11 @@ public struct VideoEditorView: View {
                     .onChanged { val in
                         let ratio = min(max(val.location.x / totalW, 0), 1)
                         seek(to: Double(ratio) * totalDuration)
+                        let step = Int(ratio * 30)
+                        if step != lastTrimHapticStep {
+                            lastTrimHapticStep = step
+                            GrainHaptics.selection()
+                        }
                     }
             )
         }
@@ -526,6 +627,16 @@ public struct VideoEditorView: View {
                         set: { val in
                             var updated = recipe
                             activeParam.applying(val, to: &updated)
+                            let span = max(activeParam.range.upperBound - activeParam.range.lowerBound, 0.001)
+                            let step = Int(((val - activeParam.range.lowerBound) / span * 40).rounded())
+                            if step != lastParamHapticStep {
+                                lastParamHapticStep = step
+                                if abs(val) < (span / 80) {
+                                    GrainHaptics.mediumImpact()
+                                } else {
+                                    GrainHaptics.selection()
+                                }
+                            }
                             recipe = updated
                         }
                     ),
@@ -589,6 +700,13 @@ public struct VideoEditorView: View {
 
                     Slider(value: $recipe.filmIntensity, in: 0...1.5)
                         .tint(GrainTheme.accent)
+                        .onChange(of: recipe.filmIntensity) { _, val in
+                            let step = Int((val * 20).rounded())
+                            if step != lastParamHapticStep {
+                                lastParamHapticStep = step
+                                GrainHaptics.selection()
+                            }
+                        }
 
                     Text("\(Int(recipe.filmIntensity * 100))%")
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
@@ -603,19 +721,19 @@ public struct VideoEditorView: View {
     // MARK: - 4. 构图与画幅比例选择
 
     private var cropAspectDeck: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 10) {
             // 旋转 90 度
             Button {
                 recipe.rotationDegrees = (recipe.rotationDegrees + 90) % 360
-                GrainHaptics.selection(enabled: true)
+                GrainHaptics.selection()
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "rotate.right.fill")
                     Text("旋转")
                 }
-                .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(GrainTheme.paper)
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 10)
                 .frame(height: 32)
                 .background(GrainTheme.raised, in: Capsule())
             }
@@ -624,15 +742,15 @@ public struct VideoEditorView: View {
             // 水平镜像
             Button {
                 recipe.isMirrored.toggle()
-                GrainHaptics.selection(enabled: true)
+                GrainHaptics.selection()
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right")
                     Text("镜像")
                 }
-                .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(recipe.isMirrored ? GrainTheme.black : GrainTheme.paper)
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 10)
                 .frame(height: 32)
                 .background(recipe.isMirrored ? GrainTheme.accent : GrainTheme.raised, in: Capsule())
             }
@@ -642,7 +760,8 @@ public struct VideoEditorView: View {
             Menu {
                 ForEach(VideoCropAspect.allCases) { aspect in
                     Button(aspect.rawValue) {
-                        recipe.aspect = aspect
+                        applyCropAspect(aspect)
+                        GrainHaptics.selection()
                     }
                 }
             } label: {
@@ -650,13 +769,55 @@ public struct VideoEditorView: View {
                     Image(systemName: "aspectratio")
                     Text(recipe.aspect.rawValue)
                 }
-                .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(GrainTheme.accent)
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 10)
                 .frame(height: 32)
                 .background(GrainTheme.raised, in: Capsule())
             }
+
+            // 重置裁切
+            Button {
+                recipe.cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+                recipe.aspect = .original
+                recipe.rotationDegrees = 0
+                recipe.isMirrored = false
+                GrainHaptics.mediumImpact()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.counterclockwise")
+                    Text("重置")
+                }
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .foregroundStyle(GrainTheme.muted)
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .background(GrainTheme.raised, in: Capsule())
+            }
+            .buttonStyle(.plain)
         }
+    }
+
+    private func applyCropAspect(_ aspect: VideoCropAspect) {
+        recipe.aspect = aspect
+        if aspect == .original || aspect == .freeform {
+            recipe.cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+            return
+        }
+        guard let targetRatio = aspect.fixedRatio, naturalVideoSize.height > 0 else { return }
+        let naturalRatio = naturalVideoSize.width / naturalVideoSize.height
+        var w = 1.0
+        var h = naturalRatio / targetRatio
+        if h > 1.0 {
+            h = 1.0
+            w = targetRatio / naturalRatio
+        }
+        recipe.cropRect = CGRect(
+            x: max((1.0 - w) / 2, 0),
+            y: max((1.0 - h) / 2, 0),
+            width: min(w, 1.0),
+            height: min(h, 1.0)
+        )
     }
 
     // MARK: - 导出覆盖浮层
@@ -714,7 +875,11 @@ public struct VideoEditorView: View {
                     self.recipe.trimEnd = self.duration
 
                     if let track = loadedAsset.tracks(withMediaType: .video).first {
-                        self.naturalVideoSize = track.naturalSize
+                        let transformed = track.naturalSize.applying(track.preferredTransform)
+                        self.naturalVideoSize = CGSize(
+                            width: max(abs(transformed.width), 1),
+                            height: max(abs(transformed.height), 1)
+                        )
                     }
 
                     self.setupPlayer(with: loadedAsset)
@@ -823,13 +988,29 @@ public struct VideoEditorView: View {
     // MARK: - 实时 CIFilter 滤镜管线合成器
 
     private func createVideoComposition(for asset: AVAsset, recipe: VideoEditRecipe, compare: Bool) -> AVVideoComposition {
-        return AVVideoComposition(asset: asset) { request in
+        let composition = AVVideoComposition(asset: asset) { request in
             guard !compare else {
                 request.finish(with: request.sourceImage, context: nil)
                 return
             }
 
             var image = request.sourceImage
+            let extent = image.extent
+
+            // 0. 构图裁切与镜像
+            if recipe.cropRect != CGRect(x: 0, y: 0, width: 1, height: 1) {
+                let cropX = recipe.cropRect.origin.x * extent.width
+                let cropY = (1.0 - recipe.cropRect.origin.y - recipe.cropRect.height) * extent.height
+                let cropW = recipe.cropRect.width * extent.width
+                let cropH = recipe.cropRect.height * extent.height
+                let cropBounds = CGRect(x: cropX, y: cropY, width: cropW, height: cropH)
+                image = image.cropped(to: cropBounds)
+                image = image.transformed(by: CGAffineTransform(translationX: -cropBounds.origin.x, y: -cropBounds.origin.y))
+            }
+
+            if recipe.isMirrored {
+                image = image.transformed(by: CGAffineTransform(scaleX: -1, y: 1).translatedBy(x: -image.extent.width, y: 0))
+            }
 
             // 1. 曝光调整 (-100...100 -> -1.5...1.5 EV)
             if recipe.exposure != 0 {
@@ -886,6 +1067,12 @@ public struct VideoEditorView: View {
 
             request.finish(with: image, context: nil)
         }
+
+        let targetW = round(recipe.cropRect.width * naturalVideoSize.width / 2) * 2
+        let targetH = round(recipe.cropRect.height * naturalVideoSize.height / 2) * 2
+        composition.renderSize = CGSize(width: max(targetW, 16), height: max(targetH, 16))
+
+        return composition
     }
 
     // MARK: - 胶片风格滤镜模拟算法
@@ -1032,6 +1219,82 @@ public struct VideoEditorView: View {
 
     // MARK: - 辅助计算
 
+    private func shareCurrentVideo() {
+        guard let avAsset else { return }
+        pause()
+        isExporting = true
+
+        let composition = createVideoComposition(for: avAsset, recipe: recipe, compare: false)
+        guard let exportSession = AVAssetExportSession(
+            asset: avAsset,
+            presetName: AVAssetExportPresetHighestQuality
+        ) else {
+            isExporting = false
+            errorMessage = "无法初始化分享导出器"
+            return
+        }
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GRAIN-SHARE-\(Int(Date().timeIntervalSince1970)).mov")
+        try? FileManager.default.removeItem(at: outputURL)
+
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = .mov
+        exportSession.videoComposition = composition
+
+        let startCM = CMTime(seconds: recipe.trimStart, preferredTimescale: 600)
+        let durationCM = CMTime(seconds: recipe.trimEnd - recipe.trimStart, preferredTimescale: 600)
+        exportSession.timeRange = CMTimeRange(start: startCM, duration: durationCM)
+
+        exportSession.exportAsynchronously {
+            DispatchQueue.main.async {
+                self.isExporting = false
+                if exportSession.status == .completed {
+                    self.shareURL = outputURL
+                    self.isSharing = true
+                    GrainHaptics.mediumImpact()
+                } else {
+                    let err = exportSession.error?.localizedDescription ?? "未知错误"
+                    self.errorMessage = "准备分享失败：\(err)"
+                }
+            }
+        }
+    }
+
+    private func deleteVideoAsset() {
+        PHPhotoLibrary.shared().performChanges {
+            PHAssetChangeRequest.deleteAssets([self.asset] as NSArray)
+        } completionHandler: { success, error in
+            DispatchQueue.main.async {
+                if success {
+                    GrainHaptics.mediumImpact()
+                    self.cleanupPlayer()
+                    self.onClose()
+                } else if let error {
+                    self.errorMessage = "删除失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private var edgeSwipeBackGesture: some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .local)
+            .onChanged { value in
+                guard !didSwipeBack,
+                      value.startLocation.x <= 36,
+                      value.translation.width > 70,
+                      value.translation.width > abs(value.translation.height) * 1.35
+                else { return }
+                didSwipeBack = true
+                GrainHaptics.mediumImpact()
+                cleanupPlayer()
+                onClose()
+            }
+            .onEnded { _ in
+                didSwipeBack = false
+            }
+    }
+
     private func formatTime(_ seconds: Double) -> String {
         let total = max(0, Int(seconds))
         let m = total / 60
@@ -1077,4 +1340,160 @@ private final class PlayerContainerUIView: UIView {
     var playerLayer: AVPlayerLayer {
         layer as! AVPlayerLayer
     }
+}
+
+// MARK: - 视频交互式裁切框覆盖层
+
+private struct VideoCropSelectionOverlay: View {
+    @Binding var cropRect: CGRect
+    let aspect: VideoCropAspect
+    let naturalSize: CGSize
+    let displaySize: CGSize
+
+    @State private var dragOrigin: CGRect?
+    @State private var lastHapticStep: Int = 0
+
+    var body: some View {
+        let rect = CGRect(
+            x: cropRect.origin.x * displaySize.width,
+            y: cropRect.origin.y * displaySize.height,
+            width: cropRect.width * displaySize.width,
+            height: cropRect.height * displaySize.height
+        )
+
+        ZStack {
+            Canvas { context, size in
+                var outside = Path(CGRect(origin: .zero, size: size))
+                outside.addRect(rect)
+                context.fill(outside, with: .color(.black.opacity(0.55)), style: FillStyle(eoFill: true))
+            }
+
+            Rectangle()
+                .stroke(Color.white, lineWidth: 1.5)
+                .frame(width: rect.width, height: rect.height)
+                .position(x: rect.midX, y: rect.midY)
+
+            cropGrid(rect: rect)
+
+            Rectangle()
+                .fill(Color.clear)
+                .contentShape(Rectangle())
+                .frame(width: rect.width, height: rect.height)
+                .position(x: rect.midX, y: rect.midY)
+                .gesture(moveGesture(rect: rect))
+
+            ForEach(Corner.allCases, id: \.self) { corner in
+                Circle()
+                    .fill(GrainTheme.paper)
+                    .overlay(Circle().stroke(Color.black.opacity(0.35), lineWidth: 1))
+                    .frame(width: 22, height: 22)
+                    .position(corner.point(in: rect))
+                    .gesture(resizeGesture(corner, rect: rect))
+            }
+        }
+        .frame(width: displaySize.width, height: displaySize.height)
+    }
+
+    private func cropGrid(rect: CGRect) -> some View {
+        Path { path in
+            for f in [1.0 / 3, 2.0 / 3] {
+                let x = rect.minX + rect.width * f
+                path.move(to: CGPoint(x: x, y: rect.minY))
+                path.addLine(to: CGPoint(x: x, y: rect.maxY))
+                let y = rect.minY + rect.height * f
+                path.move(to: CGPoint(x: rect.minX, y: y))
+                path.addLine(to: CGPoint(x: rect.maxX, y: y))
+            }
+        }
+        .stroke(Color.white.opacity(0.4), lineWidth: 0.8)
+    }
+
+    private func moveGesture(rect: CGRect) -> some Gesture {
+        DragGesture()
+            .onChanged { val in
+                if dragOrigin == nil {
+                    dragOrigin = cropRect
+                    GrainHaptics.prepare()
+                }
+                guard let origin = dragOrigin else { return }
+                let dx = val.translation.width / displaySize.width
+                let dy = val.translation.height / displaySize.height
+                let newX = min(max(origin.origin.x + dx, 0), 1 - origin.width)
+                let newY = min(max(origin.origin.y + dy, 0), 1 - origin.height)
+                let step = Int((newX * 50 + newY * 50).rounded())
+                if step != lastHapticStep {
+                    lastHapticStep = step
+                    GrainHaptics.selection()
+                }
+                cropRect = CGRect(x: newX, y: newY, width: origin.width, height: origin.height)
+            }
+            .onEnded { _ in dragOrigin = nil }
+    }
+
+    private func resizeGesture(_ corner: Corner, rect: CGRect) -> some Gesture {
+        DragGesture()
+            .onChanged { val in
+                if dragOrigin == nil {
+                    dragOrigin = cropRect
+                    GrainHaptics.prepare()
+                }
+                guard let origin = dragOrigin else { return }
+                let dx = val.translation.width / displaySize.width
+                let dy = val.translation.height / displaySize.height
+
+                var x = origin.origin.x
+                var y = origin.origin.y
+                var w = origin.width
+                var h = origin.height
+
+                if corner.isLeft {
+                    x = min(max(origin.origin.x + dx, 0), origin.maxX - 0.1)
+                    w = origin.maxX - x
+                } else {
+                    w = min(max(origin.width + dx, 0.1), 1 - origin.origin.x)
+                }
+
+                if corner.isTop {
+                    y = min(max(origin.origin.y + dy, 0), origin.maxY - 0.1)
+                    h = origin.maxY - y
+                } else {
+                    h = min(max(origin.height + dy, 0.1), 1 - origin.origin.y)
+                }
+
+                if let targetRatio = aspect.fixedRatio, naturalSize.height > 0 {
+                    let pixelW = w * naturalSize.width
+                    let targetPixelH = pixelW / targetRatio
+                    let newH = targetPixelH / naturalSize.height
+                    if y + newH <= 1.0 {
+                        h = newH
+                    } else {
+                        h = 1.0 - y
+                        let pixelH = h * naturalSize.height
+                        let targetPixelW = pixelH * targetRatio
+                        w = min(targetPixelW / naturalSize.width, 1.0 - x)
+                    }
+                }
+
+                let step = Int((w * 50 + h * 50).rounded())
+                if step != lastHapticStep {
+                    lastHapticStep = step
+                    GrainHaptics.selection()
+                }
+
+                cropRect = CGRect(x: x, y: y, width: w, height: h)
+            }
+            .onEnded { _ in dragOrigin = nil }
+    }
+}
+
+// MARK: - 系统分享浮层
+
+private struct ActivityShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

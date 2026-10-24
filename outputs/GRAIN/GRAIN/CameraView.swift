@@ -219,6 +219,7 @@ struct CameraCaptureConfiguration {
 }
 
 final class CameraController: ObservableObject {
+    static let shared = CameraController()
     let session = AVCaptureSession()
     private let photoOutput = AVCapturePhotoOutput()
     private let sessionQueue = DispatchQueue(label: "studio.grain.camera.session")
@@ -297,6 +298,8 @@ final class CameraController: ObservableObject {
     @Published private(set) var latestCaptureThumbnail: UIImage?
     /// 最近一张成功写入相册的照片标识，用于从左下角缩略图直接进入编辑
     @Published private(set) var latestCaptureAssetIdentifier: String?
+    /// 实时直方图数据
+    @Published private(set) var liveHistogram: RGBHistogram?
 
     func start() async {
         let cameraAllowed = await requestMediaAccess(for: .video)
@@ -320,6 +323,12 @@ final class CameraController: ObservableObject {
             if self.isSessionConfigured {
                 if !self.session.isRunning {
                     self.session.startRunning()
+                }
+                DispatchQueue.main.async {
+                    self.isReady = true
+                }
+                if self.isFocusPeakingEnabled || UserDefaults.standard.bool(forKey: "showHistogram") {
+                    self.attachPeakingOutput()
                 }
                 return
             }
@@ -386,6 +395,11 @@ final class CameraController: ObservableObject {
             guard let self, self.isFocusPeakingEnabled else { return }
             self.peakingOverlay.submit(image)
         }
+        peakingProcessor.onHistogram = { [weak self] hist in
+            DispatchQueue.main.async {
+                self?.liveHistogram = hist
+            }
+        }
 
         session.beginConfiguration()
         guard session.canAddOutput(peakingOutput) else {
@@ -415,6 +429,7 @@ final class CameraController: ObservableObject {
         session.commitConfiguration()
         peakingAttached = false
         peakingProcessor.onMask = nil
+        peakingProcessor.onHistogram = nil
         peakingOverlay.submit(nil)
     }
 
@@ -1030,9 +1045,27 @@ final class CameraController: ObservableObject {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             guard let url else { return }
+
+            // 1. 抽取视频首帧作为左下角缩略图实时显示
+            let asset = AVAsset(url: url)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 160, height: 160)
+            let time = CMTime(seconds: 0.1, preferredTimescale: 600)
+            if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
+                let thumbnail = UIImage(cgImage: cgImage)
+                DispatchQueue.main.async {
+                    self.latestCaptureThumbnail = thumbnail
+                }
+            }
+
             Task {
                 do {
-                    try await Self.saveVideoToLibrary(url)
+                    let assetID = try await Self.saveVideoToLibrary(url)
+                    DispatchQueue.main.async {
+                        self.latestCaptureAssetIdentifier = assetID
+                        GrainHaptics.mediumImpact()
+                    }
                 } catch {
                     DispatchQueue.main.async { [weak self] in
                         self?.recordingError = error.localizedDescription
@@ -1043,17 +1076,21 @@ final class CameraController: ObservableObject {
         }
     }
 
-    private static func saveVideoToLibrary(_ url: URL) async throws {
+    private static func saveVideoToLibrary(_ url: URL) async throws -> String {
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard status == .authorized || status == .limited else {
             throw ExportError.photoLibraryDenied
         }
+        var placeholderID: String?
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             PHPhotoLibrary.shared().performChanges {
                 let request = PHAssetCreationRequest.forAsset()
                 let options = PHAssetResourceCreationOptions()
                 options.shouldMoveFile = false
                 request.addResource(with: .video, fileURL: url, options: options)
+                if let placeholder = request.placeholderForCreatedAsset {
+                    placeholderID = placeholder.localIdentifier
+                }
             } completionHandler: { success, error in
                 if success {
                     continuation.resume()
@@ -1062,6 +1099,10 @@ final class CameraController: ObservableObject {
                 }
             }
         }
+        guard let id = placeholderID else {
+            throw ExportError.photoLibraryWriteFailed
+        }
+        return id
     }
 
     /// 画面主体明显变化时重新合焦（追焦开启且未手动接管时才响应）
@@ -2519,15 +2560,17 @@ private enum CameraError: LocalizedError {
 }
 
 /// 从视频流抽帧做边缘检测，输出透明底 + 彩色描边的峰值图。
-/// 只在缩略尺寸上处理并限制帧率，避免拖慢预览与拍照。
+/// 720p 分辨率 + 30fps 实时刷新，边缘清晰锐利且彻底消除拖影。
 final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     var onMask: ((CGImage?) -> Void)?
+    var onHistogram: ((RGBHistogram) -> Void)?
     /// 描边颜色；切换颜色只影响下一帧，不需要重建会话
     var tintColor = CIColor(red: 1.0, green: 0.35, blue: 0.24)
 
-    private let context = CIContext(options: [.cacheIntermediates: false])
-    private let analysisSize: CGFloat = 240
+    private let context = CIContext(options: [.cacheIntermediates: false, .useSoftwareRenderer: false])
+    private let analysisSize: CGFloat = 720
     private var lastTime: CFAbsoluteTime = 0
+    private var lastHistogramTime: CFAbsoluteTime = 0
 
     func captureOutput(
         _ output: AVCaptureOutput,
@@ -2535,12 +2578,22 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
         from connection: AVCaptureConnection
     ) {
         let now = CFAbsoluteTimeGetCurrent()
-        // 约 18fps：分辨率降下来后单帧只要几毫秒，
-        // 保持较高的刷新率才能让描边跟得上画面，不会出现拖影。
-        guard now - lastTime >= 0.055 else { return }
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        // 1. 实时直方图计算（每秒约 10 次，低消耗）
+        if onHistogram != nil && (now - lastHistogramTime >= 0.09) {
+            lastHistogramTime = now
+            if let hist = Self.generateHistogram(from: pixelBuffer) {
+                onHistogram?(hist)
+            }
+        }
+
+        guard onMask != nil else { return }
+
+        // 2. 峰值描边（约 30fps，即 0.030s）：高帧率消除描边拖影
+        guard now - lastTime >= 0.030 else { return }
         lastTime = now
 
-        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let source = CIImage(cvPixelBuffer: pixelBuffer)
         let extent = source.extent
         guard extent.width > 2, extent.height > 2 else { return }
@@ -2549,27 +2602,25 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
         let resized = source.transformed(
             by: CGAffineTransform(scaleX: scale, y: scale)
         )
-        // CIEdges 之类的邻域滤镜可能输出无限范围，必须先钉回有限尺寸，
-        // 否则 createCGImage 会失败，峰值图永远出不来。
+        // CIEdges 之类的邻域滤镜可能输出无限范围，必须先钉回有限尺寸
         let outputExtent = resized.extent.integral
         guard outputExtent.width > 2, outputExtent.height > 2 else { return }
 
         let mono = resized.applyingFilter("CIColorControls", parameters: [
             kCIInputSaturationKey: 0.0,
-            kCIInputContrastKey: 1.4
+            kCIInputContrastKey: 1.5
         ])
         let edges = mono.applyingFilter("CIEdges", parameters: [
-            kCIInputIntensityKey: 2.0
+            kCIInputIntensityKey: 2.8
         ]).cropped(to: outputExtent)
         let punched = edges.applyingFilter("CIColorControls", parameters: [
-            kCIInputContrastKey: 2.6,
-            kCIInputBrightnessKey: -0.08
+            kCIInputContrastKey: 3.0,
+            kCIInputBrightnessKey: -0.12
         ]).cropped(to: outputExtent)
 
         let clear = CIImage(
             color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)
         ).cropped(to: outputExtent)
-        // 直接输出所选颜色，交给图层合成，省掉 SwiftUI 的一层 colorMultiply
         let tint = CIImage(color: tintColor).cropped(to: outputExtent)
         let masked = tint.applyingFilter("CIBlendWithRedMask", parameters: [
             kCIInputBackgroundImageKey: clear,
@@ -2579,6 +2630,76 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
             return
         }
         onMask?(image)
+    }
+
+    /// 从 CVPixelBuffer 高性能提取 RGB 与亮度直方图
+    static func generateHistogram(from pixelBuffer: CVPixelBuffer) -> RGBHistogram? {
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+        guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+              let yPlane = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
+              let uvPlane = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1) else {
+            return nil
+        }
+
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let yBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+        let uvBytesPerRow = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
+
+        let binCount = 36
+        var redBins = [Double](repeating: 0, count: binCount)
+        var greenBins = [Double](repeating: 0, count: binCount)
+        var blueBins = [Double](repeating: 0, count: binCount)
+        var lumaBins = [Double](repeating: 0, count: binCount)
+
+        let stepX = max(width / 64, 1)
+        let stepY = max(height / 48, 1)
+
+        let yPtr = yPlane.assumingMemoryBound(to: UInt8.self)
+        let uvPtr = uvPlane.assumingMemoryBound(to: UInt8.self)
+
+        for y in stride(from: 0, to: height, by: stepY) {
+            let yRow = yPtr + y * yBytesPerRow
+            let uvRow = uvPtr + (y / 2) * uvBytesPerRow
+            for x in stride(from: 0, to: width, by: stepX) {
+                let yVal = Double(yRow[x])
+                let uvIndex = (x / 2) * 2
+                let cb = Double(uvRow[uvIndex])
+                let cr = Double(uvRow[uvIndex + 1])
+
+                let yNorm = max(0, min(1, (yVal - 16.0) / 219.0))
+                let cbNorm = (cb - 128.0) / 224.0
+                let crNorm = (cr - 128.0) / 224.0
+
+                let r = max(0, min(1, yNorm + 1.5748 * crNorm))
+                let g = max(0, min(1, yNorm - 0.1873 * cbNorm - 0.4681 * crNorm))
+                let b = max(0, min(1, yNorm + 1.8556 * cbNorm))
+
+                let rIdx = min(Int(r * Double(binCount - 1)), binCount - 1)
+                let gIdx = min(Int(g * Double(binCount - 1)), binCount - 1)
+                let bIdx = min(Int(b * Double(binCount - 1)), binCount - 1)
+                let lIdx = min(Int(yNorm * Double(binCount - 1)), binCount - 1)
+
+                redBins[rIdx] += 1
+                greenBins[gIdx] += 1
+                blueBins[bIdx] += 1
+                lumaBins[lIdx] += 1
+            }
+        }
+
+        func normalize(_ values: [Double]) -> [Double] {
+            let mx = max(values.max() ?? 1, 1)
+            return values.map { $0 / mx }
+        }
+
+        return RGBHistogram(
+            red: normalize(redBins),
+            green: normalize(greenBins),
+            blue: normalize(blueBins),
+            luminance: normalize(lumaBins)
+        )
     }
 }
 
@@ -2885,9 +3006,11 @@ final class CameraPreviewUIView: UIView {
 
         peakingLayer.contentsGravity = .resizeAspectFill
         peakingLayer.masksToBounds = true
-        peakingLayer.opacity = 0.92
+        peakingLayer.opacity = 0.95
         peakingLayer.zPosition = 3
-        peakingLayer.allowsEdgeAntialiasing = false
+        peakingLayer.magnificationFilter = .linear
+        peakingLayer.minificationFilter = .linear
+        peakingLayer.allowsEdgeAntialiasing = true
         layer.addSublayer(peakingLayer)
 
         trackingLayer.strokeColor = UIColor(
@@ -3099,7 +3222,10 @@ struct CameraView: View {
             dismiss()
         }
     }
-    @StateObject private var camera = CameraController()
+    @ObservedObject private var camera: CameraController = CameraController.shared
+    @AppStorage("showHistogram") private var showHistogram = true
+    @State private var lastExposureHapticStep: Int?
+    @State private var lastIntensityHapticStep: Int?
     @State private var format: CameraCaptureFormat = .heif
     @State private var resolution: CameraResolution = .standard24
     @State private var aspect: CameraAspect = .portrait3x4
@@ -3176,6 +3302,16 @@ struct CameraView: View {
 
                         cameraLookOverlay
                         framingOverlay
+
+                        // 实时直方图：视频拍摄页面常驻，或由设置开启
+                        if (captureMode == .video || showHistogram), let hist = camera.liveHistogram {
+                            HistogramView(data: hist)
+                                .frame(width: 82, height: 42)
+                                .padding(8)
+                                .frame(width: rect.width, height: rect.height, alignment: .topLeading)
+                                .position(x: rect.midX, y: rect.midY)
+                                .allowsHitTesting(false)
+                        }
 
                         // 曝光条：取景框右侧，避开右下角 A/M 与底部倍率条
                         exposureBar
@@ -3444,12 +3580,22 @@ struct CameraView: View {
                     .onChanged { value in
                         let position = min(max(value.location.y - inset, 0), usable)
                         let ratio = 1 - Double(position / usable)
+                        let targetBias = Float(lower + ratio * span)
+                        let newStep = Int((targetBias * 10).rounded())
+                        if newStep != lastExposureHapticStep {
+                            lastExposureHapticStep = newStep
+                            if newStep == 0 {
+                                GrainHaptics.mediumImpact()
+                            } else {
+                                GrainHaptics.selection()
+                            }
+                        }
                         // 默认 A 档，一拖就切到 M 档（右下角开关同步变 M）
-                        camera.setExposureBias(Float(lower + ratio * span), fromUser: true)
+                        camera.setExposureBias(targetBias, fromUser: true)
                     }
                     .onEnded { _ in
                         camera.relockExposure()
-                        GrainHaptics.selection(enabled: true)
+                        GrainHaptics.selection()
                     }
             )
             .simultaneousGesture(
@@ -3458,7 +3604,7 @@ struct CameraView: View {
                         guard abs(gesture.location.y - knobY) <= 22 else { return }
                         camera.setExposureBias(0)
                         camera.relockExposure()
-                        GrainHaptics.lightImpact(enabled: true)
+                        GrainHaptics.mediumImpact()
                     }
             )
         }
@@ -4099,6 +4245,13 @@ struct CameraView: View {
                     .disabled(cameraProfile == .neutral)
                     .scaleEffect(0.82, anchor: .center)
                     .frame(height: 22)
+                    .onChange(of: cameraIntensity) { _, newVal in
+                        let step = Int((newVal * 20).rounded())
+                        if step != lastIntensityHapticStep {
+                            lastIntensityHapticStep = step
+                            GrainHaptics.selection()
+                        }
+                    }
                 Text("\(Int((cameraIntensity * 100).rounded()))%")
                     .font(.system(size: 8, weight: .semibold, design: .monospaced))
                     .foregroundStyle(GrainTheme.paper)
@@ -4297,9 +4450,16 @@ struct CameraView: View {
             .onChanged { value in
                 if zoomGestureBase == nil {
                     zoomGestureBase = camera.selectedZoom
+                    GrainHaptics.prepare()
                 }
                 guard let zoomGestureBase else { return }
-                camera.setZoom(zoomGestureBase * value)
+                let newZoom = zoomGestureBase * value
+                let oldStep = Int(camera.selectedZoom * 2)
+                let newStep = Int(newZoom * 2)
+                if oldStep != newStep {
+                    GrainHaptics.selection()
+                }
+                camera.setZoom(newZoom)
             }
             .onEnded { _ in
                 zoomGestureBase = nil

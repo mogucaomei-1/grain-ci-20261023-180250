@@ -183,6 +183,7 @@ private struct CropSelectionOverlay: View {
     @Binding var crop: CropTransform
     let displaySize: CGSize
     @State private var dragOrigin: CropTransform?
+    @State private var lastHapticStep: Int = 0
 
     var body: some View {
         GeometryReader { proxy in
@@ -250,7 +251,10 @@ private struct CropSelectionOverlay: View {
     private func moveGesture(rect: CGRect, width: CGFloat, height: CGFloat) -> some Gesture {
         DragGesture()
             .onChanged { value in
-                if dragOrigin == nil { dragOrigin = crop }
+                if dragOrigin == nil {
+                    dragOrigin = crop
+                    GrainHaptics.prepare()
+                }
                 guard let origin = dragOrigin else { return }
                 crop.normalizedX = min(
                     max(origin.normalizedX + Double(value.translation.width / width), 0),
@@ -260,6 +264,11 @@ private struct CropSelectionOverlay: View {
                     max(origin.normalizedY + Double(value.translation.height / height), 0),
                     1 - crop.normalizedHeight
                 )
+                let step = Int((crop.normalizedX * 50 + crop.normalizedY * 50).rounded())
+                if step != lastHapticStep {
+                    lastHapticStep = step
+                    GrainHaptics.selection()
+                }
             }
             .onEnded { _ in dragOrigin = nil }
     }
@@ -272,7 +281,10 @@ private struct CropSelectionOverlay: View {
     ) -> some Gesture {
         DragGesture()
             .onChanged { value in
-                if dragOrigin == nil { dragOrigin = crop }
+                if dragOrigin == nil {
+                    dragOrigin = crop
+                    GrainHaptics.prepare()
+                }
                 guard let origin = dragOrigin else { return }
                 let dx = Double(value.translation.width / width)
                 let dy = Double(value.translation.height / height)
@@ -297,6 +309,11 @@ private struct CropSelectionOverlay: View {
                 crop.normalizedY = y
                 crop.normalizedWidth = w
                 crop.normalizedHeight = h
+                let step = Int((w * 50 + h * 50).rounded())
+                if step != lastHapticStep {
+                    lastHapticStep = step
+                    GrainHaptics.selection()
+                }
             }
             .onEnded { _ in
                 if let ratio = crop.aspect.ratio, displaySize.width > 0, displaySize.height > 0 {
@@ -323,7 +340,7 @@ private struct CropSelectionOverlay: View {
     }
 }
 
-private enum Corner: CaseIterable {
+enum Corner: CaseIterable {
     case topLeft
     case topRight
     case bottomLeft

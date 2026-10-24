@@ -720,6 +720,9 @@ struct CollageEditorView: View {
                 .frame(width: 30, alignment: .leading)
             Slider(value: value, in: range)
                 .tint(GrainTheme.accent)
+                .onChange(of: value.wrappedValue) { _, _ in
+                    GrainHaptics.selection()
+                }
             Text(display)
                 .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
                 .foregroundStyle(GrainTheme.paper)

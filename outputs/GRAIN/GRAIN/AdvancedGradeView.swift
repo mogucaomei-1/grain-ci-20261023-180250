@@ -352,6 +352,7 @@ private struct ToneCurveEditor: View {
     let onEditStart: () -> Void
 
     @State private var activeIndex: Int?
+    @State private var lastCurveHapticStep: Int = 0
 
     var body: some View {
         GeometryReader { proxy in
@@ -393,6 +394,7 @@ private struct ToneCurveEditor: View {
                     .onChanged { gesture in
                         if activeIndex == nil {
                             onEditStart()
+                            GrainHaptics.prepare()
                             activeIndex = nearestIndex(
                                 to: gesture.startLocation.x,
                                 inset: inset,
@@ -401,6 +403,11 @@ private struct ToneCurveEditor: View {
                         }
                         guard let index = activeIndex, index > 0, index < 4 else { return }
                         let raw = 1 - (gesture.location.y - inset) / height
+                        let step = Int((raw * 30).rounded())
+                        if step != lastCurveHapticStep {
+                            lastCurveHapticStep = step
+                            GrainHaptics.selection()
+                        }
                         update(index: index, to: Double(raw))
                     }
                     .onEnded { _ in
@@ -477,6 +484,7 @@ private struct GradeSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let display: String
+    @State private var lastStep: Int = 0
 
     var body: some View {
         HStack(spacing: 10) {
@@ -487,6 +495,18 @@ private struct GradeSlider: View {
 
             Slider(value: $value, in: range)
                 .tint(GrainTheme.accent)
+                .onChange(of: value) { _, newVal in
+                    let span = max(range.upperBound - range.lowerBound, 0.001)
+                    let step = Int(((newVal - range.lowerBound) / span * 40).rounded())
+                    if step != lastStep {
+                        lastStep = step
+                        if abs(newVal) < (span / 80) {
+                            GrainHaptics.mediumImpact()
+                        } else {
+                            GrainHaptics.selection()
+                        }
+                    }
+                }
 
             Text(display)
                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
