@@ -77,33 +77,46 @@ public final class FileManagerService: ObservableObject {
         }
     }
 
-    /// 扫描指定目录下的视频
+    /// 扫描指定目录下的视频 (完全后台快速轻量扫描，避免主线程假死)
     private func loadVideos(in directory: URL) async -> [VideoItem] {
-        guard let fileUrls = try? fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.fileSizeKey, .creationDateKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
+        await Task.detached(priority: .userInitiated) {
+            guard let fileUrls = try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.fileSizeKey, .creationDateKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            ) else { return [] }
 
-        var items: [VideoItem] = []
-        for url in fileUrls {
-            let ext = url.pathExtension.lowercased()
-            guard Self.supportedExtensions.contains(ext) else { continue }
+            var items: [VideoItem] = []
+            for url in fileUrls {
+                let ext = url.pathExtension.lowercased()
+                guard Self.supportedExtensions.contains(ext) else { continue }
 
-            let asset = AVURLAsset(url: url)
-            let meta = await VideoMetadataExtractor.extract(from: asset, fileURL: url)
+                var meta = VideoMetadata()
+                if let resources = try? url.resourceValues(forKeys: [.fileSizeKey, .creationDateKey]) {
+                    meta.fileSize = Int64(resources.fileSize ?? 0)
+                    meta.creationDate = resources.creationDate ?? Date()
+                }
 
-            let title = url.deletingPathExtension().lastPathComponent
-            let item = VideoItem(
-                id: url.path,
-                title: title,
-                source: .fileDirectory(url: url),
-                metadata: meta
-            )
-            items.append(item)
-        }
+                let asset = AVURLAsset(url: url)
+                if let duration = try? await asset.load(.duration) {
+                    let seconds = CMTimeGetSeconds(duration)
+                    if !seconds.isNaN && !seconds.isInfinite {
+                        meta.duration = seconds
+                    }
+                }
 
-        return items.sorted(by: { $0.metadata.creationDate > $1.metadata.creationDate })
+                let title = url.deletingPathExtension().lastPathComponent
+                let item = VideoItem(
+                    id: url.path,
+                    title: title,
+                    source: .fileDirectory(url: url),
+                    metadata: meta
+                )
+                items.append(item)
+            }
+
+            return items.sorted(by: { $0.metadata.creationDate > $1.metadata.creationDate })
+        }.value
     }
 
     /// 切换当前文件夹
