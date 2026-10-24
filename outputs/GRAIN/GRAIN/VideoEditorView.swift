@@ -1435,31 +1435,25 @@ public struct VideoEditorView: View {
                     "inputNeutral": CIVector(x: 6500, y: 0),
                     "inputTargetNeutral": CIVector(x: 6800, y: 14)
                 ])
-        case .triX400, .acros:
-            graded = graded
-                .applyingFilter("CIColorControls", parameters: [
-                    kCIInputSaturationKey: 0.0,
-                    kCIInputContrastKey: 1.35
-                ])
-        case .velvia:
+        case .velvia50:
             graded = graded
                 .applyingFilter("CIColorControls", parameters: [
                     kCIInputSaturationKey: 1.45,
                     kCIInputContrastKey: 1.22
                 ])
-        case .proVia:
+        case .provia100f:
             graded = graded
                 .applyingFilter("CITemperatureAndTint", parameters: [
                     "inputNeutral": CIVector(x: 6500, y: 0),
                     "inputTargetNeutral": CIVector(x: 6300, y: -4)
                 ])
-        case .cinestill800T:
+        case .cinestill, .film135t:
             graded = graded
                 .applyingFilter("CITemperatureAndTint", parameters: [
                     "inputNeutral": CIVector(x: 6500, y: 0),
                     "inputTargetNeutral": CIVector(x: 5200, y: -16)
                 ])
-        case .gold200:
+        case .gold, .colorPlus200:
             graded = graded
                 .applyingFilter("CITemperatureAndTint", parameters: [
                     "inputNeutral": CIVector(x: 6500, y: 0),
@@ -1468,7 +1462,7 @@ public struct VideoEditorView: View {
                 .applyingFilter("CIColorControls", parameters: [
                     kCIInputSaturationKey: 1.1
                 ])
-        case .eterna, .nostalgicNeg:
+        case .eterna, .nostalgicNeg, .realaAce:
             graded = graded
                 .applyingFilter("CIColorControls", parameters: [
                     kCIInputContrastKey: 0.92,
