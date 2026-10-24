@@ -530,7 +530,7 @@ public struct VideoEditorView: View {
                             ),
                             aspect: recipe.aspect,
                             naturalSize: naturalVideoSize,
-                            displaySize: frame.size
+                            displaySize: frame
                         )
                     }
 
@@ -1374,8 +1374,8 @@ public struct VideoEditorView: View {
 
         // 监听播放进度与时间修剪循环（受 isScrubbing 保护，杜绝拖动时抽搐跳动）
         let interval = CMTime(value: 1, timescale: 30)
-        timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
-            guard let self, !self.isScrubbing else { return }
+        timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
+            guard !self.isScrubbing else { return }
             let seconds = time.seconds
             self.currentTime = seconds
 
