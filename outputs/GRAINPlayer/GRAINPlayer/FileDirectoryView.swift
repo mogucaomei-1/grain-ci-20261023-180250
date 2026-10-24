@@ -455,6 +455,7 @@ public struct FileDirectoryView: View {
 
 // MARK: - 文件视频行条目 (支持长按多选)
 
+@MainActor
 struct FileVideoRow: View {
     let video: VideoItem
     let isMultiSelecting: Bool
@@ -578,7 +579,7 @@ struct FileVideoRow: View {
             }
         }
         .task {
-            if case .fileDirectory(let url, _) = video.source {
+            if case .fileDirectory(let url) = video.source {
                 self.thumbnail = await FileManagerService.shared.generateThumbnail(for: url)
             }
         }

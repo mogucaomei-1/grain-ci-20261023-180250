@@ -308,7 +308,7 @@ public struct PhotoLibraryView: View {
             options.deliveryMode = .highQualityFormat
 
             for asset in selected {
-                if let url = try? await withCheckedThrowingContinuation({ (continuation: CheckedContinuation<URL?, Error>) in
+                let videoURL: URL? = await withCheckedContinuation { continuation in
                     PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, _ in
                         if let urlAsset = avAsset as? AVURLAsset {
                             continuation.resume(returning: urlAsset.url)
@@ -316,8 +316,9 @@ public struct PhotoLibraryView: View {
                             continuation.resume(returning: nil)
                         }
                     }
-                }), let url {
-                    urls.append(url)
+                }
+                if let videoURL {
+                    urls.append(videoURL)
                 }
             }
             if !urls.isEmpty {
@@ -401,6 +402,7 @@ public struct PhotoLibraryView: View {
 
 // MARK: - 无畸变 16:9 高速视频卡片 (支持多选指示与长按)
 
+@MainActor
 struct PhotoVideoCard: View {
     let asset: PHAsset
     let isMultiSelecting: Bool

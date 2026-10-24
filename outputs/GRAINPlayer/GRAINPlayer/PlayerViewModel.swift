@@ -153,7 +153,7 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
         switch item.source {
         case .photoLibrary:
             return try await PhotoLibraryService.shared.preparePlayerItem(for: item)
-        case .fileDirectory(let url, _), .externalPicked(let url):
+        case .fileDirectory(let url), .externalPicked(let url):
             let asset = AVURLAsset(url: url)
             let meta = await VideoMetadataExtractor.extract(from: asset, fileURL: url, fallbackDuration: item.metadata.duration)
             let playerItem = AVPlayerItem(asset: asset)
