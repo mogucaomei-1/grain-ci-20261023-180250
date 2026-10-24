@@ -134,6 +134,46 @@ enum VideoQuality: String, CaseIterable, Identifiable {
     }
 }
 
+/// 录像防抖档位，对应 AVCaptureVideoStabilizationMode 的可用项
+enum VideoStabilization: String, CaseIterable, Identifiable {
+    case off
+    case standard
+    case cinematic
+    case cinematicExtended
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .off: "防抖关"
+        case .standard: "标准防抖"
+        case .cinematic: "电影级防抖"
+        case .cinematicExtended: "增强防抖"
+        }
+    }
+
+    var mode: AVCaptureVideoStabilizationMode {
+        switch self {
+        case .off: .off
+        case .standard: .standard
+        case .cinematic: .cinematic
+        case .cinematicExtended: .cinematicExtended
+        }
+    }
+}
+
+/// 录像编码：只列系统相机也提供的两种，具体可用性按设备过滤
+enum VideoCodecPreference: String, CaseIterable, Identifiable {
+    case hevc
+    case h264
+
+    var id: String { rawValue }
+
+    var title: String { self == .hevc ? "HEVC" : "H.264" }
+
+    var codecType: AVVideoCodecType { self == .hevc ? .hevc : .h264 }
+}
+
 /// 相机工作模式：拍照 / 录像
 enum CameraMode: String {
     case photo
@@ -239,6 +279,10 @@ final class CameraController: ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var recordingSeconds: Int = 0
     @Published private(set) var recordingError: String?
+    /// 录像补光灯（录像用的是手电筒，不是拍照闪光灯）
+    @Published private(set) var isTorchOn = false
+    /// 设备可用的录像编码，UI 只展示这些
+    @Published private(set) var availableVideoCodecs: [AVVideoCodecType] = []
     @Published private(set) var isLivePhotoSupported = false
     @Published private(set) var isLivePhotoArmed = false
     @Published private(set) var isRawSupported = false
@@ -759,7 +803,11 @@ final class CameraController: ObservableObject {
     private var recordingTimer: Timer?
     private var recordingURL: URL?
 
-    func startRecording(quality: VideoQuality) {
+    func startRecording(
+        quality: VideoQuality,
+        stabilization: VideoStabilization,
+        codec: VideoCodecPreference
+    ) {
         guard !isRecording else { return }
         recordingError = nil
         recordingDelegate.onFinish = { [weak self] url, error in
@@ -779,11 +827,28 @@ final class CameraController: ObservableObject {
                 self.recordingURL = url
 
                 if let connection = self.movieOutput.connection(with: .video) {
+                    // 竖屏录制：写 90° 旋转元数据，而不是把像素真的转一遍
                     if connection.isVideoRotationAngleSupported(90) {
                         connection.videoRotationAngle = 90
                     }
                     if connection.isVideoStabilizationSupported {
-                        connection.preferredVideoStabilizationMode = .standard
+                        connection.preferredVideoStabilizationMode = stabilization.mode
+                    }
+                    // 前置自拍镜像与拍照保持一致
+                    if connection.isVideoMirroringSupported {
+                        connection.automaticallyAdjustsVideoMirroring = false
+                        connection.isVideoMirrored =
+                            self.isUsingFrontCamera && self.frontMirrorEnabled
+                    }
+                    let codecs = self.movieOutput.availableVideoCodecTypes
+                    DispatchQueue.main.async { [weak self] in
+                        self?.availableVideoCodecs = codecs
+                    }
+                    if codecs.contains(codec.codecType) {
+                        self.movieOutput.setOutputSettings(
+                            [AVVideoCodecKey: codec.codecType],
+                            for: connection
+                        )
                     }
                 }
 
@@ -795,14 +860,7 @@ final class CameraController: ObservableObject {
                     guard let self else { return }
                     self.isRecording = true
                     self.recordingSeconds = 0
-                    self.recordingTimer?.invalidate()
-                    self.recordingTimer = Timer.scheduledTimer(
-                        withTimeInterval: 1,
-                        repeats: true
-                    ) { [weak self] _ in
-                        guard let self else { return }
-                        self.recordingSeconds += 1
-                    }
+                    self.startRecordingTimer()
                 }
             }
         }
@@ -813,6 +871,48 @@ final class CameraController: ObservableObject {
         sessionQueue.async { [weak self] in
             self?.movieOutput.stopRecording()
         }
+    }
+
+    /// 录像补光：录像用的是常亮手电筒，不是拍照闪光灯
+    func setTorch(_ on: Bool) {
+        sessionQueue.async { [weak self] in
+            guard let self,
+                  let device = self.cameraDevice,
+                  device.hasTorch
+            else {
+                DispatchQueue.main.async { [weak self] in self?.isTorchOn = false }
+                return
+            }
+            do {
+                try device.lockForConfiguration()
+                if on, device.isTorchModeSupported(.on) {
+                    device.torchMode = .on
+                } else if !on, device.isTorchModeSupported(.off) {
+                    device.torchMode = .off
+                }
+                device.unlockForConfiguration()
+                DispatchQueue.main.async { [weak self] in self?.isTorchOn = on }
+            } catch {
+                DispatchQueue.main.async { [weak self] in self?.isTorchOn = false }
+            }
+        }
+    }
+
+    private func startRecordingTimer() {
+        recordingTimer?.invalidate()
+        recordingTimer = Timer.scheduledTimer(
+            withTimeInterval: 1,
+            repeats: true
+        ) { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in
+                self?.recordingSeconds += 1
+            }
+        }
+    }
+
+    private func stopRecordingTimer() {
+        recordingTimer?.invalidate()
+        recordingTimer = nil
     }
 
     /// 录像时把镜头切到对应分辨率 / 帧率的格式；找不到就沿用当前格式
@@ -879,8 +979,7 @@ final class CameraController: ObservableObject {
     /// 录制结束后：写入相册，并把镜头格式恢复成照片档
     private func finishRecording(url: URL?, error: Error?) {
         DispatchQueue.main.async { [weak self] in
-            self?.recordingTimer?.invalidate()
-            self?.recordingTimer = nil
+            self?.stopRecordingTimer()
             self?.isRecording = false
             if let error {
                 self?.recordingError = error.localizedDescription
@@ -952,13 +1051,17 @@ final class CameraController: ObservableObject {
         }
     }
 
-    /// A / M 切换：M 锁定曝光，A 交还给系统自动测光
+    /// A / M 切换：M 锁定曝光，A 交还给系统自动测光并把补偿归零。
+    /// 默认停在 A 档；用户一动曝光条就会自动切到 M（见 setExposureBias）。
     func setExposureManual(_ manual: Bool) {
         guard manual != exposureManual else { return }
         exposureManual = manual
+        // 回到 A 档＝“交给相机自动判断”，补偿回中间，滑杆也跟着回 0 EV
+        if !manual { exposureBias = 0 }
+        let bias = exposureBias
         sessionQueue.async { [weak self] in
             guard let self, let device = self.cameraDevice else { return }
-            self.applyExposureMode(to: device, manual: manual, retry: true)
+            self.applyExposureMode(to: device, manual: manual, bias: bias, retry: true)
         }
     }
 
@@ -967,6 +1070,7 @@ final class CameraController: ObservableObject {
     private func applyExposureMode(
         to device: AVCaptureDevice,
         manual: Bool,
+        bias: Float,
         retry: Bool
     ) {
         do {
@@ -983,7 +1087,7 @@ final class CameraController: ObservableObject {
                 if device.isExposureModeSupported(.continuousAutoExposure) {
                     device.exposureMode = .continuousAutoExposure
                 }
-                device.setExposureTargetBias(exposureBias)
+                device.setExposureTargetBias(bias)
             }
             device.unlockForConfiguration()
             return
@@ -998,7 +1102,12 @@ final class CameraController: ObservableObject {
                   self.exposureManual == target,
                   let device = self.cameraDevice
             else { return }
-            self.applyExposureMode(to: device, manual: target, retry: false)
+            self.applyExposureMode(
+                to: device,
+                manual: target,
+                bias: self.exposureBias,
+                retry: false
+            )
         }
     }
 
@@ -1034,15 +1143,26 @@ final class CameraController: ObservableObject {
         }
     }
 
-    func setExposureBias(_ value: Float) {
+    /// - parameter fromUser: 用户拖动曝光条时传 true：
+    ///   默认 A 档，只要动过曝光就自动进入 M 档，右下角开关跟着变成 M。
+    func setExposureBias(_ value: Float, fromUser: Bool = false) {
+        if fromUser, !exposureManual {
+            exposureManual = true
+        }
         sessionQueue.async { [weak self] in
-            guard let cameraDevice = self?.cameraDevice else { return }
+            guard let self, let cameraDevice = self.cameraDevice else { return }
             let clamped = min(
                 max(value, cameraDevice.minExposureTargetBias),
                 cameraDevice.maxExposureTargetBias
             )
             do {
                 try cameraDevice.lockForConfiguration()
+                // M 档下先把测光交还自动，补偿才能立刻反映到画面；
+                // 松手后 relockExposure 会再锁回去，滑杆就等价于亮度。
+                if fromUser,
+                   cameraDevice.isExposureModeSupported(.continuousAutoExposure) {
+                    cameraDevice.exposureMode = .continuousAutoExposure
+                }
                 cameraDevice.setExposureTargetBias(clamped)
                 cameraDevice.unlockForConfiguration()
                 DispatchQueue.main.async { [weak self] in
@@ -1466,6 +1586,12 @@ final class CameraController: ObservableObject {
     }
 
     private func performCapture(_ configuration: CameraCaptureConfiguration) {
+        // 录像中抓拍：会话正在写文件，不再 begin/commitConfiguration，
+        // 直接按当前输出状态拍一张，避免打断录制。
+        if isRecording {
+            captureProcessed(configuration)
+            return
+        }
         guard configurePhotoOutputForCapture(
             livePhoto: configuration.livePhoto,
             configuration: configuration
@@ -2963,8 +3089,19 @@ struct CameraView: View {
     @State private var captureMode: CameraMode = .photo
     @State private var videoQuality: VideoQuality = .uhd4k30
     @AppStorage("cameraVideoQuality") private var storedVideoQuality = VideoQuality.uhd4k30.rawValue
+    @State private var stabilization: VideoStabilization = .standard
+    @AppStorage("cameraVideoStabilization") private var storedStabilization = VideoStabilization.standard.rawValue
+    @State private var videoCodec: VideoCodecPreference = .hevc
+    @AppStorage("cameraVideoCodec") private var storedVideoCodec = VideoCodecPreference.hevc.rawValue
+    /// 录像补光：录像用的是常亮手电筒
+    @State private var torchOn = false
 
     private let zoomOptions: [CGFloat] = [0.5, 1, 2, 4, 8]
+
+    /// 录像固定竖屏 16:9，不提供比例调节；拍照沿用用户选的比例
+    private var effectiveAspect: CameraAspect {
+        captureMode == .video ? .portrait16x9 : aspect
+    }
 
     init(
         onClose: (() -> Void)? = nil,
@@ -2983,7 +3120,7 @@ struct CameraView: View {
                 GeometryReader { proxy in
                     // 取景区域按所选比例裁成一块，其余留黑：
                     // 这样才能做到“看到什么就拍到什么”，而不是始终铺满屏幕。
-                    let rect = fittedFrame(for: aspect.ratio, in: proxy.size)
+                    let rect = fittedFrame(for: effectiveAspect.ratio, in: proxy.size)
                     ZStack {
                         Color.black
 
@@ -2998,6 +3135,8 @@ struct CameraView: View {
                             onFocus: { devicePoint, lock in
                                 camera.focus(at: devicePoint, lock: lock)
                                 GrainHaptics.mediumImpact(enabled: true)
+                                // 手动对焦给一声提示音，跟随「快门声音」开关
+                                GrainFocusSound.playIfEnabled()
                             }
                         )
                         .frame(width: rect.width, height: rect.height)
@@ -3007,15 +3146,12 @@ struct CameraView: View {
                         cameraLookOverlay
                         framingOverlay
 
-                        // 常驻在取景框内的控制：右侧曝光条、右下角 A/M、底部倍率
-                        VStack(spacing: 0) {
-                            Spacer(minLength: 0)
-                            exposureBar
-                                .frame(width: 26, height: rect.height * 0.46)
-                        }
-                        .padding(.trailing, 7)
-                        .frame(width: rect.width, height: rect.height, alignment: .trailing)
-                        .position(x: rect.midX, y: rect.midY)
+                        // 曝光条：取景框右侧垂直居中，避开右下角 A/M 与底部倍率条
+                        exposureBar
+                            .frame(width: 30, height: rect.height * 0.42)
+                            .padding(.trailing, 8)
+                            .frame(width: rect.width, height: rect.height, alignment: .trailing)
+                            .position(x: rect.midX, y: rect.midY)
 
                         VStack(spacing: 0) {
                             Spacer(minLength: 0)
@@ -3038,7 +3174,7 @@ struct CameraView: View {
                     }
                     .contentShape(Rectangle())
                     .simultaneousGesture(pinchToZoomGesture)
-                    .animation(.easeInOut(duration: 0.24), value: aspect)
+                    .animation(.easeInOut(duration: 0.24), value: effectiveAspect)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
@@ -3066,6 +3202,9 @@ struct CameraView: View {
                         Text(recordingTimeText)
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .foregroundStyle(GrainTheme.paper)
+                        Text(videoQuality.title)
+                            .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                            .foregroundStyle(GrainTheme.paper.opacity(0.72))
                     }
                     .padding(.horizontal, 11)
                     .frame(height: 30)
@@ -3150,12 +3289,32 @@ struct CameraView: View {
             camera.setPeakingColor(FocusPeakingColor.resolved(peakingColorRaw))
             camera.setFaceTracking(faceTrackingEnabled)
             videoQuality = VideoQuality(rawValue: storedVideoQuality) ?? .uhd4k30
+            stabilization = VideoStabilization(rawValue: storedStabilization) ?? .standard
+            videoCodec = VideoCodecPreference(rawValue: storedVideoCodec) ?? .hevc
+        }
+        .onChange(of: captureMode) { _, mode in
+            // 录像不需要比例/实况/计时：切走录像时把手电筒收掉
+            if mode == .video {
+                if livePhoto {
+                    livePhoto = false
+                    if camera.isLivePhotoArmed {
+                        Task { _ = await camera.setLivePhotoEnabled(false) }
+                    }
+                }
+            } else if torchOn {
+                torchOn = false
+                camera.setTorch(false)
+            }
         }
         .onChange(of: peakingColorRaw) { _, value in
             camera.setPeakingColor(FocusPeakingColor.resolved(value))
         }
         .onChange(of: faceTrackingEnabled) { _, value in
             camera.setFaceTracking(value)
+        }
+        .onChange(of: camera.isTorchOn) { _, value in
+            // 设备不支持或点失败时，UI 跟着回到关闭状态
+            torchOn = value
         }
         .onChange(of: camera.isReady) { _, ready in
             if ready {
@@ -3188,11 +3347,11 @@ struct CameraView: View {
 
     // MARK: - 取景框内的常驻控制
 
-    /// 竖直曝光补偿条：常驻在取景框右侧，双击小白点回到 0 EV
+    /// 竖直曝光补偿条：取景框右侧垂直居中，双击小白点回到 0 EV
     private var exposureBar: some View {
         GeometryReader { proxy in
             let height = max(proxy.size.height, 1)
-            let inset: CGFloat = 9
+            let inset: CGFloat = 11
             let usable = max(height - inset * 2, 1)
             let lower = Double(camera.minimumExposureBias)
             let upper = Double(camera.maximumExposureBias)
@@ -3207,18 +3366,33 @@ struct CameraView: View {
             ZStack {
                 Capsule()
                     .fill(Color.white.opacity(0.16))
-                    .frame(width: 4)
+                    .frame(width: 5)
 
                 Capsule()
-                    .fill(GrainTheme.accent)
-                    .frame(width: 4, height: fill)
+                    .fill(camera.exposureManual ? GrainTheme.accent : Color.white.opacity(0.72))
+                    .frame(width: 5, height: fill)
                     .position(x: proxy.size.width / 2, y: height - inset - fill / 2)
 
                 Circle()
                     .fill(GrainTheme.paper)
-                    .frame(width: 17, height: 17)
+                    .frame(width: 19, height: 19)
                     .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
                     .position(x: proxy.size.width / 2, y: knobY)
+
+                if camera.exposureBias != 0 {
+                    Text(String(format: "%+.1f", camera.exposureBias))
+                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .foregroundStyle(GrainTheme.paper)
+                        .fixedSize()
+                        .padding(.horizontal, 4)
+                        .frame(height: 15)
+                        .background(Color.black.opacity(0.55), in: Capsule())
+                        .position(
+                            x: proxy.size.width / 2,
+                            y: min(max(knobY - 20, 10), height - 10)
+                        )
+                        .allowsHitTesting(false)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
@@ -3227,7 +3401,8 @@ struct CameraView: View {
                     .onChanged { value in
                         let position = min(max(value.location.y - inset, 0), usable)
                         let ratio = 1 - Double(position / usable)
-                        camera.setExposureBias(Float(lower + ratio * span))
+                        // 默认 A 档，一拖就切到 M 档（右下角开关同步变 M）
+                        camera.setExposureBias(Float(lower + ratio * span), fromUser: true)
                     }
                     .onEnded { _ in
                         camera.relockExposure()
@@ -3246,24 +3421,29 @@ struct CameraView: View {
         }
     }
 
-    /// 自动 / 手动曝光开关，常驻取景框右下角
+    /// 自动 / 手动曝光开关，常驻取景框右下角。
+    /// 默认 A 档；动过曝光条会自动变 M，再点一下回到 A 档（补偿归零）。
     private var exposureModeButton: some View {
         Button {
             camera.setExposureManual(!camera.exposureManual)
             GrainHaptics.selection(enabled: true)
         } label: {
             Text(camera.exposureManual ? "M" : "A")
-                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundStyle(camera.exposureManual ? GrainTheme.black : GrainTheme.paper)
-                .frame(width: 24, height: 24)
+                .frame(width: 28, height: 28)
                 .background(
                     camera.exposureManual ? GrainTheme.accent : Color.black.opacity(0.54),
                     in: Capsule()
                 )
+                .overlay {
+                    Capsule()
+                        .stroke(Color.white.opacity(0.22), lineWidth: 0.8)
+                }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
-            camera.exposureManual ? "曝光已锁定，点按恢复自动" : "自动曝光，点按锁定"
+            camera.exposureManual ? "手动曝光，点按回到自动" : "自动曝光，点按锁定"
         )
     }
 
@@ -3340,15 +3520,19 @@ struct CameraView: View {
         .padding(.bottom, 6)
     }
 
+    /// 录像时拍照专用的按钮（实况、倒计时）收起来，位置空出来所以整体放大
+    private var topButtonSize: CGFloat { captureMode == .video ? 42 : 38 }
+
     private var topBar: some View {
-        HStack(spacing: 11) {
+        let size = topButtonSize
+        return HStack(spacing: captureMode == .video ? 12 : 11) {
             Button {
                 closeCamera()
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(GrainTheme.paper)
-                    .frame(width: 38, height: 38)
+                    .frame(width: size, height: size)
                     .background(Color.black.opacity(0.58), in: Circle())
             }
             .buttonStyle(.plain)
@@ -3361,31 +3545,16 @@ struct CameraView: View {
                 }
             } label: {
                 Image(systemName: "camera.filters")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(
                             showCameraFilters ? GrainTheme.accent : GrainTheme.muted
                     )
-                    .frame(width: 38, height: 38)
+                    .frame(width: size, height: size)
                     .background(Color.black.opacity(0.58), in: Circle())
             }
             .buttonStyle(.plain)
 
-            Button {
-                if let index = CameraFlashSetting.allCases.firstIndex(of: flash) {
-                    flash = CameraFlashSetting.allCases[
-                        (index + 1) % CameraFlashSetting.allCases.count
-                    ]
-                }
-            } label: {
-                Image(systemName: flash.symbol)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(
-                        flash == .off ? GrainTheme.paper.opacity(0.55) : GrainTheme.accent
-                    )
-                    .frame(width: 38, height: 38)
-                    .background(Color.black.opacity(0.58), in: Circle())
-            }
-            .buttonStyle(.plain)
+            lightButton(size: size)
 
             if camera.isUsingFrontCamera {
                 Button {
@@ -3393,107 +3562,207 @@ struct CameraView: View {
                     GrainHaptics.selection(enabled: true)
                 } label: {
                     Image(systemName: "arrow.left.and.right")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(
                             mirrorFront ? GrainTheme.accent : GrainTheme.paper.opacity(0.55)
                         )
-                        .frame(width: 38, height: 38)
+                        .frame(width: size, height: size)
                         .background(Color.black.opacity(0.58), in: Circle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(mirrorFront ? "关闭自拍镜像" : "开启自拍镜像")
             }
 
-            Button {
-                guard !isPreparingLivePhoto else { return }
-                isPreparingLivePhoto = true
-                Task {
-                    let enabled = await camera.setLivePhotoEnabled(!livePhoto)
-                    livePhoto = enabled
-                    isPreparingLivePhoto = false
-                    if enabled {
-                        GrainHaptics.lightImpact(enabled: true)
+            if captureMode == .photo {
+                Button {
+                    guard !isPreparingLivePhoto else { return }
+                    isPreparingLivePhoto = true
+                    Task {
+                        let enabled = await camera.setLivePhotoEnabled(!livePhoto)
+                        livePhoto = enabled
+                        isPreparingLivePhoto = false
+                        if enabled {
+                            GrainHaptics.lightImpact(enabled: true)
+                        }
                     }
-                }
-            } label: {
-                Group {
-                    if isPreparingLivePhoto {
-                        ProgressView()
-                            .controlSize(.mini)
-                    } else {
-                        Image(systemName: livePhoto ? "livephoto" : "livephoto.slash")
-                            .font(.system(size: 13, weight: .semibold))
+                } label: {
+                    Group {
+                        if isPreparingLivePhoto {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else {
+                            Image(systemName: livePhoto ? "livephoto" : "livephoto.slash")
+                                .font(.system(size: 14, weight: .semibold))
+                        }
                     }
+                    .foregroundStyle(
+                        livePhoto ? GrainTheme.accent : GrainTheme.paper.opacity(0.62)
+                    )
+                    .frame(width: size, height: size)
+                    .background(Color.black.opacity(0.58), in: Circle())
                 }
-                .foregroundStyle(livePhoto ? GrainTheme.accent : GrainTheme.paper.opacity(0.62))
-                .frame(width: 38, height: 38)
-                .background(Color.black.opacity(0.58), in: Circle())
+                .buttonStyle(.plain)
+                .disabled(!camera.isLivePhotoSupported || format == .raw || isPreparingLivePhoto)
             }
-            .buttonStyle(.plain)
-            .disabled(!camera.isLivePhotoSupported || format == .raw || isPreparingLivePhoto)
 
             Button {
                 showGrid.toggle()
                 GrainHaptics.selection(enabled: true)
             } label: {
                 Image(systemName: "square.grid.3x3")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(showGrid ? GrainTheme.accent : GrainTheme.paper.opacity(0.62))
-                    .frame(width: 38, height: 38)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(
+                        showGrid ? GrainTheme.accent : GrainTheme.paper.opacity(0.62)
+                    )
+                    .frame(width: size, height: size)
                     .background(Color.black.opacity(0.58), in: Circle())
             }
             .buttonStyle(.plain)
 
-            Menu {
-                ForEach(CameraTimer.allCases) { option in
-                    Button(option.title) { timer = option }
-                }
-            } label: {
-                VStack(spacing: 1) {
-                    Image(systemName: "timer")
-                        .font(.system(size: 13, weight: .semibold))
-                    if timer != .off {
-                        Text("\(timer.seconds)")
-                            .font(.system(size: 7, weight: .bold, design: .monospaced))
+            if captureMode == .photo {
+                Menu {
+                    ForEach(CameraTimer.allCases) { option in
+                        Button(option.title) { timer = option }
                     }
+                } label: {
+                    VStack(spacing: 1) {
+                        Image(systemName: "timer")
+                            .font(.system(size: 14, weight: .semibold))
+                        if timer != .off {
+                            Text("\(timer.seconds)")
+                                .font(.system(size: 7, weight: .bold, design: .monospaced))
+                        }
+                    }
+                    .foregroundStyle(
+                        timer == .off ? GrainTheme.paper.opacity(0.62) : GrainTheme.accent
+                    )
+                    .frame(width: size, height: size)
+                    .background(Color.black.opacity(0.58), in: Circle())
                 }
-                .foregroundStyle(timer == .off ? GrainTheme.paper.opacity(0.62) : GrainTheme.accent)
-                .frame(width: 38, height: 38)
-                .background(Color.black.opacity(0.58), in: Circle())
             }
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)
     }
 
+    /// 拍照是闪光灯（关/自动/开），录像是常亮补光灯（手电筒）
+    private func lightButton(size: CGFloat) -> some View {
+        Button {
+            if captureMode == .video {
+                torchOn.toggle()
+                camera.setTorch(torchOn)
+            } else if let index = CameraFlashSetting.allCases.firstIndex(of: flash) {
+                flash = CameraFlashSetting.allCases[
+                    (index + 1) % CameraFlashSetting.allCases.count
+                ]
+            }
+            GrainHaptics.selection(enabled: true)
+        } label: {
+            Image(systemName: lightSymbol)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(lightActive ? GrainTheme.accent : GrainTheme.paper.opacity(0.55))
+                .frame(width: size, height: size)
+                .background(Color.black.opacity(0.58), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            captureMode == .video
+                ? (torchOn ? "关闭录像补光" : "开启录像补光")
+                : flash.title
+        )
+    }
+
+    private var lightSymbol: String {
+        if captureMode == .video {
+            return torchOn ? "flashlight.on.fill" : "flashlight.off.fill"
+        }
+        return flash.symbol
+    }
+
+    private var lightActive: Bool {
+        captureMode == .video ? torchOn : flash != .off
+    }
+
     private var cameraControls: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: 6) {
             if showCameraFilters {
                 cameraFilterTray
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             // 曝光已改为取景框右侧的常驻竖条，这里不再重复一行
-            HStack(spacing: 6) {
-                if captureMode == .video {
-                    Menu {
-                        ForEach(VideoQuality.allCases) { option in
-                            Button(option.title) {
-                                videoQuality = option
-                                storedVideoQuality = option.rawValue
-                            }
+            optionRow
+
+            if let hint = camera.peakingHint {
+                Text(hint)
+                    .font(.system(size: 8, weight: .semibold, design: .rounded))
+                    .foregroundStyle(GrainTheme.black)
+                    .padding(.horizontal, 8)
+                    .frame(height: 20)
+                    .background(GrainTheme.paper, in: Capsule())
+                    .transition(.opacity)
+            }
+
+            captureRow
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 14)
+        .background(Color.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 22))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22)
+                .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+        }
+        .padding(.horizontal, 10)
+    }
+
+    /// 参数行：录像只保留与录像相关的项（比例固定竖屏 16:9，不再出现）
+    private var optionRow: some View {
+        HStack(spacing: 6) {
+            if captureMode == .video {
+                Menu {
+                    ForEach(VideoQuality.allCases) { option in
+                        Button(option.title) {
+                            videoQuality = option
+                            storedVideoQuality = option.rawValue
                         }
-                    } label: {
-                        MenuChip(title: videoQuality.title, symbol: "video")
                     }
-                } else {
+                } label: {
+                    MenuChip(title: videoQuality.title, symbol: "video")
+                }
+                .disabled(camera.isRecording)
+
+                Menu {
+                    ForEach(VideoStabilization.allCases) { option in
+                        Button(option.title) {
+                            stabilization = option
+                            storedStabilization = option.rawValue
+                        }
+                    }
+                } label: {
+                    MenuChip(title: stabilization.title, symbol: "hand.raised")
+                }
+                .disabled(camera.isRecording)
+
+                Menu {
+                    ForEach(availableVideoCodecOptions) { option in
+                        Button(option.title) {
+                            videoCodec = option
+                            storedVideoCodec = option.rawValue
+                        }
+                    }
+                } label: {
+                    MenuChip(title: videoCodec.title, symbol: "film")
+                }
+                .disabled(camera.isRecording)
+            } else {
                 ForEach(CameraResolution.allCases) { option in
                     Button(option.title) {
                         resolution = option
                     }
-                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
                     .foregroundStyle(resolution == option ? GrainTheme.black : GrainTheme.paper)
-                    .frame(width: 44, height: 26)
+                    .frame(width: 48, height: 30)
                     .background(
                         resolution == option ? GrainTheme.paper : Color.black.opacity(0.54),
                         in: Capsule()
@@ -3506,15 +3775,14 @@ struct CameraView: View {
                     .disabled(livePhoto || (!is48MPAvailable && option == .high48))
                     .buttonStyle(.plain)
                 }
-                }
 
                 // 实况照片固定 12MP（系统限制），明确标出来避免误以为设置未生效
-                if livePhoto && captureMode == .photo {
+                if livePhoto {
                     Text("实况 12MP")
                         .font(.system(size: 7.5, weight: .bold, design: .monospaced))
                         .foregroundStyle(GrainTheme.black)
-                        .padding(.horizontal, 6)
-                        .frame(height: 20)
+                        .padding(.horizontal, 5)
+                        .frame(height: 24)
                         .background(GrainTheme.accent, in: Capsule())
                 }
 
@@ -3533,172 +3801,241 @@ struct CameraView: View {
                 } label: {
                     MenuChip(title: format.title, symbol: "doc")
                 }
-
-                Button {
-                    camera.setFocusPeaking(!camera.isFocusPeakingEnabled)
-                    GrainHaptics.selection(enabled: true)
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "viewfinder")
-                            .font(.system(size: 9, weight: .semibold))
-                        Text("峰值")
-                            .font(.system(size: 8.5, weight: .bold, design: .rounded))
-                    }
-                    .foregroundStyle(
-                        camera.isFocusPeakingEnabled ? GrainTheme.black : GrainTheme.paper
-                    )
-                    .padding(.horizontal, 8)
-                    .frame(height: 26)
-                    .background(
-                        camera.isFocusPeakingEnabled
-                            ? GrainTheme.accent
-                            : Color.black.opacity(0.54),
-                        in: Capsule()
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(
-                    camera.isFocusPeakingEnabled ? "关闭峰值对焦" : "开启峰值对焦"
-                )
             }
 
-            if let hint = camera.peakingHint {
-                Text(hint)
-                    .font(.system(size: 8, weight: .semibold, design: .rounded))
-                    .foregroundStyle(GrainTheme.black)
-                    .padding(.horizontal, 8)
-                    .frame(height: 20)
-                    .background(GrainTheme.paper, in: Capsule())
-                    .transition(.opacity)
+            peakingButton
+        }
+    }
+
+    private var peakingButton: some View {
+        Button {
+            camera.setFocusPeaking(!camera.isFocusPeakingEnabled)
+            GrainHaptics.selection(enabled: true)
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "viewfinder")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("峰值")
+                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
+            }
+            .foregroundStyle(
+                camera.isFocusPeakingEnabled ? GrainTheme.black : GrainTheme.paper
+            )
+            .padding(.horizontal, 9)
+            .frame(height: 30)
+            .background(
+                camera.isFocusPeakingEnabled
+                    ? GrainTheme.accent
+                    : Color.black.opacity(0.54),
+                in: Capsule()
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            camera.isFocusPeakingEnabled ? "关闭峰值对焦" : "开启峰值对焦"
+        )
+    }
+
+    /// 只列出这台设备真的支持的编码
+    private var availableVideoCodecOptions: [VideoCodecPreference] {
+        let available = camera.availableVideoCodecs
+        guard !available.isEmpty else { return VideoCodecPreference.allCases }
+        let filtered = VideoCodecPreference.allCases.filter {
+            available.contains($0.codecType)
+        }
+        return filtered.isEmpty ? VideoCodecPreference.allCases : filtered
+    }
+
+    // MARK: - 快门行
+
+    private let shutterOuter: CGFloat = 70
+    private let shutterInner: CGFloat = 54
+    private let sideButton: CGFloat = 46
+    /// 快门两侧随行按钮的水平偏移：贴着快门，不会被左右两端的按钮压住
+    private var shutterSideOffset: CGFloat {
+        shutterOuter / 2 + 14 + sideButton / 2
+    }
+
+    /// 快门严格居中；录像切换 / 暂停 / 抓拍都挂在快门旁边随它一起移动
+    private var captureRow: some View {
+        ZStack(alignment: .center) {
+            HStack(spacing: 0) {
+                latestCaptureButton
+                Spacer(minLength: 0)
+                flipCameraButton
             }
 
-            HStack {
-                Button {
-                    if let identifier = camera.latestCaptureAssetIdentifier {
-                        openLatestCapture(identifier)
-                    } else {
-                        closeCamera()
-                    }
-                } label: {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color.black.opacity(0.54))
-                        if let thumbnail = camera.latestCaptureThumbnail {
-                            Image(uiImage: thumbnail)
-                                .resizable()
-                                .scaledToFill()
-                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        } else {
-                            Image(systemName: "photo.on.rectangle")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(GrainTheme.paper)
-                        }
-                    }
-                    .frame(width: 38, height: 38)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Color.white.opacity(0.18), lineWidth: 0.8)
-                    }
+            shutterButton
+
+            if camera.isRecording {
+                stillCaptureButton
+                    .offset(x: shutterSideOffset)
+            } else {
+                captureModeButton
+                    .offset(x: shutterSideOffset)
+            }
+        }
+        .frame(height: shutterOuter + 8)
+    }
+
+    private var shutterButton: some View {
+        Button {
+            if captureMode == .video {
+                if camera.isRecording {
+                    camera.stopRecording()
+                } else {
+                    camera.startRecording(
+                        quality: videoQuality,
+                        stabilization: stabilization,
+                        codec: videoCodec
+                    )
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(
-                    camera.latestCaptureAssetIdentifier == nil
-                        ? "打开照片图库"
-                        : "打开刚拍摄的照片"
+            } else {
+                camera.capture(
+                    CameraCaptureConfiguration(
+                        format: format,
+                        resolution: resolution,
+                        aspect: aspect,
+                        timer: timer,
+                        flash: flash,
+                        livePhoto: livePhoto
+                    )
                 )
-
-                Spacer()
-
-                Button {
-                    if captureMode == .video {
-                        if camera.isRecording {
-                            camera.stopRecording()
-                        } else {
-                            camera.startRecording(quality: videoQuality)
-                        }
-                    } else {
-                        camera.capture(
-                            CameraCaptureConfiguration(
-                                format: format,
-                                resolution: resolution,
-                                aspect: aspect,
-                                timer: timer,
-                                flash: flash,
-                                livePhoto: livePhoto
-                            )
-                        )
-                    }
-                } label: {
-                    ZStack {
-                        Circle()
-                            .stroke(
-                                captureMode == .video ? Color.red.opacity(0.85) : GrainTheme.paper,
-                                lineWidth: 3
-                            )
-                            .frame(width: 58, height: 58)
-                        if captureMode == .video {
-                            RoundedRectangle(cornerRadius: camera.isRecording ? 6 : 18, style: .continuous)
-                                .fill(Color.red)
-                                .frame(width: 46, height: 46)
-                                .animation(.easeOut(duration: 0.18), value: camera.isRecording)
-                        } else {
-                            Circle()
-                                .fill(camera.isCapturing ? GrainTheme.muted : GrainTheme.paper)
-                                .frame(width: 46, height: 46)
-                        }
-                        if camera.isCapturing, captureMode == .photo {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(GrainTheme.black)
-                        }
-                    }
+            }
+        } label: {
+            ZStack {
+                Circle()
+                    .stroke(
+                        captureMode == .video ? Color.red.opacity(0.85) : GrainTheme.paper,
+                        lineWidth: 3.4
+                    )
+                    .frame(width: shutterOuter, height: shutterOuter)
+                if captureMode == .video {
+                    RoundedRectangle(
+                        cornerRadius: camera.isRecording ? 8 : 22,
+                        style: .continuous
+                    )
+                        .fill(Color.red)
+                        .frame(width: shutterInner, height: shutterInner)
+                        .animation(.easeOut(duration: 0.18), value: camera.isRecording)
+                } else {
+                    Circle()
+                        .fill(camera.isCapturing ? GrainTheme.muted : GrainTheme.paper)
+                        .frame(width: shutterInner, height: shutterInner)
                 }
-                .buttonStyle(.plain)
-                .disabled(!camera.isReady || camera.isCapturing)
-
-                // 快门右侧：切换录像
-                Button {
-                    captureMode = captureMode == .photo ? .video : .photo
-                    GrainHaptics.selection(enabled: true)
-                } label: {
-                    Image(systemName: captureMode == .video ? "camera.fill" : "video.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(
-                            captureMode == .video ? GrainTheme.accent : GrainTheme.paper
-                        )
-                        .frame(width: 38, height: 38)
-                        .background(Color.black.opacity(0.54), in: Circle())
+                if camera.isCapturing, captureMode == .photo {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(GrainTheme.black)
                 }
-                .buttonStyle(.plain)
-                .disabled(camera.isRecording)
-                .accessibilityLabel(captureMode == .video ? "切回拍照" : "切换到录像")
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(!camera.isReady || (captureMode == .photo && camera.isCapturing))
+    }
 
-                Spacer()
+    /// 快门右侧随行：拍照 / 录像互切
+    private var captureModeButton: some View {
+        Button {
+            captureMode = captureMode == .photo ? .video : .photo
+            GrainHaptics.selection(enabled: true)
+        } label: {
+            Image(systemName: captureMode == .video ? "camera.fill" : "video.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(
+                    captureMode == .video ? GrainTheme.accent : GrainTheme.paper
+                )
+                .frame(width: sideButton, height: sideButton)
+                .background(Color.black.opacity(0.54), in: Circle())
+                .overlay {
+                    Circle().stroke(Color.white.opacity(0.16), lineWidth: 0.8)
+                }
+        }
+        .buttonStyle(.plain)
+        .disabled(camera.isRecording)
+        .accessibilityLabel(captureMode == .video ? "切回拍照" : "切换到录像")
+    }
 
-                Button {
-                    camera.toggleCamera()
-                    GrainHaptics.mediumImpact(enabled: true)
-                } label: {
-                    Image(systemName: "arrow.triangle.2.circlepath.camera")
-                        .font(.system(size: 14, weight: .semibold))
+    /// 录制中抓拍一张静止照片（AVCapturePhotoOutput 官方支持边录边拍）
+    private var stillCaptureButton: some View {
+        Button {
+            camera.capture(
+                CameraCaptureConfiguration(
+                    format: format == .raw ? .heif : format,
+                    resolution: .standard24,
+                    aspect: .portrait16x9,
+                    timer: .off,
+                    flash: flash,
+                    livePhoto: false
+                )
+            )
+        } label: {
+            Circle()
+                .fill(GrainTheme.paper)
+                .frame(width: sideButton - 4, height: sideButton - 4)
+                .overlay {
+                    Circle().stroke(Color.black.opacity(0.28), lineWidth: 0.8)
+                }
+        }
+        .buttonStyle(.plain)
+        .disabled(!camera.isReady || camera.isCapturing)
+        .accessibilityLabel("录制中抓拍照片")
+    }
+
+    private var latestCaptureButton: some View {
+        Button {
+            if let identifier = camera.latestCaptureAssetIdentifier {
+                openLatestCapture(identifier)
+            } else {
+                closeCamera()
+            }
+        } label: {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.black.opacity(0.54))
+                if let thumbnail = camera.latestCaptureThumbnail {
+                    Image(uiImage: thumbnail)
+                        .resizable()
+                        .scaledToFill()
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                } else {
+                    Image(systemName: "photo.on.rectangle")
+                        .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(GrainTheme.paper)
-                        .frame(width: 38, height: 38)
-                        .background(Color.black.opacity(0.54), in: Circle())
                 }
-                .buttonStyle(.plain)
-                .frame(width: 50)
+            }
+            .frame(width: sideButton, height: sideButton)
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.white.opacity(0.18), lineWidth: 0.8)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 10)
-        .padding(.bottom, 12)
-        .background(Color.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 22))
-        .overlay {
-            RoundedRectangle(cornerRadius: 22)
-                .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            camera.latestCaptureAssetIdentifier == nil
+                ? "打开照片图库"
+                : "打开刚拍摄的照片"
+        )
+    }
+
+    private var flipCameraButton: some View {
+        Button {
+            camera.toggleCamera()
+            GrainHaptics.mediumImpact(enabled: true)
+        } label: {
+            Image(systemName: "arrow.triangle.2.circlepath.camera")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(GrainTheme.paper)
+                .frame(width: sideButton, height: sideButton)
+                .background(Color.black.opacity(0.54), in: Circle())
+                .overlay {
+                    Circle().stroke(Color.white.opacity(0.16), lineWidth: 0.8)
+                }
         }
-        .padding(.horizontal, 10)
-        .padding(.bottom, 0)
+        .buttonStyle(.plain)
+        .disabled(camera.isRecording)
+        .opacity(camera.isRecording ? 0.35 : 1)
+        .accessibilityLabel("切换前后镜头")
     }
 
     private var cameraFilterTray: some View {
@@ -3792,7 +4129,7 @@ struct CameraView: View {
 
     private var cameraLookOverlay: some View {
         GeometryReader { proxy in
-            let rect = fittedFrame(for: aspect.ratio, in: proxy.size)
+            let rect = fittedFrame(for: effectiveAspect.ratio, in: proxy.size)
 
             if cameraProfile != .neutral {
                 ZStack {
@@ -3828,7 +4165,7 @@ struct CameraView: View {
 
     private var framingOverlay: some View {
         GeometryReader { proxy in
-            let rect = fittedFrame(for: aspect.ratio, in: proxy.size)
+            let rect = fittedFrame(for: effectiveAspect.ratio, in: proxy.size)
             // 三分构图线贴合真实取景区域，四周留黑的区域不画线。
             if showGrid {
                 Path { path in
@@ -3930,13 +4267,13 @@ private struct MenuChip: View {
     var body: some View {
         HStack(spacing: 3) {
             Image(systemName: symbol)
-                .font(.system(size: 8, weight: .semibold))
+                .font(.system(size: 9, weight: .semibold))
             Text(title)
-                .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                .font(.system(size: 9, weight: .bold, design: .rounded))
         }
         .foregroundStyle(GrainTheme.paper)
-        .padding(.horizontal, 8)
-        .frame(height: 26)
+        .padding(.horizontal, 9)
+        .frame(height: 30)
         .background(Color.black.opacity(0.54), in: Capsule())
     }
 }

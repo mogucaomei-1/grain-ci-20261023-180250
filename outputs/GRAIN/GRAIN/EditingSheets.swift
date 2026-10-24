@@ -698,7 +698,7 @@ struct AppSettingsView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("快门声音")
                             .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        Text("拍照时播放机械快门声")
+                        Text("机械快门声，手动对焦时也有提示音")
                             .font(.system(size: 9, design: .rounded))
                             .foregroundStyle(GrainTheme.muted)
                     }

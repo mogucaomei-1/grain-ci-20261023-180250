@@ -1,6 +1,13 @@
 import AudioToolbox
 import UIKit
 
+enum GrainFeedbackSound {
+    /// 提示音统一跟随「设置 → 快门声音」开关，关掉就整体静音
+    static var isEnabled: Bool {
+        UserDefaults.standard.object(forKey: "shutterSoundEnabled") as? Bool ?? true
+    }
+}
+
 enum GrainHaptics {
     private static let selectionGenerator = UISelectionFeedbackGenerator()
     private static let lightGenerator = UIImpactFeedbackGenerator(style: .light)
@@ -41,9 +48,7 @@ enum GrainShutterSound {
     private static var customReady: Bool?
 
     /// 默认开启
-    static var isEnabled: Bool {
-        UserDefaults.standard.object(forKey: "shutterSoundEnabled") as? Bool ?? true
-    }
+    static var isEnabled: Bool { GrainFeedbackSound.isEnabled }
 
     /// 由 AVCapturePhotoCaptureDelegate 的 willCapturePhotoFor 调用
     static func playForCapture() {
@@ -81,5 +86,45 @@ enum GrainShutterSound {
         customID = id
         customReady = true
         return true
+    }
+}
+
+/// 手动对焦提示音：点按取景框时给一声轻“咔哒”，确认对焦已接管。
+/// 系统音源路径各版本可能不同，按顺序试；都读不到就只保留震动，不报错也不崩。
+enum GrainFocusSound {
+    private static let lock = NSLock()
+    private static var soundID: SystemSoundID = 0
+    private static var ready: Bool?
+
+    static func playIfEnabled() {
+        guard GrainFeedbackSound.isEnabled else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard ensureLocked() else { return }
+        AudioServicesPlaySystemSound(soundID)
+    }
+
+    private static func ensureLocked() -> Bool {
+        if let ready { return ready }
+        let candidates = [
+            "/System/Library/Audio/UISounds/key_press_click.caf",
+            "/System/Library/Audio/UISounds/Tock.caf",
+            "/System/Library/Audio/UISounds/photoShutter.caf"
+        ]
+        for path in candidates {
+            guard FileManager.default.fileExists(atPath: path) else { continue }
+            var id: SystemSoundID = 0
+            let status = AudioServicesCreateSystemSoundID(
+                URL(fileURLWithPath: path) as CFURL,
+                &id
+            )
+            if status == kAudioServicesNoError, id != 0 {
+                soundID = id
+                ready = true
+                return true
+            }
+        }
+        ready = false
+        return false
     }
 }
