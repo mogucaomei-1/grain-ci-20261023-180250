@@ -33,6 +33,7 @@
 		A10000000000000000000033 /* BatchExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000033 /* BatchExporter.swift */; };
 		A10000000000000000000034 /* AdvancedGradeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000034 /* AdvancedGradeView.swift */; };
 		A10000000000000000000035 /* LivePhotoPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000035 /* LivePhotoPlayer.swift */; };
+		A10000000000000000000036 /* VideoEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000036 /* VideoEditorView.swift */; };
 		A10000000000000000000022 /* CaptureLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000022 /* CaptureLocation.swift */; };
 /* End PBXBuildFile section */
 
@@ -63,6 +64,7 @@
 		B10000000000000000000033 /* BatchExporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatchExporter.swift; sourceTree = "<group>"; };
 		B10000000000000000000034 /* AdvancedGradeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdvancedGradeView.swift; sourceTree = "<group>"; };
 		B10000000000000000000035 /* LivePhotoPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LivePhotoPlayer.swift; sourceTree = "<group>"; };
+		B10000000000000000000036 /* VideoEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoEditorView.swift; sourceTree = "<group>"; };
 		B10000000000000000000022 /* CaptureLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureLocation.swift; sourceTree = "<group>"; };
 		B1000000000000000000000A /* GRAIN.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GRAIN.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -114,6 +116,7 @@
 				B10000000000000000000033 /* BatchExporter.swift */,
 				B10000000000000000000034 /* AdvancedGradeView.swift */,
 				B10000000000000000000035 /* LivePhotoPlayer.swift */,
+				B10000000000000000000036 /* VideoEditorView.swift */,
 				B10000000000000000000022 /* CaptureLocation.swift */,
 				B10000000000000000000009 /* Assets.xcassets */,
 			);
@@ -222,6 +225,7 @@
 				A10000000000000000000033 /* BatchExporter.swift in Sources */,
 				A10000000000000000000034 /* AdvancedGradeView.swift in Sources */,
 				A10000000000000000000035 /* LivePhotoPlayer.swift in Sources */,
+				A10000000000000000000036 /* VideoEditorView.swift in Sources */,
 				A10000000000000000000022 /* CaptureLocation.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

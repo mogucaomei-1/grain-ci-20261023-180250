@@ -817,40 +817,18 @@ final class CameraController: ObservableObject {
             let micAllowed = await requestMediaAccess(for: .audio)
             sessionQueue.async { [weak self] in
                 guard let self else { return }
-                self.configureVideoFormat(quality)
-                if micAllowed { self.attachAudioInput() }
-                self.attachMovieOutput()
+                // 若切换到录像模式时已预热，则跳过重配会话，实现点按快门零闪烁开录
+                if !self.movieAttached {
+                    self.configureVideoFormat(quality)
+                    if micAllowed { self.attachAudioInput() }
+                    self.attachMovieOutput()
+                }
+                self.configureMovieConnection(stabilization: stabilization, codec: codec)
 
                 let url = FileManager.default.temporaryDirectory
                     .appendingPathComponent("GRAIN-\(Int(Date().timeIntervalSince1970)).mov")
                 try? FileManager.default.removeItem(at: url)
                 self.recordingURL = url
-
-                if let connection = self.movieOutput.connection(with: .video) {
-                    // 竖屏录制：写 90° 旋转元数据，而不是把像素真的转一遍
-                    if connection.isVideoRotationAngleSupported(90) {
-                        connection.videoRotationAngle = 90
-                    }
-                    if connection.isVideoStabilizationSupported {
-                        connection.preferredVideoStabilizationMode = stabilization.mode
-                    }
-                    // 前置自拍镜像与拍照保持一致
-                    if connection.isVideoMirroringSupported {
-                        connection.automaticallyAdjustsVideoMirroring = false
-                        connection.isVideoMirrored =
-                            self.isUsingFrontCamera && self.frontMirrorEnabled
-                    }
-                    let codecs = self.movieOutput.availableVideoCodecTypes
-                    DispatchQueue.main.async { [weak self] in
-                        self?.availableVideoCodecs = codecs
-                    }
-                    if codecs.contains(codec.codecType) {
-                        self.movieOutput.setOutputSettings(
-                            [AVVideoCodecKey: codec.codecType],
-                            for: connection
-                        )
-                    }
-                }
 
                 self.movieOutput.startRecording(
                     to: url,
@@ -863,6 +841,69 @@ final class CameraController: ObservableObject {
                     self.startRecordingTimer()
                 }
             }
+        }
+    }
+
+    /// 切换到录像模式时提前预热格式与音视频输出，避免录像开录时闪烁
+    func prepareForVideoMode(
+        quality: VideoQuality,
+        stabilization: VideoStabilization,
+        codec: VideoCodecPreference
+    ) {
+        Task {
+            let micAllowed = await requestMediaAccess(for: .audio)
+            sessionQueue.async { [weak self] in
+                guard let self else { return }
+                self.configureVideoFormat(quality)
+                if micAllowed { self.attachAudioInput() }
+                self.attachMovieOutput()
+                self.configureMovieConnection(stabilization: stabilization, codec: codec)
+            }
+        }
+    }
+
+    /// 切回拍照模式时恢复照片最高可用分辨率档位
+    func restorePhotoFormat() {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.cameraDevice else { return }
+            let dims = self.promoteToHighestPhotoFormat(device)
+            if let dims,
+               device.activeFormat.supportedMaxPhotoDimensions.contains(where: {
+                   $0.width == dims.width && $0.height == dims.height
+               }) {
+                self.photoOutput.maxPhotoDimensions = dims
+            }
+            self.applyPhotoMirroring(for: device)
+        }
+    }
+
+    private func configureMovieConnection(
+        stabilization: VideoStabilization,
+        codec: VideoCodecPreference
+    ) {
+        guard let connection = self.movieOutput.connection(with: .video) else { return }
+        // 竖屏录制：写 90° 旋转元数据，而不是把像素真的转一遍
+        if connection.isVideoRotationAngleSupported(90) {
+            connection.videoRotationAngle = 90
+        }
+        if connection.isVideoStabilizationSupported {
+            connection.preferredVideoStabilizationMode = stabilization.mode
+        }
+        // 前置自拍镜像与拍照保持一致
+        if connection.isVideoMirroringSupported {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored =
+                self.isUsingFrontCamera && self.frontMirrorEnabled
+        }
+        let codecs = self.movieOutput.availableVideoCodecTypes
+        DispatchQueue.main.async { [weak self] in
+            self?.availableVideoCodecs = codecs
+        }
+        if codecs.contains(codec.codecType) {
+            self.movieOutput.setOutputSettings(
+                [AVVideoCodecKey: codec.codecType],
+                for: connection
+            )
         }
     }
 
@@ -976,7 +1017,7 @@ final class CameraController: ObservableObject {
         session.commitConfiguration()
     }
 
-    /// 录制结束后：写入相册，并把镜头格式恢复成照片档
+    /// 录制结束后：写入相册
     private func finishRecording(url: URL?, error: Error?) {
         DispatchQueue.main.async { [weak self] in
             self?.stopRecordingTimer()
@@ -988,16 +1029,6 @@ final class CameraController: ObservableObject {
 
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            if let device = self.cameraDevice {
-                let dims = self.promoteToHighestPhotoFormat(device)
-                if let dims,
-                   device.activeFormat.supportedMaxPhotoDimensions.contains(where: {
-                       $0.width == dims.width && $0.height == dims.height
-                   }) {
-                    self.photoOutput.maxPhotoDimensions = dims
-                }
-                self.applyPhotoMirroring(for: device)
-            }
             guard let url else { return }
             Task {
                 do {
@@ -3146,10 +3177,11 @@ struct CameraView: View {
                         cameraLookOverlay
                         framingOverlay
 
-                        // 曝光条：取景框右侧垂直居中，避开右下角 A/M 与底部倍率条
+                        // 曝光条：取景框右侧，避开右下角 A/M 与底部倍率条
                         exposureBar
-                            .frame(width: 30, height: rect.height * 0.42)
+                            .frame(width: 30, height: rect.height * 0.52)
                             .padding(.trailing, 8)
+                            .padding(.bottom, 22)
                             .frame(width: rect.width, height: rect.height, alignment: .trailing)
                             .position(x: rect.midX, y: rect.midY)
 
@@ -3293,7 +3325,7 @@ struct CameraView: View {
             videoCodec = VideoCodecPreference(rawValue: storedVideoCodec) ?? .hevc
         }
         .onChange(of: captureMode) { _, mode in
-            // 录像不需要比例/实况/计时：切走录像时把手电筒收掉
+            // 录像模式提前预热音视频输出与格式，解决开录时屏幕闪烁两下的问题
             if mode == .video {
                 if livePhoto {
                     livePhoto = false
@@ -3301,9 +3333,17 @@ struct CameraView: View {
                         Task { _ = await camera.setLivePhotoEnabled(false) }
                     }
                 }
-            } else if torchOn {
-                torchOn = false
-                camera.setTorch(false)
+                camera.prepareForVideoMode(
+                    quality: videoQuality,
+                    stabilization: stabilization,
+                    codec: videoCodec
+                )
+            } else {
+                if torchOn {
+                    torchOn = false
+                    camera.setTorch(false)
+                }
+                camera.restorePhotoFormat()
             }
         }
         .onChange(of: peakingColorRaw) { _, value in
@@ -3347,11 +3387,12 @@ struct CameraView: View {
 
     // MARK: - 取景框内的常驻控制
 
-    /// 竖直曝光补偿条：取景框右侧垂直居中，双击小白点回到 0 EV
+    /// 竖直曝光补偿条：取景框右侧，滑块与轨道严格对齐，双击小白点回到 0 EV
     private var exposureBar: some View {
         GeometryReader { proxy in
             let height = max(proxy.size.height, 1)
-            let inset: CGFloat = 11
+            let knobSize: CGFloat = 19
+            let inset: CGFloat = knobSize / 2
             let usable = max(height - inset * 2, 1)
             let lower = Double(camera.minimumExposureBias)
             let upper = Double(camera.maximumExposureBias)
@@ -3360,22 +3401,24 @@ struct CameraView: View {
                 max((Double(camera.exposureBias) - lower) / span, 0),
                 1
             )
-            let knobY = height - inset - usable * CGFloat(progress)
+            let knobY = inset + usable * (1 - CGFloat(progress))
             let fill = max(height - inset - knobY, 0)
 
             ZStack {
+                // 轨道背景：精确贴合可用范围，最下方不会出现未使用的灰条
                 Capsule()
-                    .fill(Color.white.opacity(0.16))
-                    .frame(width: 5)
+                    .fill(Color.white.opacity(0.18))
+                    .frame(width: 4.5, height: usable)
+                    .position(x: proxy.size.width / 2, y: inset + usable / 2)
 
                 Capsule()
                     .fill(camera.exposureManual ? GrainTheme.accent : Color.white.opacity(0.72))
-                    .frame(width: 5, height: fill)
+                    .frame(width: 4.5, height: fill)
                     .position(x: proxy.size.width / 2, y: height - inset - fill / 2)
 
                 Circle()
                     .fill(GrainTheme.paper)
-                    .frame(width: 19, height: 19)
+                    .frame(width: knobSize, height: knobSize)
                     .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
                     .position(x: proxy.size.width / 2, y: knobY)
 
@@ -3725,6 +3768,11 @@ struct CameraView: View {
                         Button(option.title) {
                             videoQuality = option
                             storedVideoQuality = option.rawValue
+                            camera.prepareForVideoMode(
+                                quality: option,
+                                stabilization: stabilization,
+                                codec: videoCodec
+                            )
                         }
                     }
                 } label: {
@@ -3911,13 +3959,13 @@ struct CameraView: View {
                     )
                     .frame(width: shutterOuter, height: shutterOuter)
                 if captureMode == .video {
-                    RoundedRectangle(
-                        cornerRadius: camera.isRecording ? 8 : 22,
-                        style: .continuous
-                    )
+                    Circle()
                         .fill(Color.red)
-                        .frame(width: shutterInner, height: shutterInner)
-                        .animation(.easeOut(duration: 0.18), value: camera.isRecording)
+                        .frame(
+                            width: camera.isRecording ? 28 : shutterInner,
+                            height: camera.isRecording ? 28 : shutterInner
+                        )
+                        .animation(.spring(response: 0.28, dampingFraction: 0.72), value: camera.isRecording)
                 } else {
                     Circle()
                         .fill(camera.isCapturing ? GrainTheme.muted : GrainTheme.paper)

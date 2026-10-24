@@ -50,7 +50,7 @@ final class PhotoLibraryViewModel: NSObject, ObservableObject, PHPhotoLibraryCha
 
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        let result = PHAsset.fetchAssets(with: .image, options: options)
+        let result = PHAsset.fetchAssets(with: options)
         var fetchedAssets: [PHAsset] = []
         fetchedAssets.reserveCapacity(result.count)
         result.enumerateObjects { asset, _, _ in
@@ -133,6 +133,9 @@ final class PhotoLibraryViewModel: NSObject, ObservableObject, PHPhotoLibraryCha
     }
 
     nonisolated static func formatLabel(for asset: PHAsset) -> String {
+        if asset.mediaType == .video {
+            return "VIDEO"
+        }
         let resources = PHAssetResource.assetResources(for: asset)
         let candidate = resources.first(where: { $0.type == .fullSizePhoto })
             ?? resources.first(where: { $0.type == .photo })
@@ -272,6 +275,7 @@ private struct PhotoTileFramePreferenceKey: PreferenceKey {
 
 enum LibraryFormatFilter: String, CaseIterable, Identifiable {
     case all
+    case video
     case raw
     case heif
     case png
@@ -283,6 +287,7 @@ enum LibraryFormatFilter: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .all: "全部"
+        case .video: "视频"
         case .raw: "RAW"
         case .heif: "HEIF"
         case .png: "PNG"
@@ -294,6 +299,7 @@ enum LibraryFormatFilter: String, CaseIterable, Identifiable {
     func matches(_ label: String?) -> Bool {
         guard self != .all else { return true }
         guard let label else { return false }
+        if self == .video { return label == "VIDEO" }
         return label == title
     }
 }
@@ -645,6 +651,13 @@ struct PhotoLibraryHome: View {
         return "正在载入照片"
     }
 
+    private static func formatDuration(_ duration: TimeInterval) -> String {
+        let total = max(0, Int(duration))
+        let minutes = total / 60
+        let seconds = total % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
     private func libraryTile(_ asset: PHAsset) -> some View {
         let selected = selectedIdentifiers.contains(asset.localIdentifier)
 
@@ -656,6 +669,21 @@ struct PhotoLibraryHome: View {
             AssetFormatBadge(label: library.formatLabels[asset.localIdentifier])
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(5)
+
+            if asset.mediaType == .video {
+                HStack(spacing: 3) {
+                    Image(systemName: "video.fill")
+                        .font(.system(size: 7.5))
+                    Text(Self.formatDuration(asset.duration))
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                }
+                .foregroundStyle(GrainTheme.paper)
+                .padding(.horizontal, 4.5)
+                .padding(.vertical, 2.5)
+                .background(Color.black.opacity(0.68), in: Capsule())
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                .padding(4)
+            }
 
             if isSelecting {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)

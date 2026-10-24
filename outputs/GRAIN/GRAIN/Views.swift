@@ -22,6 +22,7 @@ struct RootView: View {
     @State private var showDeleteConfirmation = false
     @State private var libraryImportTask: Task<Void, Never>?
     @State private var libraryImportGeneration = 0
+    @State private var editingVideoAsset: PHAsset?
 
     var body: some View {
         ZStack {
@@ -53,7 +54,11 @@ struct RootView: View {
                     )
 
                     PhotoLibraryHome(library: photoLibrary) { asset in
-                        importLibraryAsset(asset)
+                        if asset.mediaType == .video {
+                            editingVideoAsset = asset
+                        } else {
+                            importLibraryAsset(asset)
+                        }
                     }
                 }
                 .background(GrainTheme.black)
@@ -130,6 +135,18 @@ struct RootView: View {
         }
         .fullScreenCover(isPresented: $showHomeCollage) {
             CollageEditorView(assets: [])
+        }
+        .fullScreenCover(item: Binding<IdentifiableVideoAsset?>(
+            get: { editingVideoAsset.map { IdentifiableVideoAsset(asset: $0) } },
+            set: { editingVideoAsset = $0?.asset }
+        )) { item in
+            VideoEditorView(
+                asset: item.asset,
+                onClose: {
+                    editingVideoAsset = nil
+                    Task { await photoLibrary.refresh() }
+                }
+            )
         }
         .onChange(of: showCamera) { _, presented in
             handleCameraDismiss(presented: presented)
@@ -278,14 +295,18 @@ struct RootView: View {
         importLibraryAsset(photoLibrary.assets[targetIndex])
     }
 
-    /// 打开相机刚写入相册的那张照片
+    /// 打开相机刚写入相册的照片或视频
     private func openCapturedAsset(_ identifier: String) {
         let result = PHAsset.fetchAssets(
             withLocalIdentifiers: [identifier],
             options: nil
         )
         guard let asset = result.firstObject else { return }
-        importLibraryAsset(asset)
+        if asset.mediaType == .video {
+            editingVideoAsset = asset
+        } else {
+            importLibraryAsset(asset)
+        }
     }
 
     /// 删除当前编辑的照片：来自图库的会一并从系统相册删除，
@@ -2568,5 +2589,15 @@ private struct ExportResultSheet: View {
             }
             .padding(22)
         }
+    }
+}
+
+struct IdentifiableVideoAsset: Identifiable {
+    let id: String
+    let asset: PHAsset
+
+    init(asset: PHAsset) {
+        self.id = asset.localIdentifier
+        self.asset = asset
     }
 }
