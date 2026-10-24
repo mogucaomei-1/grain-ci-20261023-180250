@@ -436,6 +436,9 @@ final class CameraController: ObservableObject {
     /// 分析图的方向必须和预览层一致，否则红色描边会和画面对不上
     private func updatePeakingConnection() {
         guard let connection = peakingOutput.connection(with: .video) else { return }
+        if connection.isVideoOrientationSupported {
+            connection.videoOrientation = .portrait
+        }
         if connection.isVideoRotationAngleSupported(90) {
             connection.videoRotationAngle = 90
         }
@@ -480,45 +483,54 @@ final class CameraController: ObservableObject {
         }
     }
 
-    /// 0.5× 走超广角，达到长焦光学倍率后切到长焦物理镜头。
-    /// 这样 4×/8× 是真正的长焦成像，而不是主摄裁切放大。
+    /// 0.5× 走超广角，4×/8× 自动调用长焦物理镜头。
+    /// 这样 4×/8× 是真正的长焦光学成像，而不是主摄裁切数码放大。
     /// 只在 sessionQueue 上调用。
     private func selectLensIfNeeded(for zoom: CGFloat) {
         guard cameraDevice?.position == .back else { return }
-        let ultraWide = AVCaptureDevice.default(
-            .builtInUltraWideCamera,
-            for: .video,
+        let ultraWideDiscovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInUltraWideCamera],
+            mediaType: .video,
             position: .back
         )
-        let wide = AVCaptureDevice.default(
-            .builtInWideAngleCamera,
-            for: .video,
+        let ultraWide = ultraWideDiscovery.devices.first
+            ?? AVCaptureDevice.default(.builtInUltraWideCamera, for: .video, position: .back)
+
+        let wideDiscovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera],
+            mediaType: .video,
             position: .back
         )
-        let tele = AVCaptureDevice.default(
-            .builtInTelephotoCamera,
-            for: .video,
+        let wide = wideDiscovery.devices.first
+            ?? AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back)
+
+        let teleDiscovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInTelephotoCamera],
+            mediaType: .video,
             position: .back
         )
+        let tele = teleDiscovery.devices.first
+            ?? AVCaptureDevice.default(.builtInTelephotoCamera, for: .video, position: .back)
 
         if let wide, let tele {
             teleReach = opticalReach(tele: tele, wide: wide)
             let current = cameraDevice?.deviceType
-            if zoom >= teleReach * 0.94, current != .builtInTelephotoCamera {
+            // 用户要求：4 倍与 8 倍自动调用长焦镜头；达到 3.5x 以上即自动切到长焦
+            if zoom >= 3.5, current != .builtInTelephotoCamera {
                 if replaceVideoInput(with: tele, preserveZoom: true) { return }
             }
-            // 回到广角留 24% 滞回，避免在临界点来回换镜头
-            if current == .builtInTelephotoCamera, zoom <= teleReach * 0.76 {
+            // 回到广角留滞回，避免在临界点来回跳镜头
+            if current == .builtInTelephotoCamera, zoom < 2.8 {
                 if replaceVideoInput(with: wide, preserveZoom: true) { return }
             }
             if cameraDevice?.deviceType == .builtInTelephotoCamera { return }
         }
 
-        if zoom < 0.58 {
+        if zoom < 0.65 {
             if let ultraWide, cameraDevice?.deviceType != .builtInUltraWideCamera {
                 _ = replaceVideoInput(with: ultraWide, preserveZoom: true)
             }
-        } else if cameraDevice?.deviceType == .builtInUltraWideCamera, let wide {
+        } else if cameraDevice?.deviceType == .builtInUltraWideCamera, let wide, zoom >= 0.75 {
             _ = replaceVideoInput(with: wide, preserveZoom: true)
         }
     }
@@ -530,7 +542,8 @@ final class CameraController: ObservableObject {
         case .builtInUltraWideCamera:
             requested = 1
         case .builtInTelephotoCamera:
-            requested = zoom / max(teleReach, 1)
+            let base = max(teleReach, 1)
+            requested = zoom / base
         default:
             requested = zoom
         }
@@ -2594,9 +2607,14 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
         guard now - lastTime >= 0.030 else { return }
         lastTime = now
 
-        let source = CIImage(cvPixelBuffer: pixelBuffer)
+        var source = CIImage(cvPixelBuffer: pixelBuffer)
         let extent = source.extent
         guard extent.width > 2, extent.height > 2 else { return }
+
+        // 如果底层未物理旋转或输出横幅传感器帧（宽大于高），自动旋转 90 度匹配竖屏取景框
+        if extent.width > extent.height {
+            source = source.oriented(.right)
+        }
 
         let scale = analysisSize / max(extent.width, extent.height)
         let resized = source.transformed(
@@ -2901,6 +2919,9 @@ struct CameraPreviewView: UIViewRepresentable {
         view.attachTrackingSink(trackingSink)
         view.onTrackingFocus = onTrackingFocus
         if let connection = view.previewLayer.connection {
+            if connection.isVideoOrientationSupported {
+                connection.videoOrientation = .portrait
+            }
             if connection.isVideoRotationAngleSupported(90) {
                 connection.videoRotationAngle = 90
             }
@@ -2941,11 +2962,15 @@ struct CameraPreviewView: UIViewRepresentable {
             uiView.attachTrackingSink(trackingSink)
         }
         uiView.onTrackingFocus = onTrackingFocus
-        if let connection = uiView.previewLayer.connection,
-           connection.isVideoMirroringSupported,
-           connection.isVideoMirrored != mirrored {
-            connection.automaticallyAdjustsVideoMirroring = false
-            connection.isVideoMirrored = mirrored
+        if let connection = uiView.previewLayer.connection {
+            if connection.isVideoOrientationSupported, connection.videoOrientation != .portrait {
+                connection.videoOrientation = .portrait
+            }
+            if connection.isVideoMirroringSupported,
+               connection.isVideoMirrored != mirrored {
+                connection.automaticallyAdjustsVideoMirroring = false
+                connection.isVideoMirrored = mirrored
+            }
         }
     }
 

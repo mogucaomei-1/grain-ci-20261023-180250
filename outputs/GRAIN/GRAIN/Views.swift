@@ -2074,7 +2074,6 @@ private struct AdjustPanel: View {
             set: {
                 setValue($0, for: selectedTool)
                 editor.markManualAdjustment()
-                emitSliderHaptic(for: $0)
                 editor.schedulePreview()
             }
         )

@@ -490,6 +490,7 @@ final class EditorViewModel: ObservableObject {
                 let crop = self.crop
                 let mosaics = self.mosaicStrokes
 
+                let isStillUpdating = self.previewNeedsUpdate
                 do {
                     let rendered = try await Task.detached(priority: .userInitiated) {
                         let edited = try RawImageProcessor.renderGradedPreview(
@@ -501,16 +502,20 @@ final class EditorViewModel: ObservableObject {
                         )
                         let cropped = CropProcessor.apply(crop, to: edited)
                         let mosaicked = MosaicProcessor.apply(mosaics, to: cropped)
+                        // 滑动调节过程中跳过全图直方图计算，大幅释放 CPU 资源，确保滑块 60fps 丝滑不掉帧
+                        let hist = isStillUpdating ? nil : LocalLookAdvisor.histogram(from: mosaicked)
                         return (
                             full: edited,
                             edited: mosaicked,
-                            histogram: LocalLookAdvisor.histogram(from: mosaicked)
+                            histogram: hist
                         )
                     }.value
                     guard !Task.isCancelled, self.previewGeneration == generation else { break }
                     self.fullGradedPreview = rendered.full
                     self.editedPreview = rendered.edited
-                    self.histogram = rendered.histogram
+                    if let hist = rendered.histogram {
+                        self.histogram = hist
+                    }
                 } catch {
                     if !Task.isCancelled {
                         self.errorMessage = error.localizedDescription
