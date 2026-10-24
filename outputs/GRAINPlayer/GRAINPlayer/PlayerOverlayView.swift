@@ -433,9 +433,9 @@ public struct PlayerOverlayView: View {
                                     .stroke(Color.white.opacity(0.18), lineWidth: 1)
                             )
                         VStack(spacing: 2) {
-                            Text(viewModel.playbackSpeed == .normal ? "1.0×" : viewModel.playbackSpeed.title)
+                            Text(viewModel.playbackSpeed == .x1_0 ? "1.0×" : viewModel.playbackSpeed.title)
                                 .font(.system(size: 12, weight: .bold, design: .monospaced))
-                                .foregroundColor(viewModel.playbackSpeed == .normal ? GrainTheme.paper : GrainTheme.accent)
+                                .foregroundColor(viewModel.playbackSpeed == .x1_0 ? GrainTheme.paper : GrainTheme.accent)
                             Text("倍速")
                                 .font(.system(size: 9, weight: .medium))
                                 .foregroundColor(GrainTheme.muted)
