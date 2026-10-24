@@ -9,9 +9,9 @@ struct RootView: View {
     @AppStorage("showCameraButton") private var showCameraButton = true
     @AppStorage("showFileImportButton") private var showFileImportButton = false
     @AppStorage("showCollageButton") private var showCollageButton = true
-    /// 设置里选了“相机”时，启动后直接进相机
-    @AppStorage("launchWithCamera") private var launchWithCamera = false
-    @State private var didAutoLaunchCamera = false
+    /// 设置里选了“相机”时，首屏就是相机（读完一次即可，后续由用户操作切换）
+    @State private var launchCameraActive = UserDefaults.standard
+        .bool(forKey: "launchWithCamera")
     @State private var showDocumentPicker = false
     @State private var showExportSheet = false
     @State private var showInfoSheet = false
@@ -27,6 +27,16 @@ struct RootView: View {
         ZStack {
             GrainBackground()
 
+            if launchCameraActive {
+                // 启动即相机：直接渲染，不再先出图库再弹出相机的转场动画
+                CameraView(
+                    onClose: { launchCameraActive = false },
+                    onOpenCapture: { identifier in
+                        pendingCapturedAssetID = identifier
+                        launchCameraActive = false
+                    }
+                )
+            } else {
             NavigationStack {
                 VStack(spacing: 0) {
                     MinimalTopBar(
@@ -85,6 +95,7 @@ struct RootView: View {
                     .toolbar(.hidden, for: .navigationBar)
                 }
             }
+            }
         }
         .sheet(isPresented: $showDocumentPicker) {
             DocumentRawImporter { url in
@@ -121,13 +132,10 @@ struct RootView: View {
             CollageEditorView(assets: [])
         }
         .onChange(of: showCamera) { _, presented in
-            guard !presented, let identifier = pendingCapturedAssetID else { return }
-            pendingCapturedAssetID = nil
-            Task {
-                // 等相机覆盖视图退场后再推入编辑页，避免两个转场叠在一起
-                try? await Task.sleep(for: .milliseconds(320))
-                openCapturedAsset(identifier)
-            }
+            handleCameraDismiss(presented: presented)
+        }
+        .onChange(of: launchCameraActive) { _, active in
+            handleCameraDismiss(presented: active)
         }
         .confirmationDialog(
             editor.sourceAssetIdentifier == nil ? "关闭当前照片？" : "删除这张照片？",
@@ -195,13 +203,16 @@ struct RootView: View {
                 }
             }
         }
-        .onAppear {
-            guard launchWithCamera, !didAutoLaunchCamera else { return }
-            didAutoLaunchCamera = true
-            // 等首帧渲染完再推出相机，避免和启动转场叠在一起
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
-                showCamera = true
-            }
+    }
+
+    /// 相机退场后按需打开刚拍的照片（两种进入方式都会走这里）
+    private func handleCameraDismiss(presented: Bool) {
+        guard !presented, let identifier = pendingCapturedAssetID else { return }
+        pendingCapturedAssetID = nil
+        Task {
+            // 等相机视图退场后再推入编辑页，避免两个转场叠在一起
+            try? await Task.sleep(for: .milliseconds(320))
+            openCapturedAsset(identifier)
         }
     }
 

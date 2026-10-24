@@ -441,6 +441,18 @@ struct AppSettingsView: View {
     @AppStorage("focusPeakingColor") private var focusPeakingColor = "red"
     /// 启动时直接进相机（关则停在图库主页）
     @AppStorage("launchWithCamera") private var launchWithCamera = false
+    /// 拍摄锐度：-50 柔化 … 0 相机原样 … +50 锐化
+    @AppStorage("cameraSharpening") private var cameraSharpening = 0
+
+    private var sharpeningLabel: String {
+        if cameraSharpening <= -5 {
+            return "柔和 \(cameraSharpening)"
+        }
+        if cameraSharpening >= 5 {
+            return "锐利 +\(cameraSharpening)"
+        }
+        return "标准"
+    }
 
     var body: some View {
         ZStack {
@@ -692,6 +704,53 @@ struct AppSettingsView: View {
                     Toggle("", isOn: $shutterSoundEnabled)
                         .labelsHidden()
                         .tint(GrainTheme.accent)
+                }
+                .padding(16)
+                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 17)
+                        .stroke(GrainTheme.line, lineWidth: 0.8)
+                }
+
+                // 拍摄锐度
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(GrainTheme.accent)
+                            .frame(width: 28)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("拍摄锐度")
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            Text("向左柔化可抵消系统相机的锐化感，向右更锐利")
+                                .font(.system(size: 9, design: .rounded))
+                                .foregroundStyle(GrainTheme.muted)
+                        }
+                        Spacer()
+                        Text(sharpeningLabel)
+                            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(
+                                cameraSharpening == 0 ? GrainTheme.muted : GrainTheme.accent
+                            )
+                    }
+
+                    HStack(spacing: 9) {
+                        Text("柔和")
+                            .font(.system(size: 8.5, weight: .semibold, design: .rounded))
+                            .foregroundStyle(GrainTheme.muted)
+                        Slider(
+                            value: Binding(
+                                get: { Double(cameraSharpening) },
+                                set: { cameraSharpening = Int($0.rounded()) }
+                            ),
+                            in: -50...50,
+                            step: 5
+                        )
+                        .tint(GrainTheme.accent)
+                        Text("锐利")
+                            .font(.system(size: 8.5, weight: .semibold, design: .rounded))
+                            .foregroundStyle(GrainTheme.muted)
+                    }
                 }
                 .padding(16)
                 .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))

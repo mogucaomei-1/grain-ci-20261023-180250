@@ -178,6 +178,8 @@ final class CameraController: ObservableObject {
     @Published private(set) var focusTrackingEnabled = true
     /// 用户手动点按/锁定对焦后，追焦暂停，等待手动恢复
     @Published private(set) var isManualFocusActive = false
+    /// 曝光手动模式：锁定曝光，滑杆直接决定画面亮度
+    @Published private(set) var exposureManual = false
     @Published private(set) var isLivePhotoSupported = false
     @Published private(set) var isLivePhotoArmed = false
     @Published private(set) var isRawSupported = false
@@ -593,7 +595,8 @@ final class CameraController: ObservableObject {
                 if device.isFocusModeSupported(.continuousAutoFocus) {
                     device.focusMode = .continuousAutoFocus
                 }
-                if device.isExposurePointOfInterestSupported {
+                // 手动曝光下不跟着主体挪测光点，否则亮度会跟着跑
+                if !self.exposureManual, device.isExposurePointOfInterestSupported {
                     device.exposurePointOfInterest = point
                 }
                 device.unlockForConfiguration()
@@ -611,7 +614,9 @@ final class CameraController: ObservableObject {
                 if device.isFocusModeSupported(.continuousAutoFocus) {
                     device.focusMode = .continuousAutoFocus
                 }
-                if device.isExposureModeSupported(.continuousAutoExposure) {
+                // 手动曝光时不要把曝光交还给自动测光
+                if !self.exposureManual,
+                   device.isExposureModeSupported(.continuousAutoExposure) {
                     device.exposureMode = .continuousAutoExposure
                 }
                 // 画面主体变化时系统会回调，用于重新合焦
@@ -679,6 +684,60 @@ final class CameraController: ObservableObject {
             else { return }
             self.sessionQueue.async { [weak self] in
                 self?.applyContinuousAutoFocus(true)
+            }
+        }
+    }
+
+    /// A / M 切换：M 锁定曝光，A 交还给系统自动测光
+    func setExposureManual(_ manual: Bool) {
+        guard manual != exposureManual else { return }
+        exposureManual = manual
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.cameraDevice else { return }
+            do {
+                try device.lockForConfiguration()
+                if manual {
+                    if device.isExposureModeSupported(.locked) {
+                        device.exposureMode = .locked
+                    }
+                } else if device.isExposureModeSupported(.continuousAutoExposure) {
+                    device.exposureMode = .continuousAutoExposure
+                }
+                device.unlockForConfiguration()
+            } catch {
+                // 个别镜头不支持锁定，保持原模式
+            }
+        }
+    }
+
+    /// 手动曝光下松手后重新锁定：先按新补偿测光，再锁住，滑杆即亮度
+    func relockExposure() {
+        guard exposureManual else { return }
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.cameraDevice else { return }
+            do {
+                try device.lockForConfiguration()
+                if device.isExposureModeSupported(.continuousAutoExposure) {
+                    device.exposureMode = .continuousAutoExposure
+                }
+                device.unlockForConfiguration()
+            } catch {
+                return
+            }
+            self.sessionQueue.asyncAfter(deadline: .now() + 0.22) { [weak self] in
+                guard let self,
+                      self.exposureManual,
+                      let device = self.cameraDevice
+                else { return }
+                do {
+                    try device.lockForConfiguration()
+                    if device.isExposureModeSupported(.locked) {
+                        device.exposureMode = .locked
+                    }
+                    device.unlockForConfiguration()
+                } catch {
+                    // 忽略
+                }
             }
         }
     }
@@ -1693,9 +1752,14 @@ private enum CameraImageProcessor {
             }
 
             // decoded 已按 orientation 转正，裁切与缩放都在正向坐标系里进行
-            let image = resized(
-                crop(decoded, to: configuration.aspect.ratio),
-                targetPixels: targetPixels
+            let sharpening = UserDefaults.standard
+                .object(forKey: "cameraSharpening") as? Int ?? 0
+            let image = applySharpness(
+                to: resized(
+                    crop(decoded, to: configuration.aspect.ratio),
+                    targetPixels: targetPixels
+                ),
+                level: sharpening
             )
             let format: CameraCaptureFormat = configuration.format == .png ? .png : .heif
             let type = format == .png ? UTType.png : UTType.heic
@@ -1732,6 +1796,44 @@ private enum CameraImageProcessor {
                 livePhotoURL: output.livePhotoURL
             )
         }
+    }
+
+    private static let gradeContext = CIContext(options: [.cacheIntermediates: false])
+
+    /// 按设置调整锐度：正值锐化，负值柔化（用来抵消系统相机偏重的锐化）。
+    /// level 为 0 时直接返回原图，不产生任何额外开销。
+    /// RAW(DNG) 不做处理，保持原始感光数据。
+    private static func applySharpness(to image: CGImage, level: Int) -> CGImage {
+        guard level != 0 else { return image }
+        let input = CIImage(cgImage: image)
+        let extent = input.extent
+        guard extent.width > 2, extent.height > 2 else { return image }
+
+        let normalized = CGFloat(level) / 50.0
+        let output: CIImage
+        if level > 0 {
+            output = input.applyingFilter(
+                "CISharpenLuminance",
+                parameters: [kCIInputSharpnessKey: 0.25 + normalized * 0.85]
+            )
+        } else {
+            // 轻微高斯模糊抵消锐化带来的硬边，比直接降对比更自然
+            output = input.applyingFilter(
+                "CIGaussianBlur",
+                parameters: [kCIInputRadiusKey: -normalized * 1.5]
+            )
+        }
+        let cropped = output.cropped(to: extent)
+        let space = image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)
+        guard let rendered = gradeContext.createCGImage(
+            cropped,
+            from: extent,
+            format: .RGBA8,
+            colorSpace: space
+        ) else {
+            return image
+        }
+        return rendered
     }
 
     /// 把 AVCapturePhoto 的 EXIF/TIFF/GPS 写入重编码后的 HEIF/PNG。
@@ -2511,7 +2613,17 @@ final class CameraPreviewUIView: UIView {
 struct CameraView: View {
     /// 点击左下角刚拍的照片时回调相册标识，由外层负责关闭相机并进入编辑
     var onOpenCapture: ((String) -> Void)? = nil
+    /// 启动即进入相机时用它退回图库；此时相机是根视图，dismiss 不起作用
+    var onClose: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
+
+    private func leaveCamera() {
+        if let onClose {
+            onClose()
+        } else {
+            dismiss()
+        }
+    }
     @StateObject private var camera = CameraController()
     @State private var format: CameraCaptureFormat = .heif
     @State private var resolution: CameraResolution = .standard24
@@ -2532,7 +2644,11 @@ struct CameraView: View {
 
     private let zoomOptions: [CGFloat] = [0.5, 1, 2, 4, 8]
 
-    init(onOpenCapture: ((String) -> Void)? = nil) {
+    init(
+        onClose: (() -> Void)? = nil,
+        onOpenCapture: ((String) -> Void)? = nil
+    ) {
+        self.onClose = onClose
         self.onOpenCapture = onOpenCapture
     }
 
@@ -2605,7 +2721,7 @@ struct CameraView: View {
                     Text(error)
                         .font(.system(size: 10, design: .rounded))
                         .multilineTextAlignment(.center)
-                    Button("关闭") { dismiss() }
+                    Button("关闭") { leaveCamera() }
                         .foregroundStyle(GrainTheme.black)
                         .padding(.horizontal, 18)
                         .frame(height: 38)
@@ -2810,35 +2926,37 @@ struct CameraView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            HStack(spacing: 4) {
-                ForEach(zoomOptions, id: \.self) { zoom in
-                    Button {
-                        camera.setZoom(zoom)
-                    } label: {
-                        Text(zoomLabel(zoom))
-                            .font(.system(size: zoom == camera.selectedZoom ? 10.5 : 9, weight: .bold, design: .rounded))
-                            .foregroundStyle(
-                                zoom == camera.selectedZoom ? GrainTheme.black : GrainTheme.paper
-                            )
-                            .frame(width: zoom == camera.selectedZoom ? 34 : 28, height: 28)
-                            .background(
-                                zoom == camera.selectedZoom
-                                    ? GrainTheme.paper
-                                    : Color.black.opacity(0.54),
-                                in: Circle()
-                            )
+            // 倍率始终居中；人脸追焦开关浮在倍率左侧，不挤占倍率位置
+            ZStack {
+                HStack(spacing: 4) {
+                    ForEach(zoomOptions, id: \.self) { zoom in
+                        Button {
+                            camera.setZoom(zoom)
+                        } label: {
+                            Text(zoomLabel(zoom))
+                                .font(.system(size: zoom == camera.selectedZoom ? 10.5 : 9, weight: .bold, design: .rounded))
+                                .foregroundStyle(
+                                    zoom == camera.selectedZoom ? GrainTheme.black : GrainTheme.paper
+                                )
+                                .frame(width: zoom == camera.selectedZoom ? 34 : 28, height: 28)
+                                .background(
+                                    zoom == camera.selectedZoom
+                                        ? GrainTheme.paper
+                                        : Color.black.opacity(0.54),
+                                    in: Circle()
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(
+                            (zoom < camera.minimumZoom
+                                && !(zoom == 0.5 && !camera.isUsingFrontCamera))
+                            || zoom > camera.maximumZoom
+                        )
                     }
-                    .buttonStyle(.plain)
-                    .disabled(
-                        (zoom < camera.minimumZoom
-                            && !(zoom == 0.5 && !camera.isUsingFrontCamera))
-                        || zoom > camera.maximumZoom
-                    )
                 }
 
-                Spacer(minLength: 6)
-
-                Button {
+                HStack {
+                    Button {
                     GrainHaptics.selection(enabled: true)
                     if camera.isManualFocusActive {
                         camera.resumeAutoFocus()
@@ -2874,9 +2992,33 @@ struct CameraView: View {
                         ? "恢复自动追焦"
                         : (camera.focusTrackingEnabled ? "关闭自动追焦" : "开启自动追焦")
                 )
+                    Spacer(minLength: 0)
+                }
             }
 
             HStack(spacing: 6) {
+                Button {
+                    camera.setExposureManual(!camera.exposureManual)
+                    GrainHaptics.selection(enabled: true)
+                } label: {
+                    Text(camera.exposureManual ? "M" : "A")
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(
+                            camera.exposureManual ? GrainTheme.black : GrainTheme.paper
+                        )
+                        .frame(width: 24, height: 24)
+                        .background(
+                            camera.exposureManual
+                                ? GrainTheme.accent
+                                : Color.black.opacity(0.54),
+                            in: Capsule()
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    camera.exposureManual ? "曝光已锁定，点按恢复自动" : "自动曝光，点按锁定"
+                )
+
                 Image(systemName: "sun.min")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(GrainTheme.muted)
@@ -2886,7 +3028,13 @@ struct CameraView: View {
                         set: { camera.setExposureBias(Float($0)) }
                     ),
                     in: Double(camera.minimumExposureBias)...Double(camera.maximumExposureBias),
-                    step: 0.1
+                    step: 0.1,
+                    onEditingChanged: { editing in
+                        // 手动曝光：松手后按新的补偿值重新锁定，滑杆即亮度
+                        if !editing {
+                            camera.relockExposure()
+                        }
+                    }
                 )
                 .tint(GrainTheme.accent)
                 .scaleEffect(0.82, anchor: .center)
@@ -3270,7 +3418,7 @@ struct CameraView: View {
     private func closeCamera() {
         camera.cancelCapture()
         camera.stop()
-        dismiss()
+        leaveCamera()
     }
 
     /// 带着最近一张照片的相册标识退出相机，外层收到后直接打开编辑页
@@ -3281,7 +3429,7 @@ struct CameraView: View {
             // 先交给外层记录标识并关闭覆盖视图，避免 dismiss 与回调竞争
             onOpenCapture(identifier)
         } else {
-            dismiss()
+            leaveCamera()
         }
     }
 
