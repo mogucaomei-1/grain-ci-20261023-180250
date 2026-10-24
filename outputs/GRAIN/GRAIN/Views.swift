@@ -407,11 +407,16 @@ private struct MinimalTopBar: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("打开设置")
 
-                Text("GRAIN")
-                    .font(.system(size: 14, weight: .heavy, design: .rounded))
-                    .tracking(2.3)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text("GRAIN")
+                        .font(.system(size: 14, weight: .heavy, design: .rounded))
+                        .tracking(2.3)
+                    Text("1.1")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(GrainTheme.accent)
+                }
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
             }
 
             Spacer()
