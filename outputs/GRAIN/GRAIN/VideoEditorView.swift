@@ -252,6 +252,7 @@ public struct VideoEditorView: View {
     @State private var duration: Double = 0
     @State private var currentTime: Double = 0
     @State private var isScrubbing = false
+    @State private var wasPlayingBeforeScrub = false
 
     @State private var recipe = VideoEditRecipe()
     // 默认进入“调节”模式，播放视频并附带视频拖动条
@@ -315,25 +316,29 @@ public struct VideoEditorView: View {
             GrainTheme.black.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                // 1. 顶栏：删除放左边第一个、取消、查看信息、分享放在完成左边、完成
+                // 1. 顶栏：取消、Spacer、删除放在视频参数按钮左边、视频参数按钮、分享、完成
                 topBar
                     .padding(.horizontal, 16)
                     .frame(height: 48)
 
-                // 2. 视频主预览画布（右上角直方图、左上角格式标签、右下对比按钮、左右滑切片手势）
+                // 2. 视频参数与直方图信息条：独立放在最上方功能下面，彻底解决 16:9 等画幅被遮挡问题
+                videoSpecAndHistogramHeader
+                    .padding(.bottom, 2)
+
+                // 3. 视频主预览画布（纯净画面无遮挡、左右滑切片手势）
                 videoPreviewCanvas
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                // 3. 对比开关放置在播放条的右上方
+                // 4. 对比开关与静音开关放置在播放条的右上方
                 comparisonActionBar
                     .padding(.top, 4)
                     .padding(.bottom, 2)
 
-                // 4. 视频拖动进度条（带静音开关、时间回显与流畅拖动）
+                // 5. 视频拖动进度条（带静音开关、时间回显、防拖拽误暂停机制）
                 videoScrubberBar
                     .padding(.bottom, 4)
 
-                // 5. 底部功能控制面板
+                // 6. 底部功能控制面板
                 bottomControlDeck
             }
 
@@ -427,7 +432,7 @@ public struct VideoEditorView: View {
         }
     }
 
-    // MARK: - 顶栏：取消、查看信息、分享、完成
+    // MARK: - 顶栏：取消、Spacer、删除放在参数按钮左边、查看参数信息、分享、完成
     private var topBar: some View {
         HStack(spacing: 12) {
             // 1. 取消
@@ -441,7 +446,21 @@ public struct VideoEditorView: View {
 
             Spacer()
 
-            // 2. 查看视频参数信息按钮
+            // 2. 删除：按用户要求放在编辑页面最上方的视频参数按钮左边
+            Button {
+                showDeleteConfirmation = true
+                GrainHaptics.selection()
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(GrainTheme.paper)
+                    .frame(width: 32, height: 32)
+                    .background(Color.white.opacity(0.12), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isExporting)
+
+            // 3. 查看视频参数信息按钮
             Button {
                 showInfoSheet = true
                 GrainHaptics.selection()
@@ -455,7 +474,7 @@ public struct VideoEditorView: View {
             .buttonStyle(.plain)
             .disabled(isExporting)
 
-            // 3. 分享：放在完成的左边
+            // 4. 分享：放在完成的左边
             Button {
                 showExportSheet = true
                 GrainHaptics.selection()
@@ -469,7 +488,7 @@ public struct VideoEditorView: View {
             .buttonStyle(.plain)
             .disabled(isExporting)
 
-            // 4. 完成
+            // 5. 完成
             Button {
                 showExportSheet = true
                 GrainHaptics.selection()
@@ -486,6 +505,43 @@ public struct VideoEditorView: View {
         }
     }
 
+    // MARK: - 视频规格与直方图信息条（放在最上方功能的下面，彻底解决 16:9 视频被遮挡问题）
+    private var videoSpecAndHistogramHeader: some View {
+        HStack(spacing: 12) {
+            // 视频规格胶囊
+            Button {
+                showInfoSheet = true
+                GrainHaptics.selection()
+            } label: {
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(GrainTheme.accent)
+                        .frame(width: 5, height: 5)
+                    Text(videoFormatBadge)
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(GrainTheme.accent)
+                }
+                .padding(.horizontal, 9)
+                .frame(height: 24)
+                .background(Color.white.opacity(0.10), in: Capsule())
+                .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.6))
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            // 实时直方图（独立于视频框之外，横屏画幅零遮挡）
+            if let currentHistogram {
+                HistogramView(data: currentHistogram)
+                    .frame(width: 76, height: 26)
+                    .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.12), lineWidth: 0.6))
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 28)
+    }
+
     private var videoFormatBadge: String {
         let container = videoContainerFormat.uppercased()
         let maxSide = max(naturalVideoSize.width, naturalVideoSize.height)
@@ -494,7 +550,7 @@ public struct VideoEditorView: View {
         return "\(container) · \(res) \(fps)FPS"
     }
 
-    // MARK: - 播放画布与手势（左上角视频规格、右上角直方图、左右滑动切换视频）
+    // MARK: - 播放画布与手势（纯净无遮挡、左右滑动切换视频）
 
     private var videoPreviewCanvas: some View {
         GeometryReader { proxy in
@@ -548,54 +604,6 @@ public struct VideoEditorView: View {
                         .buttonStyle(.plain)
                         .transition(.scale.combined(with: .opacity))
                     }
-
-                    // 左上角删除按钮与视频规格胶囊
-                    VStack {
-                        HStack(spacing: 8) {
-                            // 1. 删除按钮：按用户要求放在视频规格按钮的左边
-                            Button {
-                                showDeleteConfirmation = true
-                                GrainHaptics.selection()
-                            } label: {
-                                Image(systemName: "trash")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(GrainTheme.paper)
-                                    .frame(width: 26, height: 26)
-                                    .background(Color.black.opacity(0.58), in: Circle())
-                                    .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 0.6))
-                            }
-                            .buttonStyle(.plain)
-
-                            // 2. 视频规格胶囊：去掉感叹号图标
-                            Button {
-                                showInfoSheet = true
-                                GrainHaptics.selection()
-                            } label: {
-                                Text(videoFormatBadge)
-                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                    .foregroundStyle(GrainTheme.accent)
-                                    .padding(.horizontal, 9)
-                                    .frame(height: 26)
-                                    .background(Color.black.opacity(0.58), in: Capsule())
-                                    .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 0.6))
-                            }
-                            .buttonStyle(.plain)
-
-                            Spacer()
-
-                            // 右上角实时直方图
-                            if let currentHistogram {
-                                HistogramView(data: currentHistogram)
-                                    .frame(width: 76, height: 42)
-                                    .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
-                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.18), lineWidth: 0.6))
-                            }
-                        }
-                        .padding(10)
-
-                        Spacer()
-                    }
-                    .frame(width: frame.width, height: frame.height)
                 } else {
                     ProgressView()
                         .tint(GrainTheme.accent)
@@ -721,8 +729,14 @@ public struct VideoEditorView: View {
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { val in
-                            isScrubbing = true
-                            pause()
+                            if !isScrubbing {
+                                wasPlayingBeforeScrub = isPlaying
+                                isScrubbing = true
+                            }
+                            if isPlaying {
+                                player?.pause()
+                                isPlaying = false
+                            }
                             let x = min(max(val.location.x - 8, 0), usableW)
                             let newProg = Double(x / usableW)
                             let newSec = newProg * totalDur
@@ -737,6 +751,14 @@ public struct VideoEditorView: View {
                         .onEnded { _ in
                             isScrubbing = false
                             seek(to: currentTime)
+                            if wasPlayingBeforeScrub {
+                                let endBoundary = recipe.trimEnd > 0 ? recipe.trimEnd : totalDur
+                                if currentTime >= endBoundary - 0.05 {
+                                    seek(to: recipe.trimStart)
+                                }
+                                player?.play()
+                                isPlaying = true
+                            }
                         }
                 )
             }

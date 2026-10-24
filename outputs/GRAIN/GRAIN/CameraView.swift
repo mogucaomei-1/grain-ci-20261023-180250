@@ -856,12 +856,11 @@ final class CameraController: ObservableObject {
             let micAllowed = await requestMediaAccess(for: .audio)
             sessionQueue.async { [weak self] in
                 guard let self else { return }
-                // 若切换到录像模式时已预热，则跳过重配会话，实现点按快门零闪烁开录
                 if !self.movieAttached {
-                    self.configureVideoFormat(quality)
                     if micAllowed { self.attachAudioInput() }
                     self.attachMovieOutput()
                 }
+                self.configureVideoFormat(quality)
                 self.configureMovieConnection(stabilization: stabilization, codec: codec)
 
                 let ext = container.fileExtension
@@ -884,7 +883,7 @@ final class CameraController: ObservableObject {
         }
     }
 
-    /// 切换到录像模式时提前预热格式与音视频输出，避免录像开录时闪烁
+    /// 切换到录像模式时提前预热音视频输出，避免录像开录时闪烁；不改动 activeFormat 彻底消除预览黑屏闪烁
     func prepareForVideoMode(
         quality: VideoQuality,
         stabilization: VideoStabilization,
@@ -894,7 +893,6 @@ final class CameraController: ObservableObject {
             let micAllowed = await requestMediaAccess(for: .audio)
             sessionQueue.async { [weak self] in
                 guard let self else { return }
-                self.configureVideoFormat(quality)
                 if micAllowed { self.attachAudioInput() }
                 self.attachMovieOutput()
                 self.configureMovieConnection(stabilization: stabilization, codec: codec)
@@ -902,16 +900,27 @@ final class CameraController: ObservableObject {
         }
     }
 
-    /// 切回拍照模式时恢复照片最高可用分辨率档位
+    /// 切回拍照模式时恢复照片最高可用分辨率档位与快门曝光帧率范围
     func restorePhotoFormat() {
         sessionQueue.async { [weak self] in
             guard let self, let device = self.cameraDevice else { return }
-            let dims = self.promoteToHighestPhotoFormat(device)
-            if let dims,
-               device.activeFormat.supportedMaxPhotoDimensions.contains(where: {
-                   $0.width == dims.width && $0.height == dims.height
-               }) {
-                self.photoOutput.maxPhotoDimensions = dims
+            do {
+                try device.lockForConfiguration()
+                device.activeVideoMinFrameDuration = .invalid
+                device.activeVideoMaxFrameDuration = .invalid
+                device.unlockForConfiguration()
+            } catch {}
+
+            // 仅在当前 activeFormat 的照片分辨率确实低于支持的最大档位时才切换，避免不必要的重新协商导致黑屏
+            let maxArea = device.formats.map { self.maximumPhotoArea($0) }.max() ?? 0
+            if self.maximumPhotoArea(device.activeFormat) < maxArea {
+                let dims = self.promoteToHighestPhotoFormat(device)
+                if let dims,
+                   device.activeFormat.supportedMaxPhotoDimensions.contains(where: {
+                       $0.width == dims.width && $0.height == dims.height
+                   }) {
+                    self.photoOutput.maxPhotoDimensions = dims
+                }
             }
             self.applyPhotoMirroring(for: device)
         }
@@ -996,9 +1005,26 @@ final class CameraController: ObservableObject {
         recordingTimer = nil
     }
 
-    /// 录像时把镜头切到对应分辨率 / 帧率的格式；找不到就沿用当前格式
+    /// 录像时把镜头切到对应分辨率 / 帧率的格式；若当前格式已满足则仅锁帧率，不切 activeFormat 避免黑屏
     private func configureVideoFormat(_ quality: VideoQuality) {
         guard let device = cameraDevice else { return }
+        let currentDims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+        let curShort = Int(min(currentDims.width, currentDims.height))
+        let curLong = Int(max(currentDims.width, currentDims.height))
+        let curSupportsFPS = device.activeFormat.videoSupportedFrameRateRanges.contains {
+            $0.maxFrameRate >= Double(quality.fps) - 0.5
+        }
+        if curShort >= quality.shortSide && curLong >= quality.longSide && curSupportsFPS {
+            do {
+                try device.lockForConfiguration()
+                let duration = CMTime(value: 1, timescale: Int32(quality.fps))
+                device.activeVideoMinFrameDuration = duration
+                device.activeVideoMaxFrameDuration = duration
+                device.unlockForConfiguration()
+            } catch {}
+            return
+        }
+
         let formats = device.formats
         var best: AVCaptureDevice.Format?
         for format in formats {
@@ -1013,7 +1039,7 @@ final class CameraController: ObservableObject {
             best = format
             break
         }
-        guard let format = best else { return }
+        guard let format = best, format != device.activeFormat else { return }
         do {
             try device.lockForConfiguration()
             device.activeFormat = format
@@ -4184,7 +4210,9 @@ struct CameraView: View {
     /// 快门右侧随行：拍照 / 录像互切
     private var captureModeButton: some View {
         Button {
-            captureMode = captureMode == .photo ? .video : .photo
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                captureMode = captureMode == .photo ? .video : .photo
+            }
             GrainHaptics.selection(enabled: true)
         } label: {
             Image(systemName: captureMode == .video ? "camera.fill" : "video.fill")
