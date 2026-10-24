@@ -443,6 +443,8 @@ struct AppSettingsView: View {
     @AppStorage("launchWithCamera") private var launchWithCamera = false
     /// 拍摄锐度：-50 柔化 … 0 相机原样 … +50 锐化
     @AppStorage("cameraSharpening") private var cameraSharpening = 0
+    /// 人脸追焦：关掉后只保留连续自动对焦，不做人脸检测
+    @AppStorage("faceTrackingEnabled") private var faceTrackingEnabled = true
 
     private var sharpeningLabel: String {
         if cameraSharpening <= -5 {
@@ -712,6 +714,30 @@ struct AppSettingsView: View {
                         .stroke(GrainTheme.line, lineWidth: 0.8)
                 }
 
+                HStack(spacing: 12) {
+                    Image(systemName: "person.crop.rectangle")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(GrainTheme.accent)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("人脸追焦")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        Text("关闭后只做连续自动对焦，不再检测人脸")
+                            .font(.system(size: 9, design: .rounded))
+                            .foregroundStyle(GrainTheme.muted)
+                    }
+                    Spacer()
+                    Toggle("", isOn: $faceTrackingEnabled)
+                        .labelsHidden()
+                        .tint(GrainTheme.accent)
+                }
+                .padding(16)
+                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 17)
+                        .stroke(GrainTheme.line, lineWidth: 0.8)
+                }
+
                 // 拍摄锐度
                 VStack(alignment: .leading, spacing: 9) {
                     HStack(spacing: 12) {
@@ -738,15 +764,20 @@ struct AppSettingsView: View {
                         Text("柔和")
                             .font(.system(size: 8.5, weight: .semibold, design: .rounded))
                             .foregroundStyle(GrainTheme.muted)
-                        Slider(
+                        ResetValueSlider(
                             value: Binding(
                                 get: { Double(cameraSharpening) },
-                                set: { cameraSharpening = Int($0.rounded()) }
+                                set: { cameraSharpening = Int(($0 / 5).rounded()) * 5 }
                             ),
-                            in: -50...50,
-                            step: 5
+                            range: -50...50,
+                            onEditStart: {
+                                GrainHaptics.prepare()
+                            },
+                            onReset: {
+                                cameraSharpening = 0
+                                GrainHaptics.selection(enabled: hapticsEnabled)
+                            }
                         )
-                        .tint(GrainTheme.accent)
                         Text("锐利")
                             .font(.system(size: 8.5, weight: .semibold, design: .rounded))
                             .foregroundStyle(GrainTheme.muted)

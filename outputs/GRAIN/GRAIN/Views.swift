@@ -2160,7 +2160,8 @@ private struct AdjustPanel: View {
     }
 }
 
-private struct ResetValueSlider: View {
+/// 可双击白色旋钮恢复默认值的滑杆（编辑页与设置页共用）
+struct ResetValueSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let onEditStart: () -> Void

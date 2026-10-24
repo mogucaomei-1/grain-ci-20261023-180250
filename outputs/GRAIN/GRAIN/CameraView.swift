@@ -65,6 +65,7 @@ enum CameraAspect: String, CaseIterable, Identifiable {
 enum CameraTimer: String, CaseIterable, Identifiable {
     case off
     case three
+    case five
     case ten
 
     var id: String { rawValue }
@@ -72,6 +73,7 @@ enum CameraTimer: String, CaseIterable, Identifiable {
         switch self {
         case .off: "计时关"
         case .three: "3 秒"
+        case .five: "5 秒"
         case .ten: "10 秒"
         }
     }
@@ -79,9 +81,63 @@ enum CameraTimer: String, CaseIterable, Identifiable {
         switch self {
         case .off: 0
         case .three: 3
+        case .five: 5
         case .ten: 10
         }
     }
+}
+
+/// 录像规格：分辨率 + 帧率，参考系统相机与专业相机 App 的常见档位
+enum VideoQuality: String, CaseIterable, Identifiable {
+    case hd1080p30
+    case hd1080p60
+    case uhd4k24
+    case uhd4k30
+    case uhd4k60
+    case uhd4k120
+
+    var id: String { rawValue }
+
+    /// 视频尺寸按横向存储（与 AVCaptureDevice.Format 的 dimensions 一致）
+    var shortSide: Int {
+        switch self {
+        case .hd1080p30, .hd1080p60: 1080
+        case .uhd4k24, .uhd4k30, .uhd4k60, .uhd4k120: 2160
+        }
+    }
+
+    var longSide: Int {
+        switch self {
+        case .hd1080p30, .hd1080p60: 1920
+        case .uhd4k24, .uhd4k30, .uhd4k60, .uhd4k120: 3840
+        }
+    }
+
+    var fps: Int {
+        switch self {
+        case .hd1080p30, .uhd4k30: 30
+        case .hd1080p60, .uhd4k60: 60
+        case .uhd4k24: 24
+        case .uhd4k120: 120
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .hd1080p30: "1080p·30"
+        case .hd1080p60: "1080p·60"
+        case .uhd4k24: "4K·24"
+        case .uhd4k30: "4K·30"
+        case .uhd4k60: "4K·60"
+        case .uhd4k120: "4K·120"
+        }
+    }
+}
+
+/// 相机工作模式：拍照 / 录像
+enum CameraMode: String {
+    case photo
+    case video
 }
 
 enum CameraFlashSetting: String, CaseIterable, Identifiable {
@@ -180,6 +236,9 @@ final class CameraController: ObservableObject {
     @Published private(set) var isManualFocusActive = false
     /// 曝光手动模式：锁定曝光，滑杆直接决定画面亮度
     @Published private(set) var exposureManual = false
+    @Published private(set) var isRecording = false
+    @Published private(set) var recordingSeconds: Int = 0
+    @Published private(set) var recordingError: String?
     @Published private(set) var isLivePhotoSupported = false
     @Published private(set) var isLivePhotoArmed = false
     @Published private(set) var isRawSupported = false
@@ -558,6 +617,7 @@ final class CameraController: ObservableObject {
                 self.applyContinuousAutoFocus(true)
             } else {
                 self.detachMetadataOutput()
+                self.trackingSink.submit(nil)
             }
         }
     }
@@ -630,8 +690,29 @@ final class CameraController: ObservableObject {
         }
     }
 
+    /// 人脸追焦开关（设置页）：关掉后只保留连续自动对焦，不做人脸检测
+    var faceTrackingEnabled: Bool {
+        UserDefaults.standard.object(forKey: "faceTrackingEnabled") as? Bool ?? true
+    }
+
+    /// 设置页切换「人脸追焦」时同步相机会话
+    func setFaceTracking(_ enabled: Bool) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            if enabled {
+                guard self.focusTrackingEnabled else { return }
+                self.attachMetadataOutput()
+            } else {
+                self.detachMetadataOutput()
+                self.trackingSink.submit(nil)
+            }
+        }
+    }
+
     private func attachMetadataOutput() {
         guard !metadataAttached, isSessionConfigured else { return }
+        // 关掉人脸追焦时完全不挂检测输出，省掉一路上的人脸分析开销
+        guard faceTrackingEnabled else { return }
         metadataOutput.setMetadataObjectsDelegate(trackingProcessor, queue: metadataQueue)
         trackingProcessor.onSubject = { [weak self] rect in
             guard let self else { return }
@@ -670,6 +751,189 @@ final class CameraController: ObservableObject {
         trackingProcessor.onSubject = nil
     }
 
+    // MARK: - 录像
+
+    private let movieOutput = AVCaptureMovieFileOutput()
+    private var movieAttached = false
+    private let recordingDelegate = MovieRecordingDelegate()
+    private var recordingTimer: Timer?
+    private var recordingURL: URL?
+
+    func startRecording(quality: VideoQuality) {
+        guard !isRecording else { return }
+        recordingError = nil
+        recordingDelegate.onFinish = { [weak self] url, error in
+            self?.finishRecording(url: url, error: error)
+        }
+        Task {
+            let micAllowed = await requestMediaAccess(for: .audio)
+            sessionQueue.async { [weak self] in
+                guard let self else { return }
+                self.configureVideoFormat(quality)
+                if micAllowed { self.attachAudioInput() }
+                self.attachMovieOutput()
+
+                let url = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("GRAIN-\(Int(Date().timeIntervalSince1970)).mov")
+                try? FileManager.default.removeItem(at: url)
+                self.recordingURL = url
+
+                if let connection = self.movieOutput.connection(with: .video) {
+                    if connection.isVideoRotationAngleSupported(90) {
+                        connection.videoRotationAngle = 90
+                    }
+                    if connection.isVideoStabilizationSupported {
+                        connection.preferredVideoStabilizationMode = .standard
+                    }
+                }
+
+                self.movieOutput.startRecording(
+                    to: url,
+                    recordingDelegate: self.recordingDelegate
+                )
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.isRecording = true
+                    self.recordingSeconds = 0
+                    self.recordingTimer?.invalidate()
+                    self.recordingTimer = Timer.scheduledTimer(
+                        withTimeInterval: 1,
+                        repeats: true
+                    ) { [weak self] _ in
+                        guard let self else { return }
+                        self.recordingSeconds += 1
+                    }
+                }
+            }
+        }
+    }
+
+    func stopRecording() {
+        guard isRecording else { return }
+        sessionQueue.async { [weak self] in
+            self?.movieOutput.stopRecording()
+        }
+    }
+
+    /// 录像时把镜头切到对应分辨率 / 帧率的格式；找不到就沿用当前格式
+    private func configureVideoFormat(_ quality: VideoQuality) {
+        guard let device = cameraDevice else { return }
+        let formats = device.formats
+        var best: AVCaptureDevice.Format?
+        for format in formats {
+            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            let short = Int(min(dims.width, dims.height))
+            let long = Int(max(dims.width, dims.height))
+            guard short == quality.shortSide, long == quality.longSide else { continue }
+            let supportsFPS = format.videoSupportedFrameRateRanges.contains {
+                $0.maxFrameRate >= Double(quality.fps) - 0.5
+            }
+            guard supportsFPS else { continue }
+            best = format
+            break
+        }
+        guard let format = best else { return }
+        do {
+            try device.lockForConfiguration()
+            device.activeFormat = format
+            let duration = CMTime(value: 1, timescale: Int32(quality.fps))
+            device.activeVideoMinFrameDuration = duration
+            device.activeVideoMaxFrameDuration = duration
+            device.unlockForConfiguration()
+        } catch {
+            // 切不过去就用当前格式继续录，保证不中断
+        }
+    }
+
+    private func attachAudioInput() {
+        guard audioInput == nil,
+              let mic = AVCaptureDevice.default(for: .audio),
+              let input = try? AVCaptureDeviceInput(device: mic)
+        else { return }
+        session.beginConfiguration()
+        guard session.canAddInput(input) else {
+            session.commitConfiguration()
+            return
+        }
+        session.addInput(input)
+        audioInput = input
+        session.commitConfiguration()
+    }
+
+    private func attachMovieOutput() {
+        guard !movieAttached else { return }
+        session.beginConfiguration()
+        guard session.canAddOutput(movieOutput) else {
+            session.commitConfiguration()
+            return
+        }
+        session.addOutput(movieOutput)
+        movieAttached = true
+        // 会话重配后同步一次照片尺寸，避免 48MP 被重置
+        if let device = cameraDevice, let dims = maximumPhotoDimensions(for: device) {
+            photoOutput.maxPhotoDimensions = dims
+        }
+        session.commitConfiguration()
+    }
+
+    /// 录制结束后：写入相册，并把镜头格式恢复成照片档
+    private func finishRecording(url: URL?, error: Error?) {
+        DispatchQueue.main.async { [weak self] in
+            self?.recordingTimer?.invalidate()
+            self?.recordingTimer = nil
+            self?.isRecording = false
+            if let error {
+                self?.recordingError = error.localizedDescription
+            }
+        }
+
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            if let device = self.cameraDevice {
+                let dims = self.promoteToHighestPhotoFormat(device)
+                if let dims,
+                   device.activeFormat.supportedMaxPhotoDimensions.contains(where: {
+                       $0.width == dims.width && $0.height == dims.height
+                   }) {
+                    self.photoOutput.maxPhotoDimensions = dims
+                }
+                self.applyPhotoMirroring(for: device)
+            }
+            guard let url else { return }
+            Task {
+                do {
+                    try await Self.saveVideoToLibrary(url)
+                } catch {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.recordingError = error.localizedDescription
+                    }
+                }
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+
+    private static func saveVideoToLibrary(_ url: URL) async throws {
+        let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
+        guard status == .authorized || status == .limited else {
+            throw ExportError.photoLibraryDenied
+        }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            PHPhotoLibrary.shared().performChanges {
+                let request = PHAssetCreationRequest.forAsset()
+                let options = PHAssetResourceCreationOptions()
+                options.shouldMoveFile = false
+                request.addResource(with: .video, fileURL: url, options: options)
+            } completionHandler: { success, error in
+                if success {
+                    continuation.resume()
+                } else {
+                    continuation.resume(throwing: error ?? ExportError.photoLibraryWriteFailed)
+                }
+            }
+        }
+    }
+
     /// 画面主体明显变化时重新合焦（追焦开启且未手动接管时才响应）
     private func observeSubjectAreaChanges() {
         guard subjectAreaObserver == nil else { return }
@@ -694,19 +958,47 @@ final class CameraController: ObservableObject {
         exposureManual = manual
         sessionQueue.async { [weak self] in
             guard let self, let device = self.cameraDevice else { return }
-            do {
-                try device.lockForConfiguration()
-                if manual {
-                    if device.isExposureModeSupported(.locked) {
-                        device.exposureMode = .locked
-                    }
-                } else if device.isExposureModeSupported(.continuousAutoExposure) {
+            self.applyExposureMode(to: device, manual: manual, retry: true)
+        }
+    }
+
+    /// 真正写入曝光模式；相机正忙（拍照中）时会自动重试一次，
+    /// 否则会出现“点了 A 档但画面还是锁死的”。
+    private func applyExposureMode(
+        to device: AVCaptureDevice,
+        manual: Bool,
+        retry: Bool
+    ) {
+        do {
+            try device.lockForConfiguration()
+            if manual {
+                if device.isExposureModeSupported(.locked) {
+                    device.exposureMode = .locked
+                }
+            } else {
+                // 回到自动：手动期间可能改过测光点，先归位再交还自动测光
+                if device.isExposurePointOfInterestSupported {
+                    device.exposurePointOfInterest = CGPoint(x: 0.5, y: 0.5)
+                }
+                if device.isExposureModeSupported(.continuousAutoExposure) {
                     device.exposureMode = .continuousAutoExposure
                 }
-                device.unlockForConfiguration()
-            } catch {
-                // 个别镜头不支持锁定，保持原模式
+                device.setExposureTargetBias(exposureBias)
             }
+            device.unlockForConfiguration()
+            return
+        } catch {
+            // 忽略，走下面的重试
+        }
+
+        guard retry else { return }
+        let target = manual
+        sessionQueue.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self,
+                  self.exposureManual == target,
+                  let device = self.cameraDevice
+            else { return }
+            self.applyExposureMode(to: device, manual: target, retry: false)
         }
     }
 
@@ -2219,6 +2511,20 @@ final class FocusTrackingSink {
     }
 }
 
+/// 录像结束回调：把结果交回控制器做落盘与格式恢复
+final class MovieRecordingDelegate: NSObject, AVCaptureFileOutputRecordingDelegate {
+    var onFinish: ((URL?, Error?) -> Void)?
+
+    func fileOutput(
+        _ output: AVCaptureFileOutput,
+        didFinishRecordingTo outputFileURL: URL,
+        from connections: [AVCaptureConnection],
+        error: Error?
+    ) {
+        onFinish?(error == nil ? outputFileURL : nil, error)
+    }
+}
+
 /// 人脸 / 主体检测：只取画面中最大的一张脸，节流后交给追焦逻辑。
 final class FocusTrackingProcessor: NSObject, AVCaptureMetadataOutputObjectsDelegate {
     var onSubject: ((CGRect?) -> Void)?
@@ -2469,9 +2775,16 @@ final class CameraPreviewUIView: UIView {
         }
     }
 
+    private var trackingGeneration = 0
+
     /// 检测框是元数据坐标系的矩形，用预览层换算成图层坐标，
     /// 再把中心换成设备坐标回传，设置真正的对焦点。
     private func updateTracking(_ rect: CGRect?) {
+        // 人脸离开画面时系统不会再回调（空结果不触发 delegate），
+        // 所以每收到一帧就刷新代号，超时没有新帧就自动收起框。
+        trackingGeneration += 1
+        let generation = trackingGeneration
+
         guard let rect, bounds.width > 1, bounds.height > 1 else {
             setTrackingHidden(true)
             return
@@ -2506,6 +2819,11 @@ final class CameraPreviewUIView: UIView {
         let center = CGPoint(x: layerRect.midX, y: layerRect.midY)
         let devicePoint = previewLayer.captureDevicePointConverted(fromLayerPoint: center)
         onTrackingFocus?(devicePoint)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self, self.trackingGeneration == generation else { return }
+            self.setTrackingHidden(true)
+        }
     }
 
     private func setTrackingHidden(_ hidden: Bool) {
@@ -2636,11 +2954,15 @@ struct CameraView: View {
     @AppStorage("filmOrder") private var filmOrder = ""
     @AppStorage("frontCameraMirrorEnabled") private var mirrorFront = true
     @AppStorage("focusPeakingColor") private var peakingColorRaw = "red"
+    @AppStorage("faceTrackingEnabled") private var faceTrackingEnabled = true
     @State private var cameraProfile: FilmProfile = .neutral
     @State private var cameraIntensity = 1.0
     @State private var didSwipeBack = false
     @State private var showCameraFilters = false
     @State private var isPreparingLivePhoto = false
+    @State private var captureMode: CameraMode = .photo
+    @State private var videoQuality: VideoQuality = .uhd4k30
+    @AppStorage("cameraVideoQuality") private var storedVideoQuality = VideoQuality.uhd4k30.rawValue
 
     private let zoomOptions: [CGFloat] = [0.5, 1, 2, 4, 8]
 
@@ -2684,6 +3006,35 @@ struct CameraView: View {
 
                         cameraLookOverlay
                         framingOverlay
+
+                        // 常驻在取景框内的控制：右侧曝光条、右下角 A/M、底部倍率
+                        VStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            exposureBar
+                                .frame(width: 26, height: rect.height * 0.46)
+                        }
+                        .padding(.trailing, 7)
+                        .frame(width: rect.width, height: rect.height, alignment: .trailing)
+                        .position(x: rect.midX, y: rect.midY)
+
+                        VStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            HStack(spacing: 0) {
+                                Spacer(minLength: 0)
+                                exposureModeButton
+                            }
+                        }
+                        .padding(.trailing, 8)
+                        .padding(.bottom, 8)
+                        .frame(width: rect.width, height: rect.height)
+                        .position(x: rect.midX, y: rect.midY)
+
+                        VStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            zoomBar
+                        }
+                        .frame(width: rect.width, height: rect.height)
+                        .position(x: rect.midX, y: rect.midY)
                     }
                     .contentShape(Rectangle())
                     .simultaneousGesture(pinchToZoomGesture)
@@ -2704,6 +3055,37 @@ struct CameraView: View {
                     .frame(width: 160, height: 160)
                     .background(Color.black.opacity(0.48), in: Circle())
                     .transition(.scale.combined(with: .opacity))
+            }
+
+            if camera.isRecording {
+                VStack {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 8, height: 8)
+                        Text(recordingTimeText)
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundStyle(GrainTheme.paper)
+                    }
+                    .padding(.horizontal, 11)
+                    .frame(height: 30)
+                    .background(Color.black.opacity(0.62), in: Capsule())
+                    .padding(.top, 62)
+                    Spacer()
+                }
+            }
+
+            if let recordingError = camera.recordingError {
+                VStack {
+                    Text(recordingError)
+                        .font(.system(size: 9, design: .rounded))
+                        .foregroundStyle(GrainTheme.paper)
+                        .padding(.horizontal, 12)
+                        .frame(height: 28)
+                        .background(Color.black.opacity(0.7), in: Capsule())
+                        .padding(.top, 104)
+                    Spacer()
+                }
             }
 
             if !camera.isReady,
@@ -2766,9 +3148,14 @@ struct CameraView: View {
         }
         .onAppear {
             camera.setPeakingColor(FocusPeakingColor.resolved(peakingColorRaw))
+            camera.setFaceTracking(faceTrackingEnabled)
+            videoQuality = VideoQuality(rawValue: storedVideoQuality) ?? .uhd4k30
         }
         .onChange(of: peakingColorRaw) { _, value in
             camera.setPeakingColor(FocusPeakingColor.resolved(value))
+        }
+        .onChange(of: faceTrackingEnabled) { _, value in
+            camera.setFaceTracking(value)
         }
         .onChange(of: camera.isReady) { _, ready in
             if ready {
@@ -2788,9 +3175,169 @@ struct CameraView: View {
         camera.selectedZoom <= 1.05 && !camera.isUsingFrontCamera
     }
 
+    private var recordingTimeText: String {
+        let minutes = camera.recordingSeconds / 60
+        let seconds = camera.recordingSeconds % 60
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
     /// 追焦开启且没有被手动对焦接管时高亮
     private var trackingActive: Bool {
         camera.focusTrackingEnabled && !camera.isManualFocusActive
+    }
+
+    // MARK: - 取景框内的常驻控制
+
+    /// 竖直曝光补偿条：常驻在取景框右侧，双击小白点回到 0 EV
+    private var exposureBar: some View {
+        GeometryReader { proxy in
+            let height = max(proxy.size.height, 1)
+            let inset: CGFloat = 9
+            let usable = max(height - inset * 2, 1)
+            let lower = Double(camera.minimumExposureBias)
+            let upper = Double(camera.maximumExposureBias)
+            let span = max(upper - lower, 0.001)
+            let progress = min(
+                max((Double(camera.exposureBias) - lower) / span, 0),
+                1
+            )
+            let knobY = height - inset - usable * CGFloat(progress)
+            let fill = max(height - inset - knobY, 0)
+
+            ZStack {
+                Capsule()
+                    .fill(Color.white.opacity(0.16))
+                    .frame(width: 4)
+
+                Capsule()
+                    .fill(GrainTheme.accent)
+                    .frame(width: 4, height: fill)
+                    .position(x: proxy.size.width / 2, y: height - inset - fill / 2)
+
+                Circle()
+                    .fill(GrainTheme.paper)
+                    .frame(width: 17, height: 17)
+                    .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
+                    .position(x: proxy.size.width / 2, y: knobY)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                    .onChanged { value in
+                        let position = min(max(value.location.y - inset, 0), usable)
+                        let ratio = 1 - Double(position / usable)
+                        camera.setExposureBias(Float(lower + ratio * span))
+                    }
+                    .onEnded { _ in
+                        camera.relockExposure()
+                        GrainHaptics.selection(enabled: true)
+                    }
+            )
+            .simultaneousGesture(
+                SpatialTapGesture(count: 2, coordinateSpace: .local)
+                    .onEnded { gesture in
+                        guard abs(gesture.location.y - knobY) <= 22 else { return }
+                        camera.setExposureBias(0)
+                        camera.relockExposure()
+                        GrainHaptics.lightImpact(enabled: true)
+                    }
+            )
+        }
+    }
+
+    /// 自动 / 手动曝光开关，常驻取景框右下角
+    private var exposureModeButton: some View {
+        Button {
+            camera.setExposureManual(!camera.exposureManual)
+            GrainHaptics.selection(enabled: true)
+        } label: {
+            Text(camera.exposureManual ? "M" : "A")
+                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                .foregroundStyle(camera.exposureManual ? GrainTheme.black : GrainTheme.paper)
+                .frame(width: 24, height: 24)
+                .background(
+                    camera.exposureManual ? GrainTheme.accent : Color.black.opacity(0.54),
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            camera.exposureManual ? "曝光已锁定，点按恢复自动" : "自动曝光，点按锁定"
+        )
+    }
+
+    /// 倍率条：常驻取景框最下方，倍率居中、人脸追焦开关在左侧
+    private var zoomBar: some View {
+        ZStack {
+            HStack(spacing: 4) {
+                ForEach(zoomOptions, id: \.self) { zoom in
+                    Button {
+                        camera.setZoom(zoom)
+                    } label: {
+                        Text(zoomLabel(zoom))
+                            .font(.system(size: zoom == camera.selectedZoom ? 10.5 : 9, weight: .bold, design: .rounded))
+                            .foregroundStyle(
+                                zoom == camera.selectedZoom ? GrainTheme.black : GrainTheme.paper
+                            )
+                            .frame(width: zoom == camera.selectedZoom ? 34 : 28, height: 28)
+                            .background(
+                                zoom == camera.selectedZoom
+                                    ? GrainTheme.paper
+                                    : Color.black.opacity(0.54),
+                                in: Circle()
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(
+                        (zoom < camera.minimumZoom
+                            && !(zoom == 0.5 && !camera.isUsingFrontCamera))
+                        || zoom > camera.maximumZoom
+                    )
+                }
+            }
+
+            HStack {
+                Button {
+                    GrainHaptics.selection(enabled: true)
+                    if camera.isManualFocusActive {
+                        camera.resumeAutoFocus()
+                    } else {
+                        camera.setFocusTracking(!camera.focusTrackingEnabled)
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(
+                            systemName: camera.isManualFocusActive
+                                ? "hand.tap"
+                                : "person.crop.rectangle"
+                        )
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(camera.isManualFocusActive ? "手动" : "追焦")
+                            .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                    }
+                    .foregroundStyle(trackingActive ? GrainTheme.black : GrainTheme.paper)
+                    .padding(.horizontal, 8)
+                    .frame(height: 26)
+                    .background(
+                        trackingActive ? GrainTheme.accent : Color.black.opacity(0.54),
+                        in: Capsule()
+                    )
+                    .opacity(
+                        camera.focusTrackingEnabled || camera.isManualFocusActive
+                            ? 1 : 0.5
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    camera.isManualFocusActive
+                        ? "恢复自动追焦"
+                        : (camera.focusTrackingEnabled ? "关闭自动追焦" : "开启自动追焦")
+                )
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.bottom, 6)
     }
 
     private var topBar: some View {
@@ -2926,129 +3473,20 @@ struct CameraView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            // 倍率始终居中；人脸追焦开关浮在倍率左侧，不挤占倍率位置
-            ZStack {
-                HStack(spacing: 4) {
-                    ForEach(zoomOptions, id: \.self) { zoom in
-                        Button {
-                            camera.setZoom(zoom)
-                        } label: {
-                            Text(zoomLabel(zoom))
-                                .font(.system(size: zoom == camera.selectedZoom ? 10.5 : 9, weight: .bold, design: .rounded))
-                                .foregroundStyle(
-                                    zoom == camera.selectedZoom ? GrainTheme.black : GrainTheme.paper
-                                )
-                                .frame(width: zoom == camera.selectedZoom ? 34 : 28, height: 28)
-                                .background(
-                                    zoom == camera.selectedZoom
-                                        ? GrainTheme.paper
-                                        : Color.black.opacity(0.54),
-                                    in: Circle()
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(
-                            (zoom < camera.minimumZoom
-                                && !(zoom == 0.5 && !camera.isUsingFrontCamera))
-                            || zoom > camera.maximumZoom
-                        )
-                    }
-                }
-
-                HStack {
-                    Button {
-                    GrainHaptics.selection(enabled: true)
-                    if camera.isManualFocusActive {
-                        camera.resumeAutoFocus()
-                    } else {
-                        camera.setFocusTracking(!camera.focusTrackingEnabled)
-                    }
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(
-                            systemName: camera.isManualFocusActive
-                                ? "hand.tap"
-                                : "person.crop.rectangle"
-                        )
-                            .font(.system(size: 9, weight: .semibold))
-                        Text(camera.isManualFocusActive ? "手动" : "追焦")
-                            .font(.system(size: 8.5, weight: .bold, design: .rounded))
-                    }
-                    .foregroundStyle(trackingActive ? GrainTheme.black : GrainTheme.paper)
-                    .padding(.horizontal, 8)
-                    .frame(height: 26)
-                    .background(
-                        trackingActive ? GrainTheme.accent : Color.black.opacity(0.54),
-                        in: Capsule()
-                    )
-                    .opacity(
-                        camera.focusTrackingEnabled || camera.isManualFocusActive
-                            ? 1 : 0.5
-                    )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(
-                    camera.isManualFocusActive
-                        ? "恢复自动追焦"
-                        : (camera.focusTrackingEnabled ? "关闭自动追焦" : "开启自动追焦")
-                )
-                    Spacer(minLength: 0)
-                }
-            }
-
+            // 曝光已改为取景框右侧的常驻竖条，这里不再重复一行
             HStack(spacing: 6) {
-                Button {
-                    camera.setExposureManual(!camera.exposureManual)
-                    GrainHaptics.selection(enabled: true)
-                } label: {
-                    Text(camera.exposureManual ? "M" : "A")
-                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                        .foregroundStyle(
-                            camera.exposureManual ? GrainTheme.black : GrainTheme.paper
-                        )
-                        .frame(width: 24, height: 24)
-                        .background(
-                            camera.exposureManual
-                                ? GrainTheme.accent
-                                : Color.black.opacity(0.54),
-                            in: Capsule()
-                        )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(
-                    camera.exposureManual ? "曝光已锁定，点按恢复自动" : "自动曝光，点按锁定"
-                )
-
-                Image(systemName: "sun.min")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(GrainTheme.muted)
-                Slider(
-                    value: Binding(
-                        get: { Double(camera.exposureBias) },
-                        set: { camera.setExposureBias(Float($0)) }
-                    ),
-                    in: Double(camera.minimumExposureBias)...Double(camera.maximumExposureBias),
-                    step: 0.1,
-                    onEditingChanged: { editing in
-                        // 手动曝光：松手后按新的补偿值重新锁定，滑杆即亮度
-                        if !editing {
-                            camera.relockExposure()
+                if captureMode == .video {
+                    Menu {
+                        ForEach(VideoQuality.allCases) { option in
+                            Button(option.title) {
+                                videoQuality = option
+                                storedVideoQuality = option.rawValue
+                            }
                         }
+                    } label: {
+                        MenuChip(title: videoQuality.title, symbol: "video")
                     }
-                )
-                .tint(GrainTheme.accent)
-                .scaleEffect(0.82, anchor: .center)
-                .frame(height: 22)
-                Text(String(format: "%+.1f", camera.exposureBias))
-                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(GrainTheme.paper)
-                    .frame(width: 30, alignment: .trailing)
-                Image(systemName: "sun.max")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(GrainTheme.muted)
-            }
-
-            HStack(spacing: 6) {
+                } else {
                 ForEach(CameraResolution.allCases) { option in
                     Button(option.title) {
                         resolution = option
@@ -3068,9 +3506,10 @@ struct CameraView: View {
                     .disabled(livePhoto || (!is48MPAvailable && option == .high48))
                     .buttonStyle(.plain)
                 }
+                }
 
                 // 实况照片固定 12MP（系统限制），明确标出来避免误以为设置未生效
-                if livePhoto {
+                if livePhoto && captureMode == .photo {
                     Text("实况 12MP")
                         .font(.system(size: 7.5, weight: .bold, design: .monospaced))
                         .foregroundStyle(GrainTheme.black)
@@ -3171,25 +3610,43 @@ struct CameraView: View {
                 Spacer()
 
                 Button {
-                    camera.capture(
-                        CameraCaptureConfiguration(
-                            format: format,
-                            resolution: resolution,
-                            aspect: aspect,
-                            timer: timer,
-                            flash: flash,
-                            livePhoto: livePhoto
+                    if captureMode == .video {
+                        if camera.isRecording {
+                            camera.stopRecording()
+                        } else {
+                            camera.startRecording(quality: videoQuality)
+                        }
+                    } else {
+                        camera.capture(
+                            CameraCaptureConfiguration(
+                                format: format,
+                                resolution: resolution,
+                                aspect: aspect,
+                                timer: timer,
+                                flash: flash,
+                                livePhoto: livePhoto
+                            )
                         )
-                    )
+                    }
                 } label: {
                     ZStack {
                         Circle()
-                            .stroke(GrainTheme.paper, lineWidth: 3)
+                            .stroke(
+                                captureMode == .video ? Color.red.opacity(0.85) : GrainTheme.paper,
+                                lineWidth: 3
+                            )
                             .frame(width: 58, height: 58)
-                        Circle()
-                            .fill(camera.isCapturing ? GrainTheme.muted : GrainTheme.paper)
-                            .frame(width: 46, height: 46)
-                        if camera.isCapturing {
+                        if captureMode == .video {
+                            RoundedRectangle(cornerRadius: camera.isRecording ? 6 : 18, style: .continuous)
+                                .fill(Color.red)
+                                .frame(width: 46, height: 46)
+                                .animation(.easeOut(duration: 0.18), value: camera.isRecording)
+                        } else {
+                            Circle()
+                                .fill(camera.isCapturing ? GrainTheme.muted : GrainTheme.paper)
+                                .frame(width: 46, height: 46)
+                        }
+                        if camera.isCapturing, captureMode == .photo {
                             ProgressView()
                                 .controlSize(.small)
                                 .tint(GrainTheme.black)
@@ -3198,6 +3655,23 @@ struct CameraView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!camera.isReady || camera.isCapturing)
+
+                // 快门右侧：切换录像
+                Button {
+                    captureMode = captureMode == .photo ? .video : .photo
+                    GrainHaptics.selection(enabled: true)
+                } label: {
+                    Image(systemName: captureMode == .video ? "camera.fill" : "video.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(
+                            captureMode == .video ? GrainTheme.accent : GrainTheme.paper
+                        )
+                        .frame(width: 38, height: 38)
+                        .background(Color.black.opacity(0.54), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(camera.isRecording)
+                .accessibilityLabel(captureMode == .video ? "切回拍照" : "切换到录像")
 
                 Spacer()
 
