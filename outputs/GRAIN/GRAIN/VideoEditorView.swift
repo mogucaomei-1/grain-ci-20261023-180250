@@ -551,18 +551,21 @@ public struct VideoEditorView: View {
 
     // MARK: - 3. 滤镜胶片风格选择
 
+    private var filterProfiles: [FilmProfile] {
+        FilmProfile.defaultDisplayOrder
+    }
+
     private var filterSelectionDeck: some View {
         VStack(spacing: 8) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
-                    let profiles = FilmProfile.defaultDisplayOrder
-                    ForEach(profiles) { profile in
+                    ForEach(filterProfiles) { profile in
                         let isSelected = recipe.filmProfile == profile
                         Button {
                             recipe.filmProfile = profile
                             GrainHaptics.selection(enabled: true)
                         } label: {
-                            Text(profile.displayName)
+                            Text(profile.name)
                                 .font(.system(size: 11.5, weight: isSelected ? .bold : .medium, design: .rounded))
                                 .foregroundStyle(isSelected ? GrainTheme.black : GrainTheme.paper)
                                 .padding(.horizontal, 12)
@@ -810,8 +813,9 @@ public struct VideoEditorView: View {
                     loaded.append(UIImage(cgImage: cgImg))
                 }
             }
+            let finished = loaded
             await MainActor.run {
-                self.thumbnails = loaded
+                self.thumbnails = finished
             }
         }
     }
