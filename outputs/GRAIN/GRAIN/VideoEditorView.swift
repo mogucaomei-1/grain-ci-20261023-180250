@@ -243,10 +243,12 @@ final class VideoRecipeHolder {
 public struct VideoEditorView: View {
     let asset: PHAsset
     let onClose: () -> Void
+    var onSwitchVideo: ((Int) -> Void)? = nil
 
     @State private var avAsset: AVAsset?
     @State private var player: AVPlayer?
     @State private var isPlaying = false
+    @State private var isMuted = false
     @State private var duration: Double = 0
     @State private var currentTime: Double = 0
 
@@ -269,6 +271,13 @@ public struct VideoEditorView: View {
     @State private var videoBitrateMbps: Double = 0
     @State private var videoFileSize: Int64 = 0
 
+    // 直方图数据
+    @State private var currentHistogram: RGBHistogram?
+
+    // 推荐数值状态
+    @State private var isRecommendedApplied = false
+    @State private var recommendationBaseline: VideoEditRecipe?
+
     // 模态弹窗状态
     @State private var showInfoSheet = false
     @State private var showExportSheet = false
@@ -289,9 +298,14 @@ public struct VideoEditorView: View {
 
     private let recipeHolder: VideoRecipeHolder
 
-    public init(asset: PHAsset, onClose: @escaping () -> Void) {
+    public init(
+        asset: PHAsset,
+        onClose: @escaping () -> Void,
+        onSwitchVideo: ((Int) -> Void)? = nil
+    ) {
         self.asset = asset
         self.onClose = onClose
+        self.onSwitchVideo = onSwitchVideo
         self.recipeHolder = VideoRecipeHolder(recipe: VideoEditRecipe())
     }
 
@@ -300,18 +314,25 @@ public struct VideoEditorView: View {
             GrainTheme.black.ignoresSafeArea()
 
             VStack(spacing: 0) {
+                // 1. 顶栏：删除放左边第一个、取消、查看信息、分享放在完成左边、完成
                 topBar
                     .padding(.horizontal, 16)
                     .frame(height: 48)
 
+                // 2. 视频主预览画布（右上角直方图、左上角格式标签、右下对比按钮、左右滑切片手势）
                 videoPreviewCanvas
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                // 视频拖动进度条（常驻于画布下方，方便随时拖动查看视频画面）
-                videoScrubberBar
+                // 3. 对比开关放置在播放条的右上方
+                comparisonActionBar
                     .padding(.top, 4)
                     .padding(.bottom, 2)
 
+                // 4. 视频拖动进度条（带静音开关、时间回显与流畅拖动）
+                videoScrubberBar
+                    .padding(.bottom, 4)
+
+                // 5. 底部功能控制面板
                 bottomControlDeck
             }
 
@@ -324,6 +345,7 @@ public struct VideoEditorView: View {
             }
         }
         .statusBarHidden()
+        // 边缘滑动返回：增加保护，裁剪页面或在底控栏操作时不误触发，彻底解决拖动闪退
         .simultaneousGesture(edgeSwipeBackGesture)
         .confirmationDialog(
             "删除此视频？",
@@ -382,6 +404,16 @@ public struct VideoEditorView: View {
         .onDisappear {
             cleanupPlayer()
         }
+        .onChange(of: asset.localIdentifier) { _, _ in
+            cleanupPlayer()
+            recipe = VideoEditRecipe()
+            recipeHolder.recipe = recipe
+            isRecommendedApplied = false
+            recommendationBaseline = nil
+            Task {
+                await loadVideoAsset()
+            }
+        }
         .onChange(of: activeTab) { _, newTab in
             recipeHolder.isCroppingTab = (newTab == .crop)
             // 切换离开构图页面时，重新合成一次带裁切的画面
@@ -394,10 +426,25 @@ public struct VideoEditorView: View {
         }
     }
 
-    // MARK: - 顶栏：格式胶囊、参数信息按钮、对比、分享、删除、完成导出
+    // MARK: - 顶栏：删除放在左边第一个，分享放在完成的左边
 
     private var topBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 12) {
+            // 1. 删除：按用户要求放在左边第一个
+            Button {
+                showDeleteConfirmation = true
+                GrainHaptics.selection()
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(GrainTheme.paper)
+                    .frame(width: 32, height: 32)
+                    .background(Color.white.opacity(0.12), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isExporting)
+
+            // 2. 取消
             Button("取消") {
                 cleanupPlayer()
                 onClose()
@@ -406,93 +453,37 @@ public struct VideoEditorView: View {
             .foregroundStyle(GrainTheme.paper)
             .buttonStyle(.plain)
 
-            // 左上角显示视频具体格式（例如 MP4 · 4K 60FPS），点按可直接查看完整参数
-            Button {
-                showInfoSheet = true
-                GrainHaptics.selection()
-            } label: {
-                HStack(spacing: 3) {
-                    Text(videoFormatBadge)
-                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                        .foregroundStyle(GrainTheme.accent)
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(GrainTheme.paper.opacity(0.8))
-                }
-                .padding(.horizontal, 8)
-                .frame(height: 24)
-                .background(Color.white.opacity(0.12), in: Capsule())
-            }
-            .buttonStyle(.plain)
-
             Spacer()
 
-            // 按住对比原视频
-            Button {
-            } label: {
-                Image(systemName: isComparing ? "eye.fill" : "eye")
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(isComparing ? GrainTheme.accent : GrainTheme.paper)
-                    .frame(width: 30, height: 30)
-                    .background(Color.white.opacity(0.12), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in
-                        isComparing = true
-                        recipeHolder.isComparing = true
-                        if !isPlaying { seek(to: currentTime) }
-                    }
-                    .onEnded { _ in
-                        isComparing = false
-                        recipeHolder.isComparing = false
-                        if !isPlaying { seek(to: currentTime) }
-                    }
-            )
-
-            // 查看视频具体参数按钮
+            // 3. 查看视频参数信息按钮
             Button {
                 showInfoSheet = true
                 GrainHaptics.selection()
             } label: {
                 Image(systemName: "info")
-                    .font(.system(size: 12.5, weight: .bold))
+                    .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(GrainTheme.paper)
-                    .frame(width: 30, height: 30)
+                    .frame(width: 32, height: 32)
                     .background(Color.white.opacity(0.12), in: Circle())
             }
             .buttonStyle(.plain)
             .disabled(isExporting)
 
-            // 分享与格式/压缩调节
+            // 4. 分享：按用户要求放在完成的左边
             Button {
                 showExportSheet = true
                 GrainHaptics.selection()
             } label: {
                 Image(systemName: "square.and.arrow.up")
-                    .font(.system(size: 12.5, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(GrainTheme.paper)
-                    .frame(width: 30, height: 30)
+                    .frame(width: 32, height: 32)
                     .background(Color.white.opacity(0.12), in: Circle())
             }
             .buttonStyle(.plain)
             .disabled(isExporting)
 
-            // 删除
-            Button {
-                showDeleteConfirmation = true
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(GrainTheme.paper)
-                    .frame(width: 30, height: 30)
-                    .background(Color.white.opacity(0.12), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .disabled(isExporting)
-
-            // 完成
+            // 5. 完成
             Button {
                 showExportSheet = true
                 GrainHaptics.selection()
@@ -500,8 +491,8 @@ public struct VideoEditorView: View {
                 Text("完成")
                     .font(.system(size: 13, weight: .bold, design: .rounded))
                     .foregroundStyle(GrainTheme.black)
-                    .padding(.horizontal, 12)
-                    .frame(height: 28)
+                    .padding(.horizontal, 13)
+                    .frame(height: 30)
                     .background(GrainTheme.accent, in: Capsule())
             }
             .buttonStyle(.plain)
@@ -517,10 +508,149 @@ public struct VideoEditorView: View {
         return "\(container) · \(res) \(fps)FPS"
     }
 
-    // MARK: - 视频进度拖动条（Scrubber Bar）
+    // MARK: - 播放画布与手势（左上角视频规格、右上角直方图、左右滑动切换视频）
+
+    private var videoPreviewCanvas: some View {
+        GeometryReader { proxy in
+            // 在构图 Tab 下显示未裁切的完整原始画幅，让用户在完整画面上推动选取框，彻底消除视频抽搐
+            let aspect = activeTab == .crop
+                ? (naturalVideoSize.width / max(naturalVideoSize.height, 1))
+                : recipe.cropAspectRatio(for: naturalVideoSize)
+            let frame = fittedRect(for: aspect, in: proxy.size)
+
+            ZStack {
+                if let player {
+                    VideoPlayerUIView(player: player)
+                        .rotationEffect(.degrees(Double(recipe.rotationDegrees)))
+                        .frame(width: frame.width, height: frame.height)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color.white.opacity(0.12), lineWidth: 0.8)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            togglePlayPause()
+                        }
+
+                    if activeTab == .crop {
+                        VideoCropSelectionOverlay(
+                            cropRect: $recipe.cropRect,
+                            aspect: recipe.aspect,
+                            naturalSize: naturalVideoSize,
+                            displaySize: frame
+                        )
+                    }
+
+                    // 暂停状态中心大悬浮播放标
+                    if !isPlaying && activeTab != .crop {
+                        Button {
+                            togglePlayPause()
+                        } label: {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 26, weight: .bold))
+                                .foregroundStyle(Color.white)
+                                .frame(width: 56, height: 56)
+                                .background(Color.black.opacity(0.48), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .transition(.scale.combined(with: .opacity))
+                    }
+
+                    // 左上角视频规格胶囊与参数入口
+                    VStack {
+                        HStack {
+                            Button {
+                                showInfoSheet = true
+                                GrainHaptics.selection()
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Text(videoFormatBadge)
+                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(GrainTheme.accent)
+                                    Image(systemName: "info.circle")
+                                        .font(.system(size: 8.5, weight: .semibold))
+                                        .foregroundStyle(GrainTheme.paper.opacity(0.8))
+                                }
+                                .padding(.horizontal, 8)
+                                .frame(height: 24)
+                                .background(Color.black.opacity(0.58), in: Capsule())
+                                .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 0.6))
+                            }
+                            .buttonStyle(.plain)
+
+                            Spacer()
+
+                            // 右上角实时直方图
+                            if let currentHistogram {
+                                HistogramView(data: currentHistogram)
+                                    .frame(width: 76, height: 42)
+                                    .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.18), lineWidth: 0.6))
+                            }
+                        }
+                        .padding(10)
+
+                        Spacer()
+                    }
+                    .frame(width: frame.width, height: frame.height)
+                } else {
+                    ProgressView()
+                        .tint(GrainTheme.accent)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+            // 左右滑动切换图库相邻视频，滑动顺序逻辑与图片完全一致
+            .simultaneousGesture(switchVideoGesture)
+        }
+    }
+
+    // MARK: - 调整前后预览开关（放置在播放条的右上方）
+
+    private var comparisonActionBar: some View {
+        HStack {
+            Spacer()
+
+            // 调整前后对比开关（按住查看原视频）
+            Button {
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: isComparing ? "eye.fill" : "eye")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(isComparing ? "原片" : "对比")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                }
+                .foregroundStyle(isComparing ? GrainTheme.black : GrainTheme.paper)
+                .padding(.horizontal, 9)
+                .frame(height: 24)
+                .background(isComparing ? GrainTheme.accent : Color.black.opacity(0.55), in: Capsule())
+                .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 0.6))
+            }
+            .buttonStyle(.plain)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        isComparing = true
+                        recipeHolder.isComparing = true
+                        if !isPlaying { seek(to: currentTime) }
+                    }
+                    .onEnded { _ in
+                        isComparing = false
+                        recipeHolder.isComparing = false
+                        if !isPlaying { seek(to: currentTime) }
+                    }
+            )
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 24)
+    }
+
+    // MARK: - 视频进度拖动条（Scrubber Bar，加入静音开关）
 
     private var videoScrubberBar: some View {
         HStack(spacing: 10) {
+            // 1. 播放/暂停
             Button {
                 togglePlayPause()
                 GrainHaptics.selection()
@@ -530,6 +660,20 @@ public struct VideoEditorView: View {
                     .foregroundStyle(GrainTheme.paper)
                     .frame(width: 26, height: 26)
                     .background(Color.white.opacity(0.14), in: Circle())
+            }
+            .buttonStyle(.plain)
+
+            // 2. 静音开关
+            Button {
+                isMuted.toggle()
+                player?.isMuted = isMuted
+                GrainHaptics.selection()
+            } label: {
+                Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(isMuted ? GrainTheme.accent : GrainTheme.paper)
+                    .frame(width: 26, height: 26)
+                    .background(isMuted ? GrainTheme.accent.opacity(0.2) : Color.white.opacity(0.14), in: Circle())
             }
             .buttonStyle(.plain)
 
@@ -590,63 +734,6 @@ public struct VideoEditorView: View {
         .frame(height: 28)
     }
 
-    // MARK: - 播放画布与手势
-
-    private var videoPreviewCanvas: some View {
-        GeometryReader { proxy in
-            // 在构图 Tab 下显示未裁切的完整原始画幅，让用户在完整画面上推动选取框，彻底消除视频抽搐
-            let aspect = activeTab == .crop
-                ? (naturalVideoSize.width / max(naturalVideoSize.height, 1))
-                : recipe.cropAspectRatio(for: naturalVideoSize)
-            let frame = fittedRect(for: aspect, in: proxy.size)
-
-            ZStack {
-                if let player {
-                    VideoPlayerUIView(player: player)
-                        .rotationEffect(.degrees(Double(recipe.rotationDegrees)))
-                        .frame(width: frame.width, height: frame.height)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(Color.white.opacity(0.12), lineWidth: 0.8)
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            togglePlayPause()
-                        }
-
-                    if activeTab == .crop {
-                        VideoCropSelectionOverlay(
-                            cropRect: $recipe.cropRect,
-                            aspect: recipe.aspect,
-                            naturalSize: naturalVideoSize,
-                            displaySize: frame
-                        )
-                    }
-
-                    // 暂停状态中心大悬浮播放标
-                    if !isPlaying && activeTab != .crop {
-                        Button {
-                            togglePlayPause()
-                        } label: {
-                            Image(systemName: "play.fill")
-                                .font(.system(size: 26, weight: .bold))
-                                .foregroundStyle(Color.white)
-                                .frame(width: 56, height: 56)
-                                .background(Color.black.opacity(0.48), in: Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .transition(.scale.combined(with: .opacity))
-                    }
-                } else {
-                    ProgressView()
-                        .tint(GrainTheme.accent)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
     // MARK: - 底部控制区（集中紧凑，贴近底部小白条）
 
     private var bottomControlDeck: some View {
@@ -695,13 +782,34 @@ public struct VideoEditorView: View {
         .background(GrainTheme.surface.ignoresSafeArea(edges: .bottom))
     }
 
-    // MARK: - 1. 曝光与各项画面调节（支持小白点双击恢复默认值，实时丝滑刷新）
+    // MARK: - 1. 曝光与各项画面调节（增加推荐数值按钮，去掉恢复默认数值）
 
     private var adjustParamDeck: some View {
         VStack(spacing: 4) {
-            // 参数项水平切换
+            // 参数项水平切换 + 推荐数值按钮
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    // 推荐数值按钮（按要求增加，一键应用电影级胶片影调优化）
+                    Button {
+                        applyRecommendedValues()
+                        GrainHaptics.mediumImpact()
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "wand.and.stars")
+                                .font(.system(size: 9.5, weight: .bold))
+                            Text(isRecommendedApplied ? "已推荐" : "推荐数值")
+                                .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                        }
+                        .foregroundStyle(isRecommendedApplied ? GrainTheme.black : GrainTheme.accent)
+                        .padding(.horizontal, 9)
+                        .frame(height: 26)
+                        .background(
+                            isRecommendedApplied ? GrainTheme.accent : Color.white.opacity(0.12),
+                            in: Capsule()
+                        )
+                    }
+                    .buttonStyle(.plain)
+
                     ForEach(VideoAdjustParam.allCases) { param in
                         let val = param.value(in: recipe)
                         let isChanged = abs(val) > 0.001
@@ -737,17 +845,12 @@ public struct VideoEditorView: View {
                 .padding(.horizontal, 16)
             }
 
-            // 当前参数滑杆（小白点支持双击恢复默认值 0）
+            // 当前参数滑杆（小白点支持双击恢复默认值，去掉右侧的恢复默认数值按钮）
             HStack(spacing: 12) {
-                Button {
-                    resetActiveParamToDefault()
-                } label: {
-                    Text(String(format: "%+.0f", activeParam.value(in: recipe)))
-                        .font(.system(size: 11.5, weight: .bold, design: .monospaced))
-                        .foregroundStyle(GrainTheme.accent)
-                        .frame(width: 38)
-                }
-                .buttonStyle(.plain)
+                Text(String(format: "%+.0f", activeParam.value(in: recipe)))
+                    .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                    .foregroundStyle(GrainTheme.accent)
+                    .frame(width: 38)
 
                 GeometryReader { proxy in
                     let w = max(proxy.size.width, 1)
@@ -805,19 +908,34 @@ public struct VideoEditorView: View {
                     )
                 }
                 .frame(height: 26)
-
-                Button {
-                    resetActiveParamToDefault()
-                } label: {
-                    Image(systemName: "arrow.counterclockwise")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(GrainTheme.muted)
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
             }
             .padding(.horizontal, 18)
         }
+    }
+
+    private func applyRecommendedValues() {
+        if isRecommendedApplied {
+            if let base = recommendationBaseline {
+                recipe = base
+                recipeHolder.recipe = recipe
+            }
+            isRecommendedApplied = false
+            recommendationBaseline = nil
+        } else {
+            recommendationBaseline = recipe
+            var updated = recipe
+            updated.exposure = 0.15 * 100 / 1.5 // +0.15 EV 提升通透感
+            updated.contrast = 12.0
+            updated.highlights = -16.0
+            updated.shadows = 14.0
+            updated.saturation = 8.0
+            updated.warmth = 6.0
+            updated.vignette = 10.0
+            recipe = updated
+            recipeHolder.recipe = recipe
+            isRecommendedApplied = true
+        }
+        if !isPlaying { seek(to: currentTime) }
     }
 
     private func resetActiveParamToDefault() {
@@ -876,7 +994,7 @@ public struct VideoEditorView: View {
                         ZStack(alignment: .leading) {
                             Capsule()
                                 .fill(Color.white.opacity(0.14))
-                                .frame(height: 4)
+                            .frame(height: 4)
 
                             Capsule()
                                 .fill(GrainTheme.accent)
@@ -1045,7 +1163,7 @@ public struct VideoEditorView: View {
         recipeHolder.recipe = recipe
     }
 
-    // MARK: - 4. 裁剪时间条（彻底修复手柄跳动 Bug）
+    // MARK: - 4. 裁剪时间条（彻底修复手柄跳动与闪退 Bug）
 
     private var timelineTrimDeck: some View {
         GeometryReader { proxy in
@@ -1107,7 +1225,7 @@ public struct VideoEditorView: View {
                             }
                             let start = dragInitialTrimStart ?? recipe.trimStart
                             let deltaSec = Double(val.translation.width / totalW) * totalDuration
-                            let newStart = min(max(start + deltaSec, 0), recipe.trimEnd - 0.5)
+                            let newStart = min(max(start + deltaSec, 0), max(recipe.trimEnd - 0.5, 0))
                             recipe.trimStart = newStart
                             recipeHolder.recipe = recipe
                             seek(to: newStart)
@@ -1230,6 +1348,7 @@ public struct VideoEditorView: View {
         let item = AVPlayerItem(asset: asset)
         item.videoComposition = createVideoComposition(for: asset, recipe: recipe, compare: false)
         let player = AVPlayer(playerItem: item)
+        player.isMuted = isMuted
         self.player = player
 
         // 监听播放进度与时间修剪循环
@@ -1271,17 +1390,21 @@ public struct VideoEditorView: View {
     }
 
     private func seek(to seconds: Double) {
+        guard let player, seconds.isFinite, seconds >= 0 else { return }
         let target = CMTime(seconds: seconds, preferredTimescale: 600)
-        player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        guard target.isValid else { return }
+        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
     private func cleanupPlayer() {
         if let token = timeObserverToken {
-            player?.removeTimeObserver(token)
             timeObserverToken = nil
+            player?.removeTimeObserver(token)
         }
         player?.pause()
+        player?.replaceCurrentItem(with: nil)
         player = nil
+        isPlaying = false
     }
 
     private func generateThumbnails(for asset: AVAsset) {
@@ -1299,17 +1422,73 @@ public struct VideoEditorView: View {
             }
 
             var loaded: [UIImage] = []
+            var firstCG: CGImage?
             for val in times {
                 let cm = val.timeValue
                 if let cg = try? gen.copyCGImage(at: cm, actualTime: nil) {
+                    if firstCG == nil { firstCG = cg }
                     loaded.append(UIImage(cgImage: cg))
                 }
             }
             let finished = loaded
+            let hist = firstCG.map { Self.histogram(from: $0) }
             await MainActor.run {
                 self.thumbnails = finished
+                if let hist {
+                    self.currentHistogram = hist
+                }
             }
         }
+    }
+
+    private static func histogram(from image: CGImage) -> RGBHistogram {
+        let width = image.width
+        let height = image.height
+        let binCount = 36
+        var redBins = [Double](repeating: 0, count: binCount)
+        var greenBins = [Double](repeating: 0, count: binCount)
+        var blueBins = [Double](repeating: 0, count: binCount)
+        var lumaBins = [Double](repeating: 0, count: binCount)
+
+        guard let data = image.dataProvider?.data,
+              let ptr = CFDataGetBytePtr(data) else {
+            return RGBHistogram(red: [], green: [], blue: [], luminance: [])
+        }
+        let bytesPerPixel = max(image.bitsPerPixel / 8, 4)
+        let bytesPerRow = image.bytesPerRow
+        let stepX = max(width / 48, 1)
+        let stepY = max(height / 36, 1)
+
+        for y in stride(from: 0, to: height, by: stepY) {
+            let rowPtr = ptr + y * bytesPerRow
+            for x in stride(from: 0, to: width, by: stepX) {
+                let pixel = rowPtr + x * bytesPerPixel
+                let r = Double(pixel[0]) / 255.0
+                let g = Double(pixel[1]) / 255.0
+                let b = Double(pixel[2]) / 255.0
+                let l = 0.299 * r + 0.587 * g + 0.114 * b
+
+                let rIdx = min(Int(r * Double(binCount - 1)), binCount - 1)
+                let gIdx = min(Int(g * Double(binCount - 1)), binCount - 1)
+                let bIdx = min(Int(b * Double(binCount - 1)), binCount - 1)
+                let lIdx = min(Int(l * Double(binCount - 1)), binCount - 1)
+
+                redBins[rIdx] += 1
+                greenBins[gIdx] += 1
+                blueBins[bIdx] += 1
+                lumaBins[lIdx] += 1
+            }
+        }
+        func normalize(_ values: [Double]) -> [Double] {
+            let mx = max(values.max() ?? 1, 1)
+            return values.map { $0 / mx }
+        }
+        return RGBHistogram(
+            red: normalize(redBins),
+            green: normalize(greenBins),
+            blue: normalize(blueBins),
+            luminance: normalize(lumaBins)
+        )
     }
 
     // MARK: - 实时 CIFilter 滤镜管线合成器
@@ -1578,12 +1757,36 @@ public struct VideoEditorView: View {
         }
     }
 
+    // MARK: - 左右滑动切换图库相邻视频手势（顺序与图片完全一致）
+
+    private var switchVideoGesture: some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onEnded { value in
+                // 构图裁切模式下优先操作选框，不触发切视频
+                guard activeTab != .crop else { return }
+                let horizontal = value.translation.width
+                let vertical = value.translation.height
+                guard abs(horizontal) > 56,
+                      abs(horizontal) > abs(vertical) * 1.35
+                else { return }
+                // 屏幕左侧边缘右滑留给返回手势
+                if horizontal > 0, value.startLocation.x <= 40 { return }
+                GrainHaptics.selection()
+                // 与图片左右滑逻辑顺序完全一致：右滑上一个视频 (-1)，左滑下一个视频 (+1)
+                onSwitchVideo?(horizontal > 0 ? -1 : 1)
+            }
+    }
+
+    // 屏幕左边缘右滑返回手势（增加区域与模式隔离，解决裁剪拖动闪退）
     private var edgeSwipeBackGesture: some Gesture {
         DragGesture(minimumDistance: 8, coordinateSpace: .local)
             .onChanged { value in
+                // 裁剪模式下或触摸发生在底部功能控制区时绝对不触发返回，防止手柄拖拽闪退
                 guard !didSwipeBack,
-                      value.startLocation.x <= 36,
-                      value.translation.width > 70,
+                      activeTab != .trim,
+                      value.startLocation.x <= 28,
+                      value.startLocation.y < UIScreen.main.bounds.height - 180,
+                      value.translation.width > 68,
                       value.translation.width > abs(value.translation.height) * 1.35
                 else { return }
                 didSwipeBack = true

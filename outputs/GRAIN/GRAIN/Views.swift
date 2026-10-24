@@ -156,6 +156,9 @@ struct RootView: View {
                 onClose: {
                     editingVideoAsset = nil
                     Task { await photoLibrary.refresh() }
+                },
+                onSwitchVideo: { offset in
+                    switchLibraryVideo(offset)
                 }
             )
         }
@@ -301,6 +304,16 @@ struct RootView: View {
         let targetIndex = index + offset
         guard photoLibrary.assets.indices.contains(targetIndex) else { return }
         importLibraryAsset(photoLibrary.assets[targetIndex])
+    }
+
+    /// 视频编辑页左右滑动切换到图库中的相邻视频，顺序与照片一致
+    private func switchLibraryVideo(_ offset: Int) {
+        guard let current = editingVideoAsset else { return }
+        let videos = photoLibrary.assets.filter { $0.mediaType == .video }
+        guard let index = videos.firstIndex(where: { $0.localIdentifier == current.localIdentifier }) else { return }
+        let targetIndex = index + offset
+        guard videos.indices.contains(targetIndex) else { return }
+        editingVideoAsset = videos[targetIndex]
     }
 
     /// 打开相机刚写入相册的照片或视频
