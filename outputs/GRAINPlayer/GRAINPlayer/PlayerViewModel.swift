@@ -79,10 +79,6 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
         currentBrightness = UIScreen.main.brightness
     }
 
-    deinit {
-        removeTimeObserver()
-    }
-
     // MARK: - 初始化后台音频与 Session
 
     private func setupAudioSession() {

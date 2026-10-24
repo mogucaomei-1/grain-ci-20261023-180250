@@ -80,6 +80,21 @@ public struct VideoMetadata: Equatable, Hashable {
         self.creationDate = creationDate
     }
 
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(duration)
+        hasher.combine(fileSize)
+        hasher.combine(naturalSize.width)
+        hasher.combine(naturalSize.height)
+        hasher.combine(frameRate)
+        hasher.combine(nominalBitrate)
+        hasher.combine(codecName)
+        hasher.combine(colorPrimaries)
+        hasher.combine(isHDR)
+        hasher.combine(audioFormat)
+        hasher.combine(audioChannels)
+        hasher.combine(creationDate)
+    }
+
     public var resolutionString: String {
         guard naturalSize.width > 0 && naturalSize.height > 0 else { return "--" }
         let w = Int(naturalSize.width.rounded())

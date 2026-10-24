@@ -46,13 +46,14 @@ jobs:
           cp -R "$APP_PATH" ci/unsigned-player/Payload/
           cd ci/unsigned-player
           zip -r -X GRAINPlayer-unsigned.zip Payload
+          cp GRAINPlayer-unsigned.zip GRAINPlayer-1.0-build1-unsigned.ip
           mv GRAINPlayer-unsigned.zip GRAINPlayer-unsigned.ipa
 
-      - name: Upload unsigned IPA
+      - name: Upload unsigned IP/IPA
         uses: actions/upload-artifact@v4
         with:
-          name: GRAINPlayer-unsigned-ipa
-          path: ci/unsigned-player/GRAINPlayer-unsigned.ipa
+          name: GRAINPlayer-unsigned-ip
+          path: ci/unsigned-player/GRAINPlayer-1.0-build1-unsigned.ip
           if-no-files-found: error
           retention-days: 7
 

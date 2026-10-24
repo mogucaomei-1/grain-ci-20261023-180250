@@ -81,13 +81,12 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
             AlbumCategory(id: "all_videos", title: "全部视频", icon: "video.fill", count: allVideosFetch.count)
         ]
 
-        // 2. 获取智能相册 (最近、个人收藏、慢动作、延时、录屏、电影效果)
+        // 2. 获取智能相册 (最近、个人收藏、慢动作、延时、电影效果)
         let smartSubtypes: [(PHAssetCollectionSubtype, String, String)] = [
             (.smartAlbumRecentlyAdded, "最近项目", "clock.fill"),
             (.smartAlbumFavorites, "个人收藏", "heart.fill"),
             (.smartAlbumSlomoVideos, "慢动作", "slowmo"),
             (.smartAlbumTimelapses, "延时摄影", "timelapse"),
-            (.smartAlbumScreenRecordings, "屏幕录制", "record.circle"),
             (.smartAlbumCinematic, "电影效果", "film.fill")
         ]
 
