@@ -475,15 +475,16 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
     private func parseEmbeddedSubtitles(from asset: AVAsset) {
         Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
-            var tracks: [SubtitleTrack] = []
+            var list: [SubtitleTrack] = []
             if let mediaSelectionGroup = try? await asset.loadMediaSelectionGroup(for: .legible) {
                 for option in mediaSelectionGroup.options {
                     let title = option.displayName
-                    tracks.append(SubtitleTrack(id: option.locale?.identifier ?? title, title: title, isExternal: false))
+                    list.append(SubtitleTrack(id: option.locale?.identifier ?? title, title: title, isExternal: false))
                 }
             }
+            let result = list
             await MainActor.run {
-                self.subtitleTracks = tracks
+                self.subtitleTracks = result
             }
         }
     }
