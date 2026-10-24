@@ -147,20 +147,26 @@ struct RootView: View {
         .fullScreenCover(isPresented: $showHomeCollage) {
             CollageEditorView(assets: [])
         }
-        .fullScreenCover(item: Binding<IdentifiableVideoAsset?>(
-            get: { editingVideoAsset.map { IdentifiableVideoAsset(asset: $0) } },
-            set: { editingVideoAsset = $0?.asset }
-        )) { item in
-            VideoEditorView(
-                asset: item.asset,
-                onClose: {
+        .fullScreenCover(isPresented: Binding<Bool>(
+            get: { editingVideoAsset != nil },
+            set: { isPresent in
+                if !isPresent {
                     editingVideoAsset = nil
-                    Task { await photoLibrary.refresh() }
-                },
-                onSwitchVideo: { offset in
-                    switchLibraryVideo(offset)
                 }
-            )
+            }
+        )) {
+            if let asset = editingVideoAsset {
+                VideoEditorView(
+                    asset: asset,
+                    onClose: {
+                        editingVideoAsset = nil
+                        Task { await photoLibrary.refresh() }
+                    },
+                    onSwitchVideo: { offset in
+                        switchLibraryVideo(offset)
+                    }
+                )
+            }
         }
         .onChange(of: isCameraActive) { _, active in
             handleCameraDismiss(presented: active)
@@ -2209,14 +2215,17 @@ struct ResetValueSlider: View {
     let onReset: () -> Void
     @State private var isEditing = false
     @State private var lastHapticStep: Int = 0
+    @State private var dragKnobX: CGFloat? = nil
 
     var body: some View {
         GeometryReader { proxy in
             let width = max(proxy.size.width, 1)
             let inset: CGFloat = 10
             let usableWidth = max(width - inset * 2, 1)
-            let progress = min(max((value - range.lowerBound) / max(range.upperBound - range.lowerBound, 0.0001), 0), 1)
-            let knobX = inset + usableWidth * CGFloat(progress)
+            let span = max(range.upperBound - range.lowerBound, 0.0001)
+            let progress = min(max((value - range.lowerBound) / span, 0), 1)
+            let defaultKnobX = inset + usableWidth * CGFloat(progress)
+            let activeKnobX = dragKnobX ?? defaultKnobX
 
             ZStack(alignment: .leading) {
                 Capsule()
@@ -2225,28 +2234,27 @@ struct ResetValueSlider: View {
 
                 Capsule()
                     .fill(GrainTheme.accent)
-                    .frame(width: knobX, height: 4)
+                    .frame(width: max(activeKnobX, 0), height: 4)
 
                 Circle()
                     .fill(GrainTheme.paper)
                     .frame(width: 19, height: 19)
                     .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
-                    .offset(x: knobX - 9.5)
+                    .offset(x: activeKnobX - 9.5)
             }
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
                     .onChanged { gesture in
+                        let position = min(max(gesture.location.x - inset, 0), usableWidth)
+                        dragKnobX = inset + position
                         if !isEditing {
                             isEditing = true
                             GrainHaptics.prepare()
                             onEditStart()
-                            let span = max(range.upperBound - range.lowerBound, 0.0001)
                             lastHapticStep = Int(((value - range.lowerBound) / span * 50).rounded())
                         }
-                        let position = min(max(gesture.location.x - inset, 0), usableWidth)
-                        let span = max(range.upperBound - range.lowerBound, 0.0001)
                         let newValue = range.lowerBound + Double(position / usableWidth) * span
                         let newStep = Int(((newValue - range.lowerBound) / span * 50).rounded())
                         if newStep != lastHapticStep {
@@ -2261,13 +2269,15 @@ struct ResetValueSlider: View {
                     }
                     .onEnded { _ in
                         isEditing = false
+                        dragKnobX = nil
                     }
             )
             .simultaneousGesture(
                 SpatialTapGesture(count: 2, coordinateSpace: .local)
                     .onEnded { gesture in
-                        if abs(gesture.location.x - knobX) <= 22 {
+                        if abs(gesture.location.x - activeKnobX) <= 24 {
                             GrainHaptics.mediumImpact()
+                            dragKnobX = nil
                             onReset()
                         }
                     }

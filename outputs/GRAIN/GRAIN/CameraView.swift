@@ -162,6 +162,16 @@ enum VideoStabilization: String, CaseIterable, Identifiable {
     }
 }
 
+/// 录像封装格式：MOV 与 MP4
+enum VideoContainerPreference: String, CaseIterable, Identifiable {
+    case mov
+    case mp4
+
+    var id: String { rawValue }
+    var title: String { self == .mov ? "MOV" : "MP4" }
+    var fileExtension: String { self == .mov ? "mov" : "mp4" }
+}
+
 /// 录像编码：只列系统相机也提供的两种，具体可用性按设备过滤
 enum VideoCodecPreference: String, CaseIterable, Identifiable {
     case hevc
@@ -834,7 +844,8 @@ final class CameraController: ObservableObject {
     func startRecording(
         quality: VideoQuality,
         stabilization: VideoStabilization,
-        codec: VideoCodecPreference
+        codec: VideoCodecPreference,
+        container: VideoContainerPreference = .mov
     ) {
         guard !isRecording else { return }
         recordingError = nil
@@ -853,8 +864,9 @@ final class CameraController: ObservableObject {
                 }
                 self.configureMovieConnection(stabilization: stabilization, codec: codec)
 
+                let ext = container.fileExtension
                 let url = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("GRAIN-\(Int(Date().timeIntervalSince1970)).mov")
+                    .appendingPathComponent("GRAIN-\(Int(Date().timeIntervalSince1970)).\(ext)")
                 try? FileManager.default.removeItem(at: url)
                 self.recordingURL = url
 
@@ -3275,6 +3287,8 @@ struct CameraView: View {
     @AppStorage("cameraVideoStabilization") private var storedStabilization = VideoStabilization.standard.rawValue
     @State private var videoCodec: VideoCodecPreference = .hevc
     @AppStorage("cameraVideoCodec") private var storedVideoCodec = VideoCodecPreference.hevc.rawValue
+    @State private var videoContainer: VideoContainerPreference = .mov
+    @AppStorage("cameraVideoContainer") private var storedVideoContainer = VideoContainerPreference.mov.rawValue
     /// 录像补光：录像用的是常亮手电筒
     @State private var torchOn = false
 
@@ -3484,6 +3498,7 @@ struct CameraView: View {
             videoQuality = VideoQuality(rawValue: storedVideoQuality) ?? .uhd4k30
             stabilization = VideoStabilization(rawValue: storedStabilization) ?? .standard
             videoCodec = VideoCodecPreference(rawValue: storedVideoCodec) ?? .hevc
+            videoContainer = VideoContainerPreference(rawValue: storedVideoContainer) ?? .mov
         }
         .onChange(of: captureMode) { _, mode in
             // 录像模式提前预热音视频输出与格式，解决开录时屏幕闪烁两下的问题
@@ -3964,6 +3979,18 @@ struct CameraView: View {
                 .disabled(camera.isRecording)
 
                 Menu {
+                    ForEach(VideoContainerPreference.allCases) { option in
+                        Button(option.title) {
+                            videoContainer = option
+                            storedVideoContainer = option.rawValue
+                        }
+                    }
+                } label: {
+                    MenuChip(title: videoContainer.title, symbol: "doc")
+                }
+                .disabled(camera.isRecording)
+
+                Menu {
                     ForEach(availableVideoCodecOptions) { option in
                         Button(option.title) {
                             videoCodec = option
@@ -4106,7 +4133,8 @@ struct CameraView: View {
                     camera.startRecording(
                         quality: videoQuality,
                         stabilization: stabilization,
-                        codec: videoCodec
+                        codec: videoCodec,
+                        container: videoContainer
                     )
                 }
             } else {

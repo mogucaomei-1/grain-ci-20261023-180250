@@ -251,6 +251,7 @@ public struct VideoEditorView: View {
     @State private var isMuted = false
     @State private var duration: Double = 0
     @State private var currentTime: Double = 0
+    @State private var isScrubbing = false
 
     @State private var recipe = VideoEditRecipe()
     // 默认进入“调节”模式，播放视频并附带视频拖动条
@@ -426,25 +427,10 @@ public struct VideoEditorView: View {
         }
     }
 
-    // MARK: - 顶栏：删除放在左边第一个，分享放在完成的左边
-
+    // MARK: - 顶栏：取消、查看信息、分享、完成
     private var topBar: some View {
         HStack(spacing: 12) {
-            // 1. 删除：按用户要求放在左边第一个
-            Button {
-                showDeleteConfirmation = true
-                GrainHaptics.selection()
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(GrainTheme.paper)
-                    .frame(width: 32, height: 32)
-                    .background(Color.white.opacity(0.12), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .disabled(isExporting)
-
-            // 2. 取消
+            // 1. 取消
             Button("取消") {
                 cleanupPlayer()
                 onClose()
@@ -455,7 +441,7 @@ public struct VideoEditorView: View {
 
             Spacer()
 
-            // 3. 查看视频参数信息按钮
+            // 2. 查看视频参数信息按钮
             Button {
                 showInfoSheet = true
                 GrainHaptics.selection()
@@ -469,7 +455,7 @@ public struct VideoEditorView: View {
             .buttonStyle(.plain)
             .disabled(isExporting)
 
-            // 4. 分享：按用户要求放在完成的左边
+            // 3. 分享：放在完成的左边
             Button {
                 showExportSheet = true
                 GrainHaptics.selection()
@@ -483,7 +469,7 @@ public struct VideoEditorView: View {
             .buttonStyle(.plain)
             .disabled(isExporting)
 
-            // 5. 完成
+            // 4. 完成
             Button {
                 showExportSheet = true
                 GrainHaptics.selection()
@@ -535,10 +521,16 @@ public struct VideoEditorView: View {
 
                     if activeTab == .crop {
                         VideoCropSelectionOverlay(
-                            cropRect: $recipe.cropRect,
+                            cropRect: Binding(
+                                get: { recipe.cropRect },
+                                set: {
+                                    recipe.cropRect = $0
+                                    recipeHolder.recipe = recipe
+                                }
+                            ),
                             aspect: recipe.aspect,
                             naturalSize: naturalVideoSize,
-                            displaySize: frame
+                            displaySize: frame.size
                         )
                     }
 
@@ -557,25 +549,35 @@ public struct VideoEditorView: View {
                         .transition(.scale.combined(with: .opacity))
                     }
 
-                    // 左上角视频规格胶囊与参数入口
+                    // 左上角删除按钮与视频规格胶囊
                     VStack {
-                        HStack {
+                        HStack(spacing: 8) {
+                            // 1. 删除按钮：按用户要求放在视频规格按钮的左边
+                            Button {
+                                showDeleteConfirmation = true
+                                GrainHaptics.selection()
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(GrainTheme.paper)
+                                    .frame(width: 26, height: 26)
+                                    .background(Color.black.opacity(0.58), in: Circle())
+                                    .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 0.6))
+                            }
+                            .buttonStyle(.plain)
+
+                            // 2. 视频规格胶囊：去掉感叹号图标
                             Button {
                                 showInfoSheet = true
                                 GrainHaptics.selection()
                             } label: {
-                                HStack(spacing: 3) {
-                                    Text(videoFormatBadge)
-                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                        .foregroundStyle(GrainTheme.accent)
-                                    Image(systemName: "info.circle")
-                                        .font(.system(size: 8.5, weight: .semibold))
-                                        .foregroundStyle(GrainTheme.paper.opacity(0.8))
-                                }
-                                .padding(.horizontal, 8)
-                                .frame(height: 24)
-                                .background(Color.black.opacity(0.58), in: Capsule())
-                                .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 0.6))
+                                Text(videoFormatBadge)
+                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(GrainTheme.accent)
+                                    .padding(.horizontal, 9)
+                                    .frame(height: 26)
+                                    .background(Color.black.opacity(0.58), in: Capsule())
+                                    .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 0.6))
                             }
                             .buttonStyle(.plain)
 
@@ -608,11 +610,33 @@ public struct VideoEditorView: View {
 
     // MARK: - 调整前后预览开关（放置在播放条的右上方）
 
+    // MARK: - 调整前后对比与静音动作栏（静音放在对比按钮的左边）
+
     private var comparisonActionBar: some View {
-        HStack {
+        HStack(spacing: 8) {
             Spacer()
 
-            // 调整前后对比开关（按住查看原视频）
+            // 1. 静音开关：按用户要求放在右下角对比按钮的左边
+            Button {
+                isMuted.toggle()
+                player?.isMuted = isMuted
+                GrainHaptics.selection()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(isMuted ? "静音" : "原声")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                }
+                .foregroundStyle(isMuted ? GrainTheme.black : GrainTheme.paper)
+                .padding(.horizontal, 9)
+                .frame(height: 24)
+                .background(isMuted ? GrainTheme.accent : Color.black.opacity(0.55), in: Capsule())
+                .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 0.6))
+            }
+            .buttonStyle(.plain)
+
+            // 2. 调整前后对比开关（按住查看原视频）
             Button {
             } label: {
                 HStack(spacing: 4) {
@@ -646,7 +670,7 @@ public struct VideoEditorView: View {
         .frame(height: 24)
     }
 
-    // MARK: - 视频进度拖动条（Scrubber Bar，加入静音开关）
+    // MARK: - 视频进度拖动条（Scrubber Bar：抽搐防抖优化，右侧倒计时时间）
 
     private var videoScrubberBar: some View {
         HStack(spacing: 10) {
@@ -663,25 +687,13 @@ public struct VideoEditorView: View {
             }
             .buttonStyle(.plain)
 
-            // 2. 静音开关
-            Button {
-                isMuted.toggle()
-                player?.isMuted = isMuted
-                GrainHaptics.selection()
-            } label: {
-                Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(isMuted ? GrainTheme.accent : GrainTheme.paper)
-                    .frame(width: 26, height: 26)
-                    .background(isMuted ? GrainTheme.accent.opacity(0.2) : Color.white.opacity(0.14), in: Circle())
-            }
-            .buttonStyle(.plain)
-
+            // 2. 当前播放时间
             Text(formatTime(currentTime))
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
                 .foregroundStyle(GrainTheme.paper)
                 .frame(width: 34, alignment: .leading)
 
+            // 3. 进度滑杆（带 isScrubbing 隔离防抽搐）
             GeometryReader { proxy in
                 let w = max(proxy.size.width, 1)
                 let usableW = max(w - 16, 1)
@@ -709,6 +721,7 @@ public struct VideoEditorView: View {
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { val in
+                            isScrubbing = true
                             pause()
                             let x = min(max(val.location.x - 8, 0), usableW)
                             let newProg = Double(x / usableW)
@@ -721,14 +734,20 @@ public struct VideoEditorView: View {
                                 GrainHaptics.selection()
                             }
                         }
+                        .onEnded { _ in
+                            isScrubbing = false
+                            seek(to: currentTime)
+                        }
                 )
             }
             .frame(height: 22)
 
-            Text(formatTime(recipe.trimEnd - recipe.trimStart > 0 ? (recipe.trimEnd - recipe.trimStart) : duration))
+            // 4. 右侧倒计时时间显示（如 -00:15）
+            let remaining = max(0, duration - currentTime)
+            Text("-\(formatTime(remaining))")
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundStyle(GrainTheme.muted)
-                .frame(width: 34, alignment: .trailing)
+                .foregroundStyle(GrainTheme.paper.opacity(0.68))
+                .frame(width: 44, alignment: .trailing)
         }
         .padding(.horizontal, 16)
         .frame(height: 28)
@@ -789,7 +808,7 @@ public struct VideoEditorView: View {
             // 参数项水平切换 + 推荐数值按钮
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    // 推荐数值按钮（按要求增加，一键应用电影级胶片影调优化）
+                    // 推荐按钮：文字为“推荐”，点前白色，点后橙色
                     Button {
                         applyRecommendedValues()
                         GrainHaptics.mediumImpact()
@@ -797,10 +816,10 @@ public struct VideoEditorView: View {
                         HStack(spacing: 3) {
                             Image(systemName: "wand.and.stars")
                                 .font(.system(size: 9.5, weight: .bold))
-                            Text(isRecommendedApplied ? "已推荐" : "推荐数值")
+                            Text("推荐")
                                 .font(.system(size: 10.5, weight: .bold, design: .rounded))
                         }
-                        .foregroundStyle(isRecommendedApplied ? GrainTheme.black : GrainTheme.accent)
+                        .foregroundStyle(isRecommendedApplied ? GrainTheme.black : GrainTheme.paper)
                         .padding(.horizontal, 9)
                         .frame(height: 26)
                         .background(
@@ -1295,10 +1314,12 @@ public struct VideoEditorView: View {
                         return
                     }
                     self.avAsset = loadedAsset
-                    let dur = loadedAsset.duration.seconds
-                    self.duration = dur.isFinite && dur > 0 ? dur : 1.0
+                    let rawDur = loadedAsset.duration.seconds
+                    let phDur = self.asset.duration
+                    let dur = (rawDur.isFinite && rawDur > 0.05) ? rawDur : ((phDur.isFinite && phDur > 0.05) ? phDur : 1.0)
+                    self.duration = dur
                     self.recipe.trimStart = 0
-                    self.recipe.trimEnd = self.duration
+                    self.recipe.trimEnd = dur
                     self.recipeHolder.recipe = self.recipe
 
                     if let track = loadedAsset.tracks(withMediaType: .video).first {
@@ -1351,9 +1372,10 @@ public struct VideoEditorView: View {
         player.isMuted = isMuted
         self.player = player
 
-        // 监听播放进度与时间修剪循环
+        // 监听播放进度与时间修剪循环（受 isScrubbing 保护，杜绝拖动时抽搐跳动）
         let interval = CMTime(value: 1, timescale: 30)
-        timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
+        timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+            guard let self, !self.isScrubbing else { return }
             let seconds = time.seconds
             self.currentTime = seconds
 
@@ -1402,9 +1424,12 @@ public struct VideoEditorView: View {
             player?.removeTimeObserver(token)
         }
         player?.pause()
+        player?.rate = 0.0
+        player?.isMuted = true
         player?.replaceCurrentItem(with: nil)
         player = nil
         isPlaying = false
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     private func generateThumbnails(for asset: AVAsset) {
@@ -1589,64 +1614,107 @@ public struct VideoEditorView: View {
         return composition
     }
 
-    // MARK: - 胶片风格滤镜模拟算法
+    // MARK: - 胶片风格滤镜模拟算法（覆盖全套 28 种胶片预设，效果显著生动）
 
     private static func applyFilmLook(to image: CIImage, profile: FilmProfile, intensity: Double) -> CIImage {
+        guard profile != .neutral else { return image }
         var graded = image
+
+        // 1. 使用各胶片 Profile 对应的官方基准色彩参数实施基底风格化
+        let settings = profile.factorySettings
+
+        // 曝光微调
+        if abs(settings.exposure) > 0.01 {
+            graded = graded.applyingFilter("CIExposureAdjust", parameters: [
+                kCIInputEVKey: settings.exposure
+            ])
+        }
+
+        // 对比度与饱和度
+        let contrastVal = 1.0 + (settings.contrast / 100.0) * 0.45
+        let satVal = max(0, 1.0 + (settings.saturation / 100.0) * 0.7)
+        graded = graded.applyingFilter("CIColorControls", parameters: [
+            kCIInputContrastKey: contrastVal,
+            kCIInputSaturationKey: satVal
+        ])
+
+        // 高光与阴影
+        if abs(settings.highlights) > 1 || abs(settings.shadows) > 1 {
+            let hi = max(0, 1.0 - (settings.highlights / 100.0) * 0.6)
+            let sh = max(0, (settings.shadows / 100.0) * 0.6)
+            graded = graded.applyingFilter("CIHighlightShadowAdjust", parameters: [
+                "inputHighlightAmount": hi,
+                "inputShadowAmount": sh
+            ])
+        }
+
+        // 色温与色调
+        if settings.temperature != 6500 || settings.tint != 0 {
+            graded = graded.applyingFilter("CITemperatureAndTint", parameters: [
+                "inputNeutral": CIVector(x: 6500, y: 0),
+                "inputTargetNeutral": CIVector(x: settings.temperature, y: settings.tint * 2)
+            ])
+        }
+
+        // 2. 标志性胶片影调特色专属调优
         switch profile {
         case .classicChrome, .classicNegative:
-            graded = graded
-                .applyingFilter("CIColorControls", parameters: [
-                    kCIInputContrastKey: 1.15,
-                    kCIInputSaturationKey: 0.82
-                ])
-                .applyingFilter("CITemperatureAndTint", parameters: [
-                    "inputNeutral": CIVector(x: 6500, y: 0),
-                    "inputTargetNeutral": CIVector(x: 6900, y: 8)
-                ])
-        case .portra, .portra160, .portra800:
-            graded = graded
-                .applyingFilter("CIHighlightShadowAdjust", parameters: [
-                    "inputHighlightAmount": 0.85,
-                    "inputShadowAmount": 0.28
-                ])
-                .applyingFilter("CITemperatureAndTint", parameters: [
-                    "inputNeutral": CIVector(x: 6500, y: 0),
-                    "inputTargetNeutral": CIVector(x: 6800, y: 14)
-                ])
+            graded = graded.applyingFilter("CITemperatureAndTint", parameters: [
+                "inputNeutral": CIVector(x: 6500, y: 0),
+                "inputTargetNeutral": CIVector(x: 6900, y: 8)
+            ])
+        case .cinestill, .film135t, .vision500t:
+            graded = graded.applyingFilter("CITemperatureAndTint", parameters: [
+                "inputNeutral": CIVector(x: 6500, y: 0),
+                "inputTargetNeutral": CIVector(x: 4800, y: -18)
+            ])
         case .velvia50:
-            graded = graded
-                .applyingFilter("CIColorControls", parameters: [
-                    kCIInputSaturationKey: 1.45,
-                    kCIInputContrastKey: 1.22
-                ])
+            graded = graded.applyingFilter("CIColorControls", parameters: [
+                kCIInputSaturationKey: 1.35,
+                kCIInputContrastKey: 1.18
+            ])
         case .provia100f:
-            graded = graded
-                .applyingFilter("CITemperatureAndTint", parameters: [
-                    "inputNeutral": CIVector(x: 6500, y: 0),
-                    "inputTargetNeutral": CIVector(x: 6300, y: -4)
-                ])
-        case .cinestill, .film135t:
-            graded = graded
-                .applyingFilter("CITemperatureAndTint", parameters: [
-                    "inputNeutral": CIVector(x: 6500, y: 0),
-                    "inputTargetNeutral": CIVector(x: 5200, y: -16)
-                ])
-        case .gold, .colorPlus200:
-            graded = graded
-                .applyingFilter("CITemperatureAndTint", parameters: [
-                    "inputNeutral": CIVector(x: 6500, y: 0),
-                    "inputTargetNeutral": CIVector(x: 7800, y: 22)
-                ])
-                .applyingFilter("CIColorControls", parameters: [
-                    kCIInputSaturationKey: 1.1
-                ])
-        case .eterna, .nostalgicNeg, .realaAce:
-            graded = graded
-                .applyingFilter("CIColorControls", parameters: [
-                    kCIInputContrastKey: 0.92,
-                    kCIInputSaturationKey: 0.88
-                ])
+            graded = graded.applyingFilter("CITemperatureAndTint", parameters: [
+                "inputNeutral": CIVector(x: 6500, y: 0),
+                "inputTargetNeutral": CIVector(x: 6300, y: -4)
+            ])
+        case .gold, .colorPlus200, .ultramax400:
+            graded = graded.applyingFilter("CITemperatureAndTint", parameters: [
+                "inputNeutral": CIVector(x: 6500, y: 0),
+                "inputTargetNeutral": CIVector(x: 7400, y: 16)
+            ])
+        case .eterna:
+            graded = graded.applyingFilter("CIColorControls", parameters: [
+                kCIInputContrastKey: 0.90,
+                kCIInputSaturationKey: 0.85
+            ])
+        case .pro400h:
+            graded = graded.applyingFilter("CITemperatureAndTint", parameters: [
+                "inputNeutral": CIVector(x: 6500, y: 0),
+                "inputTargetNeutral": CIVector(x: 6100, y: -10)
+            ])
+        case .dazzCCDR:
+            graded = graded.applyingFilter("CIHighlightShadowAdjust", parameters: [
+                "inputHighlightAmount": 0.82,
+                "inputShadowAmount": 0.35
+            ])
+        case .dazzGRDR:
+            graded = graded.applyingFilter("CITemperatureAndTint", parameters: [
+                "inputNeutral": CIVector(x: 6500, y: 0),
+                "inputTargetNeutral": CIVector(x: 5800, y: -12)
+            ]).applyingFilter("CIColorControls", parameters: [
+                kCIInputContrastKey: 1.15
+            ])
+        case .dazzDFunS:
+            graded = graded.applyingFilter("CIColorControls", parameters: [
+                kCIInputSaturationKey: 1.25,
+                kCIInputContrastKey: 1.12
+            ])
+        case .dazzClassicU:
+            graded = graded.applyingFilter("CITemperatureAndTint", parameters: [
+                "inputNeutral": CIVector(x: 6500, y: 0),
+                "inputTargetNeutral": CIVector(x: 7200, y: 12)
+            ])
         default:
             break
         }
@@ -1777,16 +1845,15 @@ public struct VideoEditorView: View {
             }
     }
 
-    // 屏幕左边缘右滑返回手势（增加区域与模式隔离，解决裁剪拖动闪退）
+    // 屏幕左边缘右滑返回手势（支持裁剪模式在视频主区域右滑返回，底部手柄区隔离防误触）
     private var edgeSwipeBackGesture: some Gesture {
         DragGesture(minimumDistance: 8, coordinateSpace: .local)
             .onChanged { value in
-                // 裁剪模式下或触摸发生在底部功能控制区时绝对不触发返回，防止手柄拖拽闪退
+                // 触摸发生在底部功能控制区时绝对不触发返回，防止手柄拖拽闪退；在视频主区域任何模式均可右滑返回
                 guard !didSwipeBack,
-                      activeTab != .trim,
-                      value.startLocation.x <= 28,
-                      value.startLocation.y < UIScreen.main.bounds.height - 180,
-                      value.translation.width > 68,
+                      value.startLocation.x <= 32,
+                      value.startLocation.y < UIScreen.main.bounds.height - 200,
+                      value.translation.width > 60,
                       value.translation.width > abs(value.translation.height) * 1.35
                 else { return }
                 didSwipeBack = true
@@ -2157,6 +2224,13 @@ private struct VideoPlayerUIView: UIViewRepresentable {
             uiView.playerLayer.player = player
         }
     }
+
+    static func dismantleUIView(_ uiView: PlayerContainerUIView, coordinator: Coordinator) {
+        uiView.playerLayer.player?.pause()
+        uiView.playerLayer.player?.rate = 0.0
+        uiView.playerLayer.player?.isMuted = true
+        uiView.playerLayer.player = nil
+    }
 }
 
 private final class PlayerContainerUIView: UIView {
@@ -2169,7 +2243,7 @@ private final class PlayerContainerUIView: UIView {
     }
 }
 
-// MARK: - 视频交互式裁切框覆盖层
+// MARK: - 视频交互式裁切框覆盖层（支持中心拖拽平移与左右把手横移）
 
 private struct VideoCropSelectionOverlay: View {
     @Binding var cropRect: CGRect
@@ -2194,21 +2268,52 @@ private struct VideoCropSelectionOverlay: View {
                 outside.addRect(rect)
                 context.fill(outside, with: .color(.black.opacity(0.55)), style: FillStyle(eoFill: true))
             }
+            .allowsHitTesting(false)
 
             Rectangle()
                 .stroke(Color.white, lineWidth: 1.5)
                 .frame(width: rect.width, height: rect.height)
                 .position(x: rect.midX, y: rect.midY)
+                .allowsHitTesting(false)
 
             cropGrid(rect: rect)
+                .allowsHitTesting(false)
 
+            // 整个裁切选框内部可直接拖拽（按住选框任意位置左右/上下平移构图）
             Rectangle()
-                .fill(Color.clear)
+                .fill(Color.black.opacity(0.001))
                 .contentShape(Rectangle())
-                .frame(width: rect.width, height: rect.height)
+                .frame(width: max(rect.width, 24), height: max(rect.height, 24))
                 .position(x: rect.midX, y: rect.midY)
                 .gesture(moveGesture(rect: rect))
 
+            // 选框中心十字移动提示标
+            if rect.width > 60 && rect.height > 60 {
+                Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Color.white.opacity(0.72))
+                    .frame(width: 28, height: 28)
+                    .background(Color.black.opacity(0.42), in: Circle())
+                    .position(x: rect.midX, y: rect.midY)
+                    .allowsHitTesting(false)
+            }
+
+            // 左右侧边微调把手（方便拇指按住左右横移构图）
+            Capsule()
+                .fill(GrainTheme.paper)
+                .frame(width: 4.5, height: 26)
+                .shadow(color: .black.opacity(0.4), radius: 2)
+                .position(x: rect.minX, y: rect.midY)
+                .allowsHitTesting(false)
+
+            Capsule()
+                .fill(GrainTheme.paper)
+                .frame(width: 4.5, height: 26)
+                .shadow(color: .black.opacity(0.4), radius: 2)
+                .position(x: rect.maxX, y: rect.midY)
+                .allowsHitTesting(false)
+
+            // 四角缩放圆形手柄
             ForEach(Corner.allCases, id: \.self) { corner in
                 Circle()
                     .fill(GrainTheme.paper)
@@ -2236,17 +2341,19 @@ private struct VideoCropSelectionOverlay: View {
     }
 
     private func moveGesture(rect: CGRect) -> some Gesture {
-        DragGesture()
+        DragGesture(minimumDistance: 0)
             .onChanged { val in
                 if dragOrigin == nil {
                     dragOrigin = cropRect
                     GrainHaptics.prepare()
                 }
                 guard let origin = dragOrigin else { return }
-                let dx = val.translation.width / displaySize.width
-                let dy = val.translation.height / displaySize.height
-                let newX = min(max(origin.origin.x + dx, 0), 1 - origin.width)
-                let newY = min(max(origin.origin.y + dy, 0), 1 - origin.height)
+                let dx = val.translation.width / max(displaySize.width, 1)
+                let dy = val.translation.height / max(displaySize.height, 1)
+                let maxMoveX = max(1.0 - origin.width, 0)
+                let maxMoveY = max(1.0 - origin.height, 0)
+                let newX = maxMoveX > 0 ? min(max(origin.origin.x + dx, 0), maxMoveX) : 0
+                let newY = maxMoveY > 0 ? min(max(origin.origin.y + dy, 0), maxMoveY) : 0
                 let step = Int((newX * 50 + newY * 50).rounded())
                 if step != lastHapticStep {
                     lastHapticStep = step
