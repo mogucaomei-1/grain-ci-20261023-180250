@@ -434,6 +434,7 @@ struct AppSettingsView: View {
         .buttonStyle(.plain)
     }
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
+    @AppStorage("appearanceMode") private var appearanceMode = AppearanceMode.system
     @AppStorage("showHistogram") private var showHistogram = true
     @AppStorage("showCameraButton") private var showCameraButton = true
     @AppStorage("showFileImportButton") private var showFileImportButton = false
@@ -480,6 +481,45 @@ struct AppSettingsView: View {
                             .background(GrainTheme.raised, in: Circle())
                     }
                     .buttonStyle(.plain)
+                }
+
+                // 外观模式
+                HStack(spacing: 12) {
+                    Image(systemName: "circle.lefthalf.filled")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(GrainTheme.accent)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("外观模式")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(GrainTheme.paper)
+                        Text("白天浅色、黑夜深色或跟随系统")
+                            .font(.system(size: 9, design: .rounded))
+                            .foregroundStyle(GrainTheme.muted)
+                    }
+                    Spacer()
+                    HStack(spacing: 4) {
+                        ForEach(AppearanceMode.allCases) { mode in
+                            Button {
+                                appearanceMode = mode
+                                GrainHaptics.selection()
+                            } label: {
+                                Text(mode.shortTitle)
+                                    .font(.system(size: 10, weight: appearanceMode == mode ? .bold : .medium, design: .rounded))
+                                    .foregroundStyle(appearanceMode == mode ? GrainTheme.black : GrainTheme.muted)
+                                    .padding(.horizontal, 9)
+                                    .frame(height: 26)
+                                    .background(appearanceMode == mode ? GrainTheme.paper : GrainTheme.raised, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(16)
+                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 17)
+                        .stroke(GrainTheme.line, lineWidth: 0.8)
                 }
 
                 HStack(spacing: 12) {

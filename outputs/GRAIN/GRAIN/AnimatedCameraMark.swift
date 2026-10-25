@@ -49,7 +49,11 @@ struct AnimatedEditorMark: View {
 
     private func frontEditor(progress: CGFloat) -> some View {
         RoundedRectangle(cornerRadius: size * 0.09, style: .continuous)
-            .fill(GrainTheme.paper)
+            .fill(Color(hex: 0xFDFBF7))
+            .overlay {
+                RoundedRectangle(cornerRadius: size * 0.09, style: .continuous)
+                    .stroke(Color.black.opacity(0.14), lineWidth: 0.5)
+            }
             .frame(width: size * 0.54, height: size * 0.66)
             .overlay {
                 ZStack {
@@ -88,7 +92,7 @@ struct AnimatedEditorMark: View {
                         .offset(y: size * 0.205)
 
                     Circle()
-                        .fill(GrainTheme.paper)
+                        .fill(Color.white)
                         .frame(width: max(3, size * 0.064), height: max(3, size * 0.064))
                         .shadow(color: .black.opacity(0.3), radius: 1, y: 1)
                         .offset(

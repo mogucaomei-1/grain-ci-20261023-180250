@@ -455,7 +455,7 @@ public struct VideoEditorView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(GrainTheme.paper)
                     .frame(width: 32, height: 32)
-                    .background(Color.white.opacity(0.12), in: Circle())
+                    .background(GrainTheme.raised, in: Circle())
             }
             .buttonStyle(.plain)
             .disabled(isExporting)
@@ -469,7 +469,7 @@ public struct VideoEditorView: View {
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(GrainTheme.paper)
                     .frame(width: 32, height: 32)
-                    .background(Color.white.opacity(0.12), in: Circle())
+                    .background(GrainTheme.raised, in: Circle())
             }
             .buttonStyle(.plain)
             .disabled(isExporting)
@@ -483,7 +483,7 @@ public struct VideoEditorView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(GrainTheme.paper)
                     .frame(width: 32, height: 32)
-                    .background(Color.white.opacity(0.12), in: Circle())
+                    .background(GrainTheme.raised, in: Circle())
             }
             .buttonStyle(.plain)
             .disabled(isExporting)
@@ -523,8 +523,8 @@ public struct VideoEditorView: View {
                 }
                 .padding(.horizontal, 9)
                 .frame(height: 24)
-                .background(Color.white.opacity(0.10), in: Capsule())
-                .overlay(Capsule().stroke(Color.white.opacity(0.14), lineWidth: 0.6))
+                .background(GrainTheme.raised, in: Capsule())
+                .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
             }
             .buttonStyle(.plain)
 
@@ -534,8 +534,8 @@ public struct VideoEditorView: View {
             if let currentHistogram {
                 HistogramView(data: currentHistogram)
                     .frame(width: 76, height: 26)
-                    .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.12), lineWidth: 0.6))
+                    .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(GrainTheme.line, lineWidth: 0.6))
             }
         }
         .padding(.horizontal, 16)
@@ -711,7 +711,7 @@ public struct VideoEditorView: View {
 
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(Color.white.opacity(0.15))
+                        .fill(GrainTheme.track)
                         .frame(height: 4)
 
                     Capsule()
@@ -719,7 +719,7 @@ public struct VideoEditorView: View {
                         .frame(width: knobX, height: 4)
 
                     Circle()
-                        .fill(GrainTheme.paper)
+                        .fill(GrainTheme.knob)
                         .frame(width: 16, height: 16)
                         .shadow(color: .black.opacity(0.4), radius: 2)
                         .offset(x: knobX - 8)

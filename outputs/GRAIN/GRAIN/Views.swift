@@ -392,6 +392,7 @@ private struct MinimalTopBar: View {
     let onDelete: (() -> Void)?
 
     @AppStorage("homeToolOrder") private var homeToolOrder = "camera,files,collage"
+    @AppStorage("appearanceMode") private var appearanceMode = AppearanceMode.system
     @State private var draggingHomeTool: HomeTool?
     @State private var homeToolDrag: CGFloat = 0
     @State private var suppressHomeToolTap = false
@@ -399,24 +400,87 @@ private struct MinimalTopBar: View {
     var body: some View {
         HStack(spacing: 12) {
             HStack(spacing: 9) {
+                Menu {
+                    Section("外观模式") {
+                        Button {
+                            appearanceMode = .system
+                            GrainHaptics.selection()
+                        } label: {
+                            Label("跟随系统", systemImage: appearanceMode == .system ? "checkmark" : "circle.lefthalf.filled")
+                        }
+
+                        Button {
+                            appearanceMode = .light
+                            GrainHaptics.selection()
+                        } label: {
+                            Label("白天模式 (浅色)", systemImage: appearanceMode == .light ? "checkmark" : "sun.max")
+                        }
+
+                        Button {
+                            appearanceMode = .dark
+                            GrainHaptics.selection()
+                        } label: {
+                            Label("黑夜模式 (深色)", systemImage: appearanceMode == .dark ? "checkmark" : "moon")
+                        }
+                    }
+
+                    Section {
+                        Button(action: onSettings) {
+                            Label("偏好设置", systemImage: "gearshape")
+                        }
+                    }
+                } label: {
+                    ZStack(alignment: .bottomTrailing) {
+                        AnimatedEditorMark(size: 29)
+
+                        // 外观状态徽标
+                        Circle()
+                            .fill(GrainTheme.surface)
+                            .frame(width: 14, height: 14)
+                            .overlay(
+                                Image(systemName: appearanceMode.iconName)
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(appearanceMode == .light ? Color.orange : GrainTheme.accent)
+                            )
+                            .overlay(
+                                Circle()
+                                    .stroke(GrainTheme.line, lineWidth: 0.6)
+                            )
+                            .offset(x: 3, y: 3)
+                    }
+                    .frame(width: 38, height: 38)
+                    .contentShape(Rectangle())
+                } primaryAction: {
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        switch appearanceMode {
+                        case .system:
+                            appearanceMode = .light
+                        case .light:
+                            appearanceMode = .dark
+                        case .dark:
+                            appearanceMode = .system
+                        }
+                    }
+                    GrainHaptics.selection()
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("切换外观模式：当前为\(appearanceMode.title)")
+
                 Button(action: onSettings) {
-                    AnimatedEditorMark(size: 29)
-                        .frame(width: 38, height: 38)
-                        .contentShape(Rectangle())
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text("GRAIN")
+                            .font(.system(size: 14, weight: .heavy, design: .rounded))
+                            .tracking(2.3)
+                            .foregroundStyle(GrainTheme.paper)
+                        Text("1.1")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundStyle(GrainTheme.accent)
+                    }
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("打开设置")
-
-                HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text("GRAIN")
-                        .font(.system(size: 14, weight: .heavy, design: .rounded))
-                        .tracking(2.3)
-                    Text("1.1")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundStyle(GrainTheme.accent)
-                }
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
             }
 
             Spacer()
@@ -900,7 +964,7 @@ private struct PhotoEditorCanvas: View {
             let shownPan = displayedPan(viewport: proxy.size, imageSize: imageSize)
 
             ZStack {
-                Color.black
+                GrainTheme.black
 
                 // 只有照片层（含文字与对比线）随进阶抽屉上移，
                 // 直方图、格式标签、底部按钮等 HUD 保持原地不动。
@@ -1448,17 +1512,17 @@ struct HistogramView: View {
             }
             fill.addLine(to: CGPoint(x: inset + width, y: inset + height))
             fill.closeSubpath()
-            context.fill(fill, with: .color(Color.white.opacity(0.20)))
+            context.fill(fill, with: .color(GrainTheme.paper.opacity(0.18)))
 
             draw(channel: data.red, color: Color.red.opacity(0.72), in: context, size: size, inset: inset)
             draw(channel: data.green, color: Color.green.opacity(0.62), in: context, size: size, inset: inset)
             draw(channel: data.blue, color: Color.cyan.opacity(0.72), in: context, size: size, inset: inset)
         }
         .padding(4)
-        .background(Color.black.opacity(0.52), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .background(GrainTheme.surface.opacity(0.85), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(Color.white.opacity(0.15), lineWidth: 0.7)
+                .stroke(GrainTheme.line, lineWidth: 0.7)
         }
         .accessibilityLabel("图像直方图")
     }
@@ -2234,7 +2298,7 @@ struct ResetValueSlider: View {
 
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Color.white.opacity(0.14))
+                    .fill(GrainTheme.track)
                     .frame(height: 4)
 
                 Capsule()
@@ -2242,7 +2306,7 @@ struct ResetValueSlider: View {
                     .frame(width: max(activeKnobX, 0), height: 4)
 
                 Circle()
-                    .fill(GrainTheme.paper)
+                    .fill(GrainTheme.knob)
                     .frame(width: 19, height: 19)
                     .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
                     .offset(x: activeKnobX - 9.5)

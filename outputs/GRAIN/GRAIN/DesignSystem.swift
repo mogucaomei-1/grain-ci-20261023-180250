@@ -1,15 +1,104 @@
 import CoreImage
 import SwiftUI
+import UIKit
+
+/// 全局外观模式（跟随系统、白天浅色、黑夜深色）
+enum AppearanceMode: String, CaseIterable, Identifiable {
+    case system = "system"
+    case light = "light"
+    case dark = "dark"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: "跟随系统"
+        case .light: "白天模式"
+        case .dark: "黑夜模式"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .system: "系统"
+        case .light: "白天"
+        case .dark: "黑夜"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .system: "circle.lefthalf.filled"
+        case .light: "sun.max.fill"
+        case .dark: "moon.fill"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: nil
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+}
 
 enum GrainTheme {
-    static let black = Color(hex: 0x070706)
-    static let surface = Color(hex: 0x131311)
-    static let raised = Color(hex: 0x1D1D1A)
-    static let paper = Color(hex: 0xF4EDE1)
-    static let muted = Color(hex: 0x8E8B84)
-    static let line = Color.white.opacity(0.09)
+    static let black = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0x07 / 255.0, green: 0x07 / 255.0, blue: 0x06 / 255.0, alpha: 1.0)
+            : UIColor(red: 0xF6 / 255.0, green: 0xF5 / 255.0, blue: 0xF2 / 255.0, alpha: 1.0)
+    })
+
+    static let surface = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0x13 / 255.0, green: 0x13 / 255.0, blue: 0x11 / 255.0, alpha: 1.0)
+            : UIColor(red: 0xFF / 255.0, green: 0xFF / 255.0, blue: 0xFF / 255.0, alpha: 1.0)
+    })
+
+    static let raised = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0x1D / 255.0, green: 0x1D / 255.0, blue: 0x1A / 255.0, alpha: 1.0)
+            : UIColor(red: 0xEA / 255.0, green: 0xE8 / 255.0, blue: 0xE3 / 255.0, alpha: 1.0)
+    })
+
+    static let paper = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0xF4 / 255.0, green: 0xED / 255.0, blue: 0xE1 / 255.0, alpha: 1.0)
+            : UIColor(red: 0x18 / 255.0, green: 0x17 / 255.0, blue: 0x15 / 255.0, alpha: 1.0)
+    })
+
+    static let muted = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0x8E / 255.0, green: 0x8B / 255.0, blue: 0x84 / 255.0, alpha: 1.0)
+            : UIColor(red: 0x78 / 255.0, green: 0x76 / 255.0, blue: 0x70 / 255.0, alpha: 1.0)
+    })
+
+    static let line = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.09)
+            : UIColor.black.withAlphaComponent(0.08)
+    })
+
+    static let track = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor.white.withAlphaComponent(0.14)
+            : UIColor.black.withAlphaComponent(0.09)
+    })
+
+    static let knob = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0xF4 / 255.0, green: 0xED / 255.0, blue: 0xE1 / 255.0, alpha: 1.0)
+            : UIColor.white
+    })
+
     static let accent = Color(hex: 0xD9774E)
-    static let danger = Color(hex: 0xE0685C)
+
+    static let danger = Color(uiColor: UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0xE0 / 255.0, green: 0x68 / 255.0, blue: 0x5C / 255.0, alpha: 1.0)
+            : UIColor(red: 0xD9 / 255.0, green: 0x4A / 255.0, blue: 0x3D / 255.0, alpha: 1.0)
+    })
 }
 
 /// 峰值对焦的描边颜色（相机与编辑页共用）

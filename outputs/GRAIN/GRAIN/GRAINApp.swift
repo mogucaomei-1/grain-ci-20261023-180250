@@ -4,6 +4,7 @@ import SwiftUI
 struct GRAINApp: App {
     @StateObject private var editor = EditorViewModel()
     @AppStorage("didCompletePermissionOnboarding") private var didCompletePermissionOnboarding = false
+    @AppStorage("appearanceMode") private var appearanceMode = AppearanceMode.system
 
     init() {
         // 「从文件导入」默认改为关闭：老版本已隐式启用过，这里只迁移一次，
@@ -27,7 +28,7 @@ struct GRAINApp: App {
                     }
                 }
             }
-            .preferredColorScheme(.dark)
+            .preferredColorScheme(appearanceMode.colorScheme)
             .onAppear(perform: GrainHaptics.prepare)
         }
     }
