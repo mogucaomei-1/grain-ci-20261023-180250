@@ -1,3 +1,4 @@
+import AudioToolbox
 import AVFoundation
 import CoreImage
 import CoreLocation
@@ -122,13 +123,236 @@ enum VideoQuality: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .hd1080p30: "1080p·30"
-        case .hd1080p60: "1080p·60"
-        case .uhd4k24: "4K·24"
-        case .uhd4k30: "4K·30"
-        case .uhd4k60: "4K·60"
-        case .uhd4k120: "4K·120"
+        case .hd1080p30: "1080P 30"
+        case .hd1080p60: "1080P 60"
+        case .uhd4k24: "4K 24"
+        case .uhd4k30: "4K 30"
+        case .uhd4k60: "4K 60"
+        case .uhd4k120: "4K 120"
         }
+    }
+}
+
+/// 录像画面比例：4:3, 16:9, 2:1, 2.35:1
+enum VideoAspect: String, CaseIterable, Identifiable {
+    case sixteenByNine = "16:9"
+    case fourByThree = "4:3"
+    case twoToOne = "2:1"
+    case twoThirtyFive = "2.35:1"
+
+    var id: String { rawValue }
+    var title: String { rawValue }
+
+    /// 竖屏取景与录制宽高比 (width / height)
+    var portraitRatio: CGFloat {
+        switch self {
+        case .sixteenByNine: 9.0 / 16.0
+        case .fourByThree: 3.0 / 4.0
+        case .twoToOne: 1.0 / 2.0
+        case .twoThirtyFive: 1.0 / 2.35
+        }
+    }
+}
+
+/// 视频快门速度手动档位
+enum ManualShutterOption: String, CaseIterable, Identifiable {
+    case auto = "Auto"
+    case s24 = "1/24"
+    case s30 = "1/30"
+    case s48 = "1/48"
+    case s50 = "1/50"
+    case s60 = "1/60"
+    case s120 = "1/120"
+    case s240 = "1/240"
+    case s500 = "1/500"
+    case s1000 = "1/1000"
+
+    var id: String { rawValue }
+    var title: String { rawValue }
+
+    var duration: CMTime? {
+        switch self {
+        case .auto: return nil
+        case .s24: return CMTime(value: 1, timescale: 24)
+        case .s30: return CMTime(value: 1, timescale: 30)
+        case .s48: return CMTime(value: 1, timescale: 48)
+        case .s50: return CMTime(value: 1, timescale: 50)
+        case .s60: return CMTime(value: 1, timescale: 60)
+        case .s120: return CMTime(value: 1, timescale: 120)
+        case .s240: return CMTime(value: 1, timescale: 240)
+        case .s500: return CMTime(value: 1, timescale: 500)
+        case .s1000: return CMTime(value: 1, timescale: 1000)
+        }
+    }
+}
+
+/// 视频 ISO 手动档位
+enum ManualISOOption: String, CaseIterable, Identifiable {
+    case auto = "Auto"
+    case iso50 = "50"
+    case iso100 = "100"
+    case iso200 = "200"
+    case iso400 = "400"
+    case iso800 = "800"
+    case iso1600 = "1600"
+    case iso3200 = "3200"
+
+    var id: String { rawValue }
+    var title: String { self == .auto ? "ISO 自动" : "ISO \(rawValue)" }
+
+    var value: Float? {
+        switch self {
+        case .auto: return nil
+        case .iso50: return 50
+        case .iso100: return 100
+        case .iso200: return 200
+        case .iso400: return 400
+        case .iso800: return 800
+        case .iso1600: return 1600
+        case .iso3200: return 3200
+        }
+    }
+}
+
+/// 视频白平衡模式
+enum VideoWhiteBalanceMode: String, CaseIterable, Identifiable {
+    case auto = "AWB"
+    case incandescent = "3200K"
+    case fluorescent = "4000K"
+    case daylight = "5500K"
+    case cloudy = "6500K"
+    case shade = "7500K"
+
+    var id: String { rawValue }
+    var title: String { rawValue }
+
+    var temperature: Float? {
+        switch self {
+        case .auto: return nil
+        case .incandescent: return 3200
+        case .fluorescent: return 4000
+        case .daylight: return 5500
+        case .cloudy: return 6500
+        case .shade: return 7500
+        }
+    }
+}
+
+/// 视频色彩空间：Rec.709, Display P3, Apple Log / HDR
+enum VideoColorSpacePreference: String, CaseIterable, Identifiable {
+    case rec709 = "Rec.709"
+    case p3 = "Display P3"
+    case hlgHDR = "Apple Log / HDR"
+
+    var id: String { rawValue }
+    var title: String { rawValue }
+
+    var avColorSpace: AVCaptureColorSpace {
+        switch self {
+        case .rec709: return .sRGB
+        case .p3: return .p3_D65
+        case .hlgHDR: return .hlg_BT2020
+        }
+    }
+}
+
+/// 视频比例裁切服务：录制完毕后按所选比例 (4:3, 2:1, 2.35:1) 导出保存
+enum VideoCropService {
+    static func crop(url: URL, to aspect: VideoAspect) async throws -> URL {
+        guard aspect != .sixteenByNine else { return url }
+        let asset = AVURLAsset(url: url)
+        guard let videoTrack = try? await asset.loadTracks(withMediaType: .video).first else {
+            return url
+        }
+        let naturalSize = (try? await videoTrack.load(.naturalSize)) ?? .zero
+        let preferredTransform = (try? await videoTrack.load(.preferredTransform)) ?? .identity
+        guard naturalSize.width > 0, naturalSize.height > 0 else { return url }
+
+        // 计算旋转变换后的可视尺寸
+        let transformedRect = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
+        let visualWidth = abs(transformedRect.width)
+        let visualHeight = abs(transformedRect.height)
+        guard visualWidth > 0, visualHeight > 0 else { return url }
+
+        let targetRatio = aspect.portraitRatio
+        let currentRatio = visualWidth / visualHeight
+
+        var targetWidth = visualWidth
+        var targetHeight = visualHeight
+
+        if currentRatio > targetRatio {
+            targetWidth = round((visualHeight * targetRatio) / 2.0) * 2.0
+        } else {
+            targetHeight = round((visualWidth / targetRatio) / 2.0) * 2.0
+        }
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("GRAIN-CROPPED-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString.prefix(6)).\(url.pathExtension)")
+        try? FileManager.default.removeItem(at: outputURL)
+
+        let composition = AVMutableComposition()
+        guard let compVideoTrack = composition.addMutableTrack(
+            withMediaType: .video,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ) else { return url }
+
+        let duration = (try? await asset.load(.duration)) ?? .zero
+        guard duration.seconds > 0 else { return url }
+        let timeRange = CMTimeRange(start: .zero, duration: duration)
+
+        do {
+            try compVideoTrack.insertTimeRange(timeRange, of: videoTrack, at: .zero)
+        } catch {
+            return url
+        }
+
+        if let audioTrack = try? await asset.loadTracks(withMediaType: .audio).first,
+           let compAudioTrack = composition.addMutableTrack(
+            withMediaType: .audio,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+           ) {
+            try? compAudioTrack.insertTimeRange(timeRange, of: audioTrack, at: .zero)
+        }
+
+        let videoComposition = AVMutableVideoComposition()
+        videoComposition.renderSize = CGSize(width: targetWidth, height: targetHeight)
+        videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+
+        let instruction = AVMutableVideoCompositionInstruction()
+        instruction.timeRange = timeRange
+
+        let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: compVideoTrack)
+
+        let xOffset = (targetWidth - visualWidth) / 2.0
+        let yOffset = (targetHeight - visualHeight) / 2.0
+        let finalTransform = preferredTransform.concatenating(
+            CGAffineTransform(translationX: xOffset, y: yOffset)
+        )
+
+        layerInstruction.setTransform(finalTransform, at: .zero)
+        instruction.layerInstructions = [layerInstruction]
+        videoComposition.instructions = [instruction]
+
+        guard let exportSession = AVAssetExportSession(
+            asset: composition,
+            presetName: AVAssetExportPresetHighestQuality
+        ) else { return url }
+
+        exportSession.outputURL = outputURL
+        exportSession.outputFileType = url.pathExtension.lowercased() == "mp4" ? .mp4 : .mov
+        exportSession.videoComposition = videoComposition
+        exportSession.shouldOptimizeForNetworkUse = true
+
+        await withCheckedContinuation { continuation in
+            exportSession.exportAsynchronously {
+                continuation.resume()
+            }
+        }
+
+        if exportSession.status == .completed {
+            return outputURL
+        }
+        return url
     }
 }
 
@@ -310,6 +534,165 @@ final class CameraController: ObservableObject {
     /// 实时直方图数据
     @Published private(set) var liveHistogram: RGBHistogram?
 
+    /// 录像实时电平与剩余空间监控
+    @Published private(set) var liveAudioLevel: Float = 0.0
+    @Published private(set) var freeStorageBytes: Int64 = 0
+    private var audioMeterTimer: Timer?
+    private var updateStorageTimer: Timer?
+    private var activeRecordingAspect: VideoAspect = .sixteenByNine
+
+    var freeStorageString: String {
+        let gb = Double(freeStorageBytes) / 1_073_741_824.0
+        if gb >= 1.0 {
+            return String(format: "%.1f GB", gb)
+        } else {
+            let mb = Double(freeStorageBytes) / 1_048_576.0
+            return String(format: "%.0f MB", mb)
+        }
+    }
+
+    func remainingTimeString(for quality: VideoQuality) -> String {
+        let bytesPerSecond: Int64
+        switch quality {
+        case .uhd4k120: bytesPerSecond = 18_000_000
+        case .uhd4k60: bytesPerSecond = 10_000_000
+        case .uhd4k30, .uhd4k24: bytesPerSecond = 5_500_000
+        case .hd1080p60: bytesPerSecond = 3_200_000
+        case .hd1080p30: bytesPerSecond = 2_000_000
+        }
+        let totalSecs = max(0, freeStorageBytes / max(bytesPerSecond, 1))
+        let hours = totalSecs / 3600
+        let minutes = (totalSecs % 3600) / 60
+        let seconds = totalSecs % 60
+        if hours > 0 {
+            return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+        } else {
+            return String(format: "%02d:%02d", minutes, seconds)
+        }
+    }
+
+    func startAudioAndStorageMonitoring() {
+        updateFreeStorage()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.audioMeterTimer?.invalidate()
+            self.audioMeterTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                if let audioConn = self.movieOutput.connection(with: .audio),
+                   let channel = audioConn.audioChannels.first {
+                    let power = channel.averagePowerLevel
+                    let norm = max(0.0, min(1.0, Float((power + 50.0) / 50.0)))
+                    self.liveAudioLevel = norm
+                }
+            }
+            self.updateStorageTimer?.invalidate()
+            self.updateStorageTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+                self?.updateFreeStorage()
+            }
+        }
+    }
+
+    func stopAudioAndStorageMonitoring() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.audioMeterTimer?.invalidate()
+            self.audioMeterTimer = nil
+            self.updateStorageTimer?.invalidate()
+            self.updateStorageTimer = nil
+            self.liveAudioLevel = 0
+        }
+    }
+
+    private func updateFreeStorage() {
+        let url = URL(fileURLWithPath: NSHomeDirectory())
+        if let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+           let bytes = values.volumeAvailableCapacityForImportantUsage {
+            DispatchQueue.main.async {
+                self.freeStorageBytes = bytes
+            }
+        } else if let dict = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory()),
+                  let freeSize = dict[.systemFreeSize] as? NSNumber {
+            DispatchQueue.main.async {
+                self.freeStorageBytes = freeSize.int64Value
+            }
+        }
+    }
+
+    func applyManualExposure(shutter: ManualShutterOption, iso: ManualISOOption) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.cameraDevice else { return }
+            do {
+                try device.lockForConfiguration()
+                if shutter == .auto && iso == .auto {
+                    if device.isExposureModeSupported(.continuousAutoExposure) {
+                        device.exposureMode = .continuousAutoExposure
+                    }
+                } else {
+                    let currentDuration = device.exposureDuration
+                    let currentISO = device.iso
+                    let format = device.activeFormat
+                    let targetDuration: CMTime
+                    if let dur = shutter.duration {
+                        let clamped = max(min(dur.seconds, format.maxExposureDuration.seconds), format.minExposureDuration.seconds)
+                        targetDuration = CMTime(seconds: clamped, preferredTimescale: 1_000_000)
+                    } else {
+                        targetDuration = currentDuration
+                    }
+                    let targetISO: Float
+                    if let i = iso.value {
+                        targetISO = max(min(i, format.maxISO), format.minISO)
+                    } else {
+                        targetISO = currentISO
+                    }
+                    device.setExposureModeCustom(duration: targetDuration, iso: targetISO, completionHandler: nil)
+                }
+                device.unlockForConfiguration()
+            } catch {}
+        }
+    }
+
+    func applyWhiteBalance(_ mode: VideoWhiteBalanceMode) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.cameraDevice else { return }
+            do {
+                try device.lockForConfiguration()
+                if let temp = mode.temperature {
+                    let tempAndTint = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(temperature: temp, tint: 0)
+                    var gains = device.deviceWhiteBalanceGains(for: tempAndTint)
+                    let maxGain = device.maxWhiteBalanceGain
+                    gains.redGain = max(1.0, min(gains.redGain, maxGain))
+                    gains.greenGain = max(1.0, min(gains.greenGain, maxGain))
+                    gains.blueGain = max(1.0, min(gains.blueGain, maxGain))
+                    if device.isWhiteBalanceModeSupported(.locked) {
+                        device.setWhiteBalanceModeLocked(with: gains, completionHandler: nil)
+                    }
+                } else {
+                    if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                        device.whiteBalanceMode = .continuousAutoWhiteBalance
+                    }
+                }
+                device.unlockForConfiguration()
+            } catch {}
+        }
+    }
+
+    func applyColorSpace(_ preference: VideoColorSpacePreference) {
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.cameraDevice else { return }
+            do {
+                try device.lockForConfiguration()
+                let targetSpace = preference.avColorSpace
+                if device.activeFormat.supportedColorSpaces.contains(targetSpace) {
+                    device.activeColorSpace = targetSpace
+                }
+                if preference == .hlgHDR && device.activeFormat.isVideoHDRSupported {
+                    device.isVideoHDREnabled = true
+                }
+                device.unlockForConfiguration()
+            } catch {}
+        }
+    }
+
     func start() async {
         let cameraAllowed = await requestMediaAccess(for: .video)
         guard cameraAllowed else {
@@ -335,9 +718,6 @@ final class CameraController: ObservableObject {
                 }
                 DispatchQueue.main.async {
                     self.isReady = true
-                }
-                if self.isFocusPeakingEnabled || UserDefaults.standard.bool(forKey: "showHistogram") {
-                    self.attachPeakingOutput()
                 }
                 return
             }
@@ -366,12 +746,9 @@ final class CameraController: ObservableObject {
         if !enabled {
             peakingOverlay.submit(nil)
         }
-        sessionQueue.async { [weak self] in
-            guard let self else { return }
-            if enabled {
-                self.attachPeakingOutput()
-            } else {
-                self.detachPeakingOutput()
+        if enabled && !peakingAttached {
+            sessionQueue.async { [weak self] in
+                self?.attachPeakingOutput()
             }
         }
     }
@@ -778,14 +1155,14 @@ final class CameraController: ObservableObject {
 
     /// 设置页切换「人脸追焦」时同步相机会话
     func setFaceTracking(_ enabled: Bool) {
+        faceTrackingEnabled = enabled
+        if !enabled {
+            trackingSink.submit(nil)
+        }
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            if enabled {
-                guard self.focusTrackingEnabled else { return }
+            if enabled && !self.metadataAttached {
                 self.attachMetadataOutput()
-            } else {
-                self.detachMetadataOutput()
-                self.trackingSink.submit(nil)
             }
         }
     }
@@ -797,7 +1174,7 @@ final class CameraController: ObservableObject {
         metadataOutput.setMetadataObjectsDelegate(trackingProcessor, queue: metadataQueue)
         trackingProcessor.onSubject = { [weak self] rect in
             guard let self else { return }
-            guard self.focusTrackingEnabled, !self.manualFocusActive else {
+            guard self.focusTrackingEnabled, self.faceTrackingEnabled, !self.manualFocusActive else {
                 self.trackingSink.submit(nil)
                 return
             }
@@ -844,10 +1221,12 @@ final class CameraController: ObservableObject {
         quality: VideoQuality,
         stabilization: VideoStabilization,
         codec: VideoCodecPreference,
-        container: VideoContainerPreference = .mov
+        container: VideoContainerPreference = .mov,
+        aspect: VideoAspect = .sixteenByNine
     ) {
         guard !isRecording else { return }
         recordingError = nil
+        activeRecordingAspect = aspect
         recordingDelegate.onFinish = { [weak self] url, error in
             self?.finishRecording(url: url, error: error)
         }
@@ -1182,22 +1561,29 @@ final class CameraController: ObservableObject {
             guard let self else { return }
             guard let url else { return }
 
-            // 1. 抽取视频首帧作为左下角缩略图实时显示
-            let asset = AVAsset(url: url)
-            let generator = AVAssetImageGenerator(asset: asset)
-            generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: 160, height: 160)
-            let time = CMTime(seconds: 0.1, preferredTimescale: 600)
-            if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
-                let thumbnail = UIImage(cgImage: cgImage)
-                DispatchQueue.main.async {
-                    self.latestCaptureThumbnail = thumbnail
-                }
-            }
-
             Task {
+                var finalExportURL = url
+                if self.activeRecordingAspect != .sixteenByNine {
+                    if let cropped = try? await VideoCropService.crop(url: url, to: self.activeRecordingAspect) {
+                        finalExportURL = cropped
+                    }
+                }
+
+                // 1. 抽取视频首帧作为左下角缩略图实时显示
+                let asset = AVAsset(url: finalExportURL)
+                let generator = AVAssetImageGenerator(asset: asset)
+                generator.appliesPreferredTrackTransform = true
+                generator.maximumSize = CGSize(width: 160, height: 160)
+                let time = CMTime(seconds: 0.1, preferredTimescale: 600)
+                if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
+                    let thumbnail = UIImage(cgImage: cgImage)
+                    DispatchQueue.main.async {
+                        self.latestCaptureThumbnail = thumbnail
+                    }
+                }
+
                 do {
-                    let assetID = try await Self.saveVideoToLibrary(url)
+                    let assetID = try await Self.saveVideoToLibrary(finalExportURL)
                     DispatchQueue.main.async {
                         self.latestCaptureAssetIdentifier = assetID
                         GrainHaptics.mediumImpact()
@@ -1208,6 +1594,9 @@ final class CameraController: ObservableObject {
                     }
                 }
                 try? FileManager.default.removeItem(at: url)
+                if finalExportURL != url {
+                    try? FileManager.default.removeItem(at: finalExportURL)
+                }
             }
         }
     }
@@ -1686,6 +2075,72 @@ final class CameraController: ObservableObject {
             // 也是 RAW 拍摄失效和闪退的来源之一。
             photoOutputAttached = true
 
+            // 2. 音频输入（若权限已就绪）
+            if AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+               let mic = AVCaptureDevice.default(for: .audio),
+               let aInput = try? AVCaptureDeviceInput(device: mic),
+               session.canAddInput(aInput) {
+                session.addInput(aInput)
+                audioInput = aInput
+            }
+
+            // 3. 录像输出常驻会话
+            if session.canAddOutput(movieOutput) {
+                session.addOutput(movieOutput)
+                movieAttached = true
+            }
+
+            // 4. 元数据输出（人脸追焦）常驻会话
+            metadataOutput.setMetadataObjectsDelegate(trackingProcessor, queue: metadataQueue)
+            trackingProcessor.onSubject = { [weak self] rect in
+                guard let self else { return }
+                guard self.focusTrackingEnabled, self.faceTrackingEnabled, !self.manualFocusActive else {
+                    self.trackingSink.submit(nil)
+                    return
+                }
+                self.trackingSink.submit(rect)
+            }
+            if session.canAddOutput(metadataOutput) {
+                session.addOutput(metadataOutput)
+                let wanted: [AVMetadataObject.ObjectType] = [.face]
+                    .filter { metadataOutput.availableMetadataObjectTypes.contains($0) }
+                if !wanted.isEmpty {
+                    metadataOutput.metadataObjectTypes = wanted
+                    metadataAttached = true
+                } else {
+                    session.removeOutput(metadataOutput)
+                }
+            }
+
+            // 5. 视频数据输出（峰值对焦与实时直方图）常驻会话
+            peakingOutput.alwaysDiscardsLateVideoFrames = true
+            peakingOutput.videoSettings = [
+                kCVPixelBufferPixelFormatTypeKey as String:
+                    Int(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
+            ]
+            peakingOutput.setSampleBufferDelegate(peakingProcessor, queue: peakingQueue)
+            peakingProcessor.onMask = { [weak self] image in
+                guard let self, self.isFocusPeakingEnabled else { return }
+                self.peakingOverlay.submit(image)
+            }
+            peakingProcessor.onHistogram = { [weak self] hist in
+                DispatchQueue.main.async {
+                    self?.liveHistogram = hist
+                }
+            }
+            if session.canAddOutput(peakingOutput) {
+                session.addOutput(peakingOutput)
+                peakingAttached = true
+                updatePeakingConnection()
+            }
+
+            // 官方摄影接口：低光自动增强
+            if device.isLowLightBoostSupported {
+                try? device.lockForConfiguration()
+                device.automaticallyEnablesLowLightBoostWhenAvailable = true
+                device.unlockForConfiguration()
+            }
+
             cameraDevice = device
             let liveSupported = device.position == .back
             let rawSupported = supportsRawCapture
@@ -1696,9 +2151,9 @@ final class CameraController: ObservableObject {
             didCommitConfiguration = true
             session.startRunning()
             isSessionConfigured = true
-            // 追焦默认开启：会话就绪后挂上主体检测
+
+            // 追焦默认开启：无需重新提交配置，直接应用连续对焦
             if self.focusTrackingEnabled {
-                self.attachMetadataOutput()
                 self.applyContinuousAutoFocus(true)
             }
             self.observeSubjectAreaChanges()
@@ -3110,6 +3565,7 @@ struct CameraPreviewView: UIViewRepresentable {
                 fromLayerPoint: screenPoint
             )
             view.showFocusReticle(at: screenPoint, locked: false)
+            GrainFocusSound.playShutterClick()
             parent.onFocus(devicePoint, false)
         }
 
@@ -3404,9 +3860,16 @@ struct CameraView: View {
 
     private let zoomOptions: [CGFloat] = [0.5, 1, 2, 4, 8]
 
-    /// 录像固定竖屏 16:9，不提供比例调节；拍照沿用用户选的比例
-    private var effectiveAspect: CameraAspect {
-        captureMode == .video ? .portrait16x9 : aspect
+    @State private var videoAspect: VideoAspect = .sixteenByNine
+    @AppStorage("cameraVideoAspect") private var storedVideoAspect = VideoAspect.sixteenByNine.rawValue
+    @State private var manualShutter: ManualShutterOption = .auto
+    @State private var manualISO: ManualISOOption = .auto
+    @State private var videoWhiteBalance: VideoWhiteBalanceMode = .auto
+    @State private var videoColorSpace: VideoColorSpacePreference = .rec709
+    @AppStorage("cameraVideoColorSpace") private var storedVideoColorSpace = VideoColorSpacePreference.rec709.rawValue
+
+    private var effectiveAspectRatio: CGFloat {
+        captureMode == .video ? videoAspect.portraitRatio : aspect.ratio
     }
 
     init(
@@ -3426,7 +3889,7 @@ struct CameraView: View {
                 GeometryReader { proxy in
                     // 取景区域按所选比例裁成一块，其余留黑：
                     // 这样才能做到“看到什么就拍到什么”，而不是始终铺满屏幕。
-                    let rect = fittedFrame(for: effectiveAspect.ratio, in: proxy.size)
+                    let rect = fittedFrame(for: effectiveAspectRatio, in: proxy.size)
                     ZStack {
                         GrainTheme.black
 
@@ -3451,6 +3914,27 @@ struct CameraView: View {
 
                         cameraLookOverlay
                         framingOverlay
+
+                        // 视频模式：右上角展示剩余空间、可拍摄时间与实时麦克风 VU 跳动条
+                        if captureMode == .video {
+                            VStack(spacing: 0) {
+                                HStack(spacing: 0) {
+                                    Spacer(minLength: 0)
+                                    VideoViewfinderInfoOverlay(
+                                        freeStorageText: camera.freeStorageString,
+                                        remainingTimeText: camera.remainingTimeString(for: videoQuality),
+                                        audioLevel: camera.liveAudioLevel,
+                                        isRecording: camera.isRecording
+                                    )
+                                    .padding(.top, 8)
+                                    .padding(.trailing, 8)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .frame(width: rect.width, height: rect.height)
+                            .position(x: rect.midX, y: rect.midY)
+                            .allowsHitTesting(false)
+                        }
 
                         // 实时直方图：视频拍摄页面常驻，或由设置开启
                         if (captureMode == .video || showHistogram), let hist = camera.liveHistogram {
@@ -3491,7 +3975,7 @@ struct CameraView: View {
                     }
                     .contentShape(Rectangle())
                     .simultaneousGesture(pinchToZoomGesture)
-                    .animation(.easeInOut(duration: 0.24), value: effectiveAspect)
+                    .animation(.easeInOut(duration: 0.24), value: effectiveAspectRatio)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(GrainTheme.black)
@@ -3581,6 +4065,7 @@ struct CameraView: View {
         }
         .onDisappear {
             camera.stop()
+            camera.stopAudioAndStorageMonitoring()
         }
         .onChange(of: format) { _, newValue in
             if newValue == .raw {
@@ -3613,6 +4098,12 @@ struct CameraView: View {
             stabilization = VideoStabilization(rawValue: storedStabilization) ?? .standard
             videoCodec = VideoCodecPreference(rawValue: storedVideoCodec) ?? .hevc
             videoContainer = VideoContainerPreference(rawValue: storedVideoContainer) ?? .mov
+            videoAspect = VideoAspect(rawValue: storedVideoAspect) ?? .sixteenByNine
+            videoColorSpace = VideoColorSpacePreference(rawValue: storedVideoColorSpace) ?? .rec709
+            if captureMode == .video {
+                camera.startAudioAndStorageMonitoring()
+                camera.applyColorSpace(videoColorSpace)
+            }
         }
         .onChange(of: captureMode) { _, mode in
             // 录像模式提前预热音视频输出与格式，解决开录时屏幕闪烁两下的问题
@@ -3628,11 +4119,14 @@ struct CameraView: View {
                     stabilization: stabilization,
                     codec: videoCodec
                 )
+                camera.startAudioAndStorageMonitoring()
+                camera.applyColorSpace(videoColorSpace)
             } else {
                 if torchOn {
                     torchOn = false
                     camera.setTorch(false)
                 }
+                camera.stopAudioAndStorageMonitoring()
                 camera.restorePhotoFormat()
             }
         }
@@ -3838,12 +4332,14 @@ struct CameraView: View {
                                 ? "hand.tap"
                                 : "person.crop.rectangle"
                         )
-                            .font(.system(size: 9, weight: .semibold))
-                        Text(camera.isManualFocusActive ? "手动" : "追焦")
-                            .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                            .font(.system(size: 9.5, weight: .semibold))
+                        if captureMode != .video {
+                            Text(camera.isManualFocusActive ? "手动" : "追焦")
+                                .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                        }
                     }
                     .foregroundStyle(trackingActive ? GrainTheme.black : GrainTheme.paper)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, captureMode == .video ? 7 : 8)
                     .frame(height: 26)
                     .background(
                         trackingActive ? GrainTheme.accent : GrainTheme.surface.opacity(0.85),
@@ -4072,140 +4568,270 @@ struct CameraView: View {
         .padding(.horizontal, 10)
     }
 
-    /// 参数行：录像只保留与录像相关的项（比例固定竖屏 16:9，不再出现）
+    /// 参数行：录像只保留与录像相关的项
     private var optionRow: some View {
-        HStack(spacing: 6) {
+        Group {
             if captureMode == .video {
-                Menu {
-                    ForEach(VideoQuality.allCases) { option in
-                        Button(option.title) {
-                            videoQuality = option
-                            storedVideoQuality = option.rawValue
-                            camera.prepareForVideoMode(
-                                quality: option,
-                                stabilization: stabilization,
-                                codec: videoCodec
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        // 1. 规格：分辨率与帧率 (4K 60, 1080P 60 等)
+                        Menu {
+                            ForEach(VideoQuality.allCases) { option in
+                                Button(option.title) {
+                                    videoQuality = option
+                                    storedVideoQuality = option.rawValue
+                                    camera.prepareForVideoMode(
+                                        quality: option,
+                                        stabilization: stabilization,
+                                        codec: videoCodec
+                                    )
+                                }
+                            }
+                        } label: {
+                            MenuChip(title: videoQuality.title, symbol: "video")
+                        }
+                        .disabled(camera.isRecording)
+
+                        // 2. 画面比例 (4:3, 16:9, 2:1, 2.35:1)
+                        Menu {
+                            ForEach(VideoAspect.allCases) { aspect in
+                                Button {
+                                    videoAspect = aspect
+                                    storedVideoAspect = aspect.rawValue
+                                    GrainHaptics.selection(enabled: true)
+                                } label: {
+                                    HStack {
+                                        Text(aspect.title)
+                                        if videoAspect == aspect {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            MenuChip(title: videoAspect.title, symbol: "aspectratio")
+                        }
+                        .disabled(camera.isRecording)
+
+                        // 3. 快门速度 (Auto, 1/24, 1/30, 1/48, 1/60, 1/120 等)
+                        Menu {
+                            ForEach(ManualShutterOption.allCases) { option in
+                                Button {
+                                    manualShutter = option
+                                    camera.applyManualExposure(shutter: option, iso: manualISO)
+                                    GrainHaptics.selection(enabled: true)
+                                } label: {
+                                    HStack {
+                                        Text(option.title)
+                                        if manualShutter == option {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            MenuChip(
+                                title: manualShutter == .auto ? "快门 自动" : manualShutter.title,
+                                symbol: "speedometer"
                             )
                         }
-                    }
-                } label: {
-                    MenuChip(title: videoQuality.title, symbol: "video")
-                }
-                .disabled(camera.isRecording)
+                        .disabled(camera.isRecording)
 
-                Menu {
-                    ForEach(VideoStabilization.allCases) { option in
-                        Button {
-                            stabilization = option
-                            storedStabilization = option.rawValue
-                            camera.setVideoStabilization(option, quality: videoQuality)
+                        // 4. ISO 感光度 (Auto, 50, 100, 200, 400, 800, 1600, 3200)
+                        Menu {
+                            ForEach(ManualISOOption.allCases) { option in
+                                Button {
+                                    manualISO = option
+                                    camera.applyManualExposure(shutter: manualShutter, iso: option)
+                                    GrainHaptics.selection(enabled: true)
+                                } label: {
+                                    HStack {
+                                        Text(option.title)
+                                        if manualISO == option {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
                         } label: {
-                            HStack {
-                                Text(option.title)
-                                if stabilization == option {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
+                            MenuChip(title: manualISO.title, symbol: "camera.aperture")
                         }
-                    }
-                } label: {
-                    MenuChip(title: stabilization.title, symbol: "hand.raised")
-                }
-                .disabled(camera.isRecording)
+                        .disabled(camera.isRecording)
 
-                // 封装格式与编码：按钮名称显示所选格式（MP4 / MOV），HEVC 为其中的编码选项
-                Menu {
-                    Section("封装格式") {
-                        ForEach(VideoContainerPreference.allCases) { container in
-                            Button {
-                                videoContainer = container
-                                storedVideoContainer = container.rawValue
-                            } label: {
-                                HStack {
-                                    Text(container.title)
-                                    if videoContainer == container {
-                                        Image(systemName: "checkmark")
+                        // 5. 白平衡 (AWB, 3200K, 4000K, 5500K, 6500K, 7500K)
+                        Menu {
+                            ForEach(VideoWhiteBalanceMode.allCases) { mode in
+                                Button {
+                                    videoWhiteBalance = mode
+                                    camera.applyWhiteBalance(mode)
+                                    GrainHaptics.selection(enabled: true)
+                                } label: {
+                                    HStack {
+                                        Text(mode.title)
+                                        if videoWhiteBalance == mode {
+                                            Image(systemName: "checkmark")
+                                        }
                                     }
                                 }
                             }
+                        } label: {
+                            MenuChip(title: videoWhiteBalance.title, symbol: "sun.max")
                         }
-                    }
-                    Section("编码") {
-                        ForEach(availableVideoCodecOptions) { codec in
-                            Button {
-                                videoCodec = codec
-                                storedVideoCodec = codec.rawValue
-                                camera.prepareForVideoMode(
-                                    quality: videoQuality,
-                                    stabilization: stabilization,
-                                    codec: codec
-                                )
-                            } label: {
-                                HStack {
-                                    Text(codec.title == "HEVC" ? "HEVC (高效)" : "H.264 (兼容)")
-                                    if videoCodec == codec {
-                                        Image(systemName: "checkmark")
+                        .disabled(camera.isRecording)
+
+                        // 6. 色彩空间 (Rec.709, Display P3, Apple Log / HDR)
+                        Menu {
+                            ForEach(VideoColorSpacePreference.allCases) { pref in
+                                Button {
+                                    videoColorSpace = pref
+                                    storedVideoColorSpace = pref.rawValue
+                                    camera.applyColorSpace(pref)
+                                    GrainHaptics.selection(enabled: true)
+                                } label: {
+                                    HStack {
+                                        Text(pref.title)
+                                        if videoColorSpace == pref {
+                                            Image(systemName: "checkmark")
+                                        }
                                     }
                                 }
                             }
+                        } label: {
+                            MenuChip(title: videoColorSpace.title, symbol: "paintpalette")
                         }
+                        .disabled(camera.isRecording)
+
+                        // 7. 防抖 (增强, 电影级, 标准, 关)
+                        Menu {
+                            ForEach(VideoStabilization.allCases) { option in
+                                Button {
+                                    stabilization = option
+                                    storedStabilization = option.rawValue
+                                    camera.setVideoStabilization(option, quality: videoQuality)
+                                } label: {
+                                    HStack {
+                                        Text(option.title)
+                                        if stabilization == option {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            MenuChip(title: stabilization.title, symbol: "hand.raised")
+                        }
+                        .disabled(camera.isRecording)
+
+                        // 8. 封装格式与编码 (MOV / MP4 · HEVC / H.264)
+                        Menu {
+                            Section("封装格式") {
+                                ForEach(VideoContainerPreference.allCases) { container in
+                                    Button {
+                                        videoContainer = container
+                                        storedVideoContainer = container.rawValue
+                                    } label: {
+                                        HStack {
+                                            Text(container.title)
+                                            if videoContainer == container {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Section("编码") {
+                                ForEach(availableVideoCodecOptions) { codec in
+                                    Button {
+                                        videoCodec = codec
+                                        storedVideoCodec = codec.rawValue
+                                        camera.prepareForVideoMode(
+                                            quality: videoQuality,
+                                            stabilization: stabilization,
+                                            codec: codec
+                                        )
+                                    } label: {
+                                        HStack {
+                                            Text(codec.title == "HEVC" ? "HEVC (高效)" : "H.264 (兼容)")
+                                            if videoCodec == codec {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            MenuChip(title: "\(videoContainer.title) · \(videoCodec.title)", symbol: "doc")
+                        }
+                        .disabled(camera.isRecording)
+
+                        // 9. 峰值对焦
+                        Button {
+                            camera.setFocusPeaking(!camera.isFocusPeakingEnabled)
+                            GrainHaptics.selection(enabled: true)
+                        } label: {
+                            MenuChip(
+                                title: camera.isFocusPeakingEnabled ? "峰值 开" : "峰值 关",
+                                symbol: "dot.scope"
+                            )
+                        }
+                        .disabled(camera.isRecording)
                     }
-                } label: {
-                    MenuChip(title: videoContainer.title, symbol: "doc")
+                    .padding(.horizontal, 10)
                 }
-                .disabled(camera.isRecording)
             } else {
-                ForEach(CameraResolution.allCases) { option in
-                    Button(option.title) {
-                        resolution = option
+                HStack(spacing: 6) {
+                    ForEach(CameraResolution.allCases) { option in
+                        Button(option.title) {
+                            resolution = option
+                        }
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(resolution == option ? GrainTheme.black : GrainTheme.paper)
+                        .frame(width: 48, height: 30)
+                        .background(
+                            resolution == option ? GrainTheme.paper : GrainTheme.raised,
+                            in: Capsule()
+                        )
+                        .overlay(
+                            Capsule().stroke(GrainTheme.line, lineWidth: 0.6)
+                        )
+                        .opacity(
+                            livePhoto
+                                ? 0.38
+                                : (is48MPAvailable || option != .high48 ? 1 : 0.42)
+                        )
+                        .disabled(livePhoto || (!is48MPAvailable && option == .high48))
+                        .buttonStyle(.plain)
                     }
-                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                    .foregroundStyle(resolution == option ? GrainTheme.black : GrainTheme.paper)
-                    .frame(width: 48, height: 30)
-                    .background(
-                        resolution == option ? GrainTheme.paper : GrainTheme.raised,
-                        in: Capsule()
-                    )
-                    .overlay(
-                        Capsule().stroke(GrainTheme.line, lineWidth: 0.6)
-                    )
-                    .opacity(
-                        livePhoto
-                            ? 0.38
-                            : (is48MPAvailable || option != .high48 ? 1 : 0.42)
-                    )
-                    .disabled(livePhoto || (!is48MPAvailable && option == .high48))
-                    .buttonStyle(.plain)
-                }
 
-                // 实况照片固定 12MP（系统限制），明确标出来避免误以为设置未生效
-                if livePhoto {
-                    Text("实况 12MP")
-                        .font(.system(size: 7.5, weight: .bold, design: .monospaced))
-                        .foregroundStyle(GrainTheme.black)
-                        .padding(.horizontal, 5)
-                        .frame(height: 24)
-                        .background(GrainTheme.accent, in: Capsule())
-                }
-
-                Menu {
-                    ForEach(CameraAspect.allCases) { option in
-                        Button(option.title) { aspect = option }
+                    // 实况照片固定 12MP（系统限制），明确标出来避免误以为设置未生效
+                    if livePhoto {
+                        Text("实况 12MP")
+                            .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(GrainTheme.black)
+                            .padding(.horizontal, 5)
+                            .frame(height: 24)
+                            .background(GrainTheme.accent, in: Capsule())
                     }
-                } label: {
-                    MenuChip(title: aspect.title, symbol: "rectangle.ratio.4.to.3")
-                }
 
-                Menu {
-                    ForEach(CameraCaptureFormat.allCases) { option in
-                        Button(option.title) { format = option }
+                    Menu {
+                        ForEach(CameraAspect.allCases) { option in
+                            Button(option.title) { aspect = option }
+                        }
+                    } label: {
+                        MenuChip(title: aspect.title, symbol: "rectangle.ratio.4.to.3")
                     }
-                } label: {
-                    MenuChip(title: format.title, symbol: "doc")
+
+                    Menu {
+                        ForEach(CameraCaptureFormat.allCases) { option in
+                            Button(option.title) { format = option }
+                        }
+                    } label: {
+                        MenuChip(title: format.title, symbol: "doc")
+                    }
+
+                    peakingButton
                 }
             }
-
-            peakingButton
         }
     }
 
@@ -4293,7 +4919,8 @@ struct CameraView: View {
                         quality: videoQuality,
                         stabilization: stabilization,
                         codec: videoCodec,
-                        container: videoContainer
+                        container: videoContainer,
+                        aspect: videoAspect
                     )
                 }
             } else {
@@ -4544,7 +5171,7 @@ struct CameraView: View {
 
     private var cameraLookOverlay: some View {
         GeometryReader { proxy in
-            let rect = fittedFrame(for: effectiveAspect.ratio, in: proxy.size)
+            let rect = fittedFrame(for: effectiveAspectRatio, in: proxy.size)
 
             if cameraProfile != .neutral {
                 ZStack {
@@ -4580,7 +5207,7 @@ struct CameraView: View {
 
     private var framingOverlay: some View {
         GeometryReader { proxy in
-            let rect = fittedFrame(for: effectiveAspect.ratio, in: proxy.size)
+            let rect = fittedFrame(for: effectiveAspectRatio, in: proxy.size)
             // 三分构图线贴合真实取景区域，四周留黑的区域不画线。
             if showGrid {
                 Path { path in
@@ -4682,6 +5309,52 @@ struct CameraView: View {
 
 }
 
+private struct VideoViewfinderInfoOverlay: View {
+    let freeStorageText: String
+    let remainingTimeText: String
+    let audioLevel: Float
+    let isRecording: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if isRecording {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 6, height: 6)
+            }
+            Text("\(freeStorageText) · \(remainingTimeText)")
+                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                .foregroundStyle(GrainTheme.paper)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.25))
+                .frame(width: 1, height: 10)
+
+            // 麦克风实时 VU 电平表 (5 级跳动条)
+            HStack(spacing: 1.5) {
+                ForEach(0..<5) { barIndex in
+                    let threshold = Float(barIndex + 1) / 5.0
+                    let active = audioLevel >= threshold
+                    RoundedRectangle(cornerRadius: 0.8)
+                        .fill(
+                            active
+                                ? (barIndex >= 4 ? Color.red : (barIndex >= 3 ? Color.yellow : Color.green))
+                                : Color.white.opacity(0.2)
+                        )
+                        .frame(width: 2.2, height: CGFloat(5 + barIndex * 1.8))
+                }
+            }
+            .frame(height: 14, alignment: .bottom)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color.black.opacity(0.65), in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 0.6))
+    }
+}
+
 private struct MenuChip: View {
     let title: String
     let symbol: String
@@ -4691,7 +5364,9 @@ private struct MenuChip: View {
             Image(systemName: symbol)
                 .font(.system(size: 9, weight: .semibold))
             Text(title)
-                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
         .foregroundStyle(GrainTheme.paper)
         .padding(.horizontal, 9)

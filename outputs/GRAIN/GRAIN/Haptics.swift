@@ -93,19 +93,20 @@ enum GrainShutterSound {
     }
 }
 
-/// 手动对焦提示音：点按取景框时给一声轻“咔哒”，确认对焦已接管。
-/// 系统音源路径各版本可能不同，按顺序试；都读不到就只保留震动，不报错也不崩。
+/// 点击对焦提示音：点按取景框时播放快门声，确认对焦接管
 enum GrainFocusSound {
     private static let lock = NSLock()
     private static var soundID: SystemSoundID = 0
     private static var ready: Bool?
 
-    static func playIfEnabled() {
+    /// 点击对焦播放快门声（支持设置开关控制）
+    static func playShutterClick() {
         guard GrainFeedbackSound.isEnabled else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        guard ensureLocked() else { return }
-        AudioServicesPlaySystemSound(soundID)
+        AudioServicesPlaySystemSound(1108)
+    }
+
+    static func playIfEnabled() {
+        playShutterClick()
     }
 
     private static func ensureLocked() -> Bool {
