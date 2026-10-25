@@ -1480,8 +1480,7 @@ public struct VideoEditorView: View {
 
         // 监听播放进度与时间修剪循环（受 isScrubbing 与 isTrimming 双重保护，裁剪过程中上方进度条绝不动）
         let interval = CMTime(value: 1, timescale: 30)
-        timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
-            guard let self else { return }
+        timeObserverToken = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
             guard !self.isScrubbing, !self.isTrimming else { return }
             let seconds = time.seconds
             self.currentTime = seconds
