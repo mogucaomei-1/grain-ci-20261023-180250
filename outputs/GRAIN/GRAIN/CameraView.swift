@@ -581,16 +581,12 @@ final class CameraController: ObservableObject {
             self.audioMeterTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
                 guard let self else { return }
                 guard self.movieAttached else { return }
-                if let audioConn = self.movieOutput.connection(with: .audio) {
-                    if !audioConn.isAudioMeteringEnabled {
-                        audioConn.isAudioMeteringEnabled = true
-                    }
-                    if let channel = audioConn.audioChannels.first {
-                        let power = channel.averagePowerLevel
-                        if !power.isNaN && !power.isInfinite {
-                            let norm = max(0.0, min(1.0, Float((power + 50.0) / 50.0)))
-                            self.liveAudioLevel = norm
-                        }
+                if let audioConn = self.movieOutput.connection(with: .audio),
+                   let channel = audioConn.audioChannels.first {
+                    let power = channel.averagePowerLevel
+                    if !power.isNaN && !power.isInfinite {
+                        let norm = max(0.0, min(1.0, Float((power + 50.0) / 50.0)))
+                        self.liveAudioLevel = norm
                     }
                 }
             }
@@ -1361,9 +1357,7 @@ final class CameraController: ObservableObject {
             let dims = promoted ?? self.maximumPhotoDimensions(for: device)
 
             // 5. 恢复高质量照片优先级
-            if device.activeFormat.isPhotoQualityPrioritizationSupported(.quality) {
-                self.photoOutput.maxPhotoQualityPrioritization = .quality
-            }
+            self.photoOutput.maxPhotoQualityPrioritization = .quality
 
             if let dims,
                device.activeFormat.supportedMaxPhotoDimensions.contains(where: {
@@ -1426,9 +1420,6 @@ final class CameraController: ObservableObject {
         stabilization: VideoStabilization,
         codec: VideoCodecPreference
     ) {
-        if let audioConn = self.movieOutput.connection(with: .audio) {
-            audioConn.isAudioMeteringEnabled = true
-        }
         guard let connection = self.movieOutput.connection(with: .video) else { return }
         // 竖屏录制：写 90° 旋转元数据，而不是把像素真的转一遍
         if connection.isVideoRotationAngleSupported(90) {
@@ -1585,14 +1576,8 @@ final class CameraController: ObservableObject {
 
         guard let format = best ?? candidates.first else { return }
 
-        // 关键防护 1：降低照片优先级（视频格式大多不支持 .quality，强设会引发未捕获的 NSInvalidArgumentException）
-        if !format.isPhotoQualityPrioritizationSupported(.quality) {
-            if format.isPhotoQualityPrioritizationSupported(.balanced) {
-                photoOutput.maxPhotoQualityPrioritization = .balanced
-            } else {
-                photoOutput.maxPhotoQualityPrioritization = .speed
-            }
-        }
+        // 关键防护 1：降低照片优先级（视频模式下设为 .balanced，避免因视频格式不支持 .quality 引发未捕获异常）
+        photoOutput.maxPhotoQualityPrioritization = .balanced
 
         // 关键防护 2：约束 photoOutput 尺寸到新格式支持的上限
         if let maxDim = format.supportedMaxPhotoDimensions.max(by: { Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height) }) {
