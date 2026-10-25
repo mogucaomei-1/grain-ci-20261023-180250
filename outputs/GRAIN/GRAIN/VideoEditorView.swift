@@ -507,7 +507,7 @@ public struct VideoEditorView: View {
 
     // MARK: - 视频规格与直方图信息条（放在最上方功能的下面，彻底解决 16:9 视频被遮挡问题）
     private var videoSpecAndHistogramHeader: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             // 视频规格胶囊
             Button {
                 showInfoSheet = true
@@ -530,16 +530,14 @@ public struct VideoEditorView: View {
 
             Spacer()
 
-            // 实时直方图（独立于视频框之外，横屏画幅零遮挡）
+            // 实时直方图：与照片编辑页面完全一致的尺寸 (82x46) 与原生样式
             if let currentHistogram {
                 HistogramView(data: currentHistogram)
-                    .frame(width: 76, height: 26)
-                    .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(GrainTheme.line, lineWidth: 0.6))
+                    .frame(width: 82, height: 46)
             }
         }
         .padding(.horizontal, 16)
-        .frame(height: 28)
+        .frame(height: 48)
     }
 
     private var videoFormatBadge: String {

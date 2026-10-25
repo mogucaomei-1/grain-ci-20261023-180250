@@ -261,6 +261,27 @@ struct RawImageProcessor {
         }
     }
 
+    /// 解码未经调色/滤镜的全尺寸无损原图（仅保留裁剪），供编辑页面放大时按住对比时呈现 100% 原始画质
+    static func renderFullResolutionOriginal(
+        from url: URL,
+        crop: CropTransform
+    ) throws -> CGImage {
+        try autoreleasepool {
+            let image = try loadImage(from: url, draft: false)
+            let normalized = normalizedExtent(of: image)
+            let displayP3 = CGColorSpace(name: CGColorSpace.displayP3)
+            guard let origImage = context.createCGImage(
+                normalized,
+                from: normalized.extent,
+                format: .RGBA8,
+                colorSpace: displayP3
+            ) else {
+                throw ImageProcessorError.cannotRender
+            }
+            return CropProcessor.apply(crop, to: origImage)
+        }
+    }
+
     static func export(
         from url: URL,
         profile: FilmProfile,

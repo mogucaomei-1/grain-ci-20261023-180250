@@ -859,7 +859,7 @@ final class CameraController: ObservableObject {
                     if micAllowed { self.attachAudioInput() }
                     self.attachMovieOutput()
                 }
-                self.configureVideoFormat(quality)
+                self.configureVideoFormat(quality, stabilization: stabilization)
                 self.configureMovieConnection(stabilization: stabilization, codec: codec)
 
                 let ext = container.fileExtension
@@ -882,7 +882,7 @@ final class CameraController: ObservableObject {
         }
     }
 
-    /// 切换到录像模式时提前预热音视频输出，避免录像开录时闪烁；不改动 activeFormat 彻底消除预览黑屏闪烁
+    /// 切换到录像模式时配置音视频输出与对应防抖格式
     func prepareForVideoMode(
         quality: VideoQuality,
         stabilization: VideoStabilization,
@@ -894,6 +894,7 @@ final class CameraController: ObservableObject {
                 guard let self else { return }
                 if micAllowed { self.attachAudioInput() }
                 self.attachMovieOutput()
+                self.configureVideoFormat(quality, stabilization: stabilization)
                 self.configureMovieConnection(stabilization: stabilization, codec: codec)
             }
         }
@@ -926,10 +927,16 @@ final class CameraController: ObservableObject {
     }
 
     /// 动态切换防抖档位（增强、电影级、标准、关）
-    func setVideoStabilization(_ stabilization: VideoStabilization) {
+    func setVideoStabilization(
+        _ stabilization: VideoStabilization,
+        quality: VideoQuality
+    ) {
         sessionQueue.async { [weak self] in
-            guard let self, let connection = self.movieOutput.connection(with: .video) else { return }
-            self.applyStabilization(stabilization, to: connection)
+            guard let self else { return }
+            self.configureVideoFormat(quality, stabilization: stabilization)
+            if let connection = self.movieOutput.connection(with: .video) {
+                self.applyStabilization(stabilization, to: connection)
+            }
         }
     }
 
@@ -1033,16 +1040,28 @@ final class CameraController: ObservableObject {
         recordingTimer = nil
     }
 
-    /// 录像时把镜头切到对应分辨率 / 帧率的格式；若当前格式已满足则仅锁帧率，不切 activeFormat 避免黑屏
-    private func configureVideoFormat(_ quality: VideoQuality) {
+    /// 录像时把镜头切到对应分辨率 / 帧率与防抖档位的专属 16:9 视频格式
+    private func configureVideoFormat(
+        _ quality: VideoQuality,
+        stabilization: VideoStabilization = .cinematicExtended
+    ) {
         guard let device = cameraDevice else { return }
+        let targetShort = quality.shortSide
+        let targetLong = quality.longSide
+        let targetFPS = Double(quality.fps)
+        let desiredMode = stabilization.mode
+
+        // 检查当前格式是否已经是尺寸匹配、支持帧率且支持当前防抖的 16:9 视频格式
         let currentDims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
         let curShort = Int(min(currentDims.width, currentDims.height))
         let curLong = Int(max(currentDims.width, currentDims.height))
+        let is16by9 = abs(Double(curLong) / max(Double(curShort), 1) - (16.0 / 9.0)) < 0.05
         let curSupportsFPS = device.activeFormat.videoSupportedFrameRateRanges.contains {
-            $0.maxFrameRate >= Double(quality.fps) - 0.5
+            $0.maxFrameRate >= targetFPS - 0.5
         }
-        if curShort >= quality.shortSide && curLong >= quality.longSide && curSupportsFPS {
+        let curSupportsStab = desiredMode == .off || device.activeFormat.isVideoStabilizationModeSupported(desiredMode)
+
+        if curShort == targetShort && curLong == targetLong && is16by9 && curSupportsFPS && curSupportsStab {
             do {
                 try device.lockForConfiguration()
                 let duration = CMTime(value: 1, timescale: Int32(quality.fps))
@@ -1054,26 +1073,58 @@ final class CameraController: ObservableObject {
         }
 
         let formats = device.formats
-        var best: AVCaptureDevice.Format?
+        var candidates: [AVCaptureDevice.Format] = []
         for format in formats {
             let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
             let short = Int(min(dims.width, dims.height))
             let long = Int(max(dims.width, dims.height))
-            guard short == quality.shortSide, long == quality.longSide else { continue }
+            guard short == targetShort, long == targetLong else { continue }
             let supportsFPS = format.videoSupportedFrameRateRanges.contains {
-                $0.maxFrameRate >= Double(quality.fps) - 0.5
+                $0.maxFrameRate >= targetFPS - 0.5
             }
             guard supportsFPS else { continue }
-            // 优先选择支持增强/电影级防抖的硬件格式
-            if format.isVideoStabilizationModeSupported(.cinematicExtended) || format.isVideoStabilizationModeSupported(.cinematic) {
+            candidates.append(format)
+        }
+
+        if candidates.isEmpty {
+            for format in formats {
+                let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+                let short = Int(min(dims.width, dims.height))
+                let long = Int(max(dims.width, dims.height))
+                let ratio = Double(long) / max(Double(short), 1)
+                guard abs(ratio - (16.0 / 9.0)) < 0.05 else { continue }
+                let supportsFPS = format.videoSupportedFrameRateRanges.contains {
+                    $0.maxFrameRate >= targetFPS - 0.5
+                }
+                guard supportsFPS else { continue }
+                candidates.append(format)
+            }
+        }
+
+        // 优先挑选支持目标防抖档位的硬件格式
+        var best: AVCaptureDevice.Format? = nil
+        for format in candidates {
+            if desiredMode == .cinematicExtended && format.isVideoStabilizationModeSupported(.cinematicExtended) {
                 best = format
                 break
-            }
-            if best == nil {
+            } else if (desiredMode == .cinematicExtended || desiredMode == .cinematic) && format.isVideoStabilizationModeSupported(.cinematic) {
+                if best == nil || !best!.isVideoStabilizationModeSupported(.cinematic) {
+                    best = format
+                }
+            } else if desiredMode != .off && format.isVideoStabilizationModeSupported(.standard) {
+                if best == nil {
+                    best = format
+                }
+            } else if best == nil {
                 best = format
             }
         }
-        guard let format = best, format != device.activeFormat else { return }
+
+        if best == nil {
+            best = candidates.first
+        }
+
+        guard let format = best else { return }
         do {
             try device.lockForConfiguration()
             device.activeFormat = format
@@ -4047,7 +4098,7 @@ struct CameraView: View {
                         Button {
                             stabilization = option
                             storedStabilization = option.rawValue
-                            camera.setVideoStabilization(option)
+                            camera.setVideoStabilization(option, quality: videoQuality)
                         } label: {
                             HStack {
                                 Text(option.title)

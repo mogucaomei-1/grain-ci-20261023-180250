@@ -435,6 +435,7 @@ struct AppSettingsView: View {
     }
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
     @AppStorage("appearanceMode") private var appearanceMode = AppearanceMode.system
+    @AppStorage("cameraAppearanceMode") private var cameraAppearanceMode = CameraAppearanceMode.dark
     @AppStorage("showHistogram") private var showHistogram = true
     @AppStorage("showCameraButton") private var showCameraButton = true
     @AppStorage("showFileImportButton") private var showFileImportButton = false
@@ -483,7 +484,7 @@ struct AppSettingsView: View {
                     .buttonStyle(.plain)
                 }
 
-                // 外观模式
+                // 外观模式（主页与编辑页面，不控制相机）
                 HStack(spacing: 12) {
                     Image(systemName: "circle.lefthalf.filled")
                         .font(.system(size: 15, weight: .medium))
@@ -493,7 +494,7 @@ struct AppSettingsView: View {
                         Text("外观模式")
                             .font(.system(size: 12, weight: .semibold, design: .rounded))
                             .foregroundStyle(GrainTheme.paper)
-                        Text("白天浅色、黑夜深色或跟随系统")
+                        Text("主页与编辑页面外观（不影响相机）")
                             .font(.system(size: 9, design: .rounded))
                             .foregroundStyle(GrainTheme.muted)
                     }
@@ -510,6 +511,45 @@ struct AppSettingsView: View {
                                     .padding(.horizontal, 9)
                                     .frame(height: 26)
                                     .background(appearanceMode == mode ? GrainTheme.paper : GrainTheme.raised, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(16)
+                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 17)
+                        .stroke(GrainTheme.line, lineWidth: 0.8)
+                }
+
+                // 相机外观（独立控制拍照与视频录制页面的白天/黑夜）
+                HStack(spacing: 12) {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(GrainTheme.accent)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("相机外观")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(GrainTheme.paper)
+                        Text("拍照与视频录制页面的白天/黑夜模式")
+                            .font(.system(size: 9, design: .rounded))
+                            .foregroundStyle(GrainTheme.muted)
+                    }
+                    Spacer()
+                    HStack(spacing: 4) {
+                        ForEach(CameraAppearanceMode.allCases) { mode in
+                            Button {
+                                cameraAppearanceMode = mode
+                                GrainHaptics.selection()
+                            } label: {
+                                Text(mode.shortTitle)
+                                    .font(.system(size: 10, weight: cameraAppearanceMode == mode ? .bold : .medium, design: .rounded))
+                                    .foregroundStyle(cameraAppearanceMode == mode ? GrainTheme.black : GrainTheme.muted)
+                                    .padding(.horizontal, 9)
+                                    .frame(height: 26)
+                                    .background(cameraAppearanceMode == mode ? GrainTheme.paper : GrainTheme.raised, in: Capsule())
                             }
                             .buttonStyle(.plain)
                         }

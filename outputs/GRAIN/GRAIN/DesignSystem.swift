@@ -41,6 +41,63 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
         case .dark: .dark
         }
     }
+
+    func resolvedColorScheme(systemScheme: ColorScheme) -> ColorScheme {
+        switch self {
+        case .system: systemScheme
+        case .light: .light
+        case .dark: .dark
+        }
+    }
+}
+
+/// 相机与录像页面的独立外观模式（默认黑夜深色，可设为白天浅色或跟随系统，独立于主 App 外观）
+enum CameraAppearanceMode: String, CaseIterable, Identifiable {
+    case dark = "dark"
+    case light = "light"
+    case system = "system"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .dark: "黑夜模式"
+        case .light: "白天模式"
+        case .system: "跟随系统"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .dark: "黑夜"
+        case .light: "白天"
+        case .system: "系统"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .dark: "moon.fill"
+        case .light: "sun.max.fill"
+        case .system: "circle.lefthalf.filled"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .dark: .dark
+        case .light: .light
+        case .system: nil
+        }
+    }
+
+    func resolvedColorScheme(systemScheme: ColorScheme) -> ColorScheme {
+        switch self {
+        case .dark: .dark
+        case .light: .light
+        case .system: systemScheme
+        }
+    }
 }
 
 enum GrainTheme {

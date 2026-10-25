@@ -26,9 +26,9 @@ struct GRAINApp: App {
                     PermissionOnboardingView {
                         didCompletePermissionOnboarding = true
                     }
+                    .preferredColorScheme(appearanceMode.colorScheme)
                 }
             }
-            .preferredColorScheme(appearanceMode.colorScheme)
             .onAppear(perform: GrainHaptics.prepare)
         }
     }

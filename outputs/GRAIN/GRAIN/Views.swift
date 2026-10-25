@@ -4,7 +4,10 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject private var editor: EditorViewModel
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorScheme) private var systemColorScheme
     @StateObject private var photoLibrary = PhotoLibraryViewModel()
+    @AppStorage("appearanceMode") private var appearanceMode = AppearanceMode.system
+    @AppStorage("cameraAppearanceMode") private var cameraAppearanceMode = CameraAppearanceMode.dark
     @AppStorage("showHistogram") private var showHistogram = true
     @AppStorage("showCameraButton") private var showCameraButton = true
     @AppStorage("showFileImportButton") private var showFileImportButton = false
@@ -103,6 +106,7 @@ struct RootView: View {
                     .toolbar(.hidden, for: .navigationBar)
                 }
             }
+            .environment(\.colorScheme, appearanceMode.resolvedColorScheme(systemScheme: systemColorScheme))
 
             if isCameraActive {
                 CameraView(
@@ -120,10 +124,12 @@ struct RootView: View {
                         }
                     }
                 )
+                .environment(\.colorScheme, cameraAppearanceMode.resolvedColorScheme(systemScheme: systemColorScheme))
                 .transition(.opacity)
                 .zIndex(10)
             }
         }
+        .preferredColorScheme(isCameraActive ? cameraAppearanceMode.colorScheme : appearanceMode.colorScheme)
         .sheet(isPresented: $showDocumentPicker) {
             DocumentRawImporter { url in
                 showDocumentPicker = false
@@ -1089,6 +1095,15 @@ private struct PhotoEditorCanvas: View {
                 peakingMask = nil
             }
         }
+        .onChange(of: zoomScale) { oldValue, newValue in
+            let wasZoomed = oldValue > 1.01
+            let isZoomed = newValue > 1.01
+            if isZoomed && !wasZoomed {
+                editor.prepareZoomPreview()
+            } else if !isZoomed && wasZoomed {
+                editor.releaseZoomPreview()
+            }
+        }
     }
 
     private var peakingTaskID: String {
@@ -1130,12 +1145,18 @@ private struct PhotoEditorCanvas: View {
     @ViewBuilder
     private func photoLayer(viewport: CGSize, imageSize: CGSize) -> some View {
         ZStack {
-            if showOriginal, let original = editor.originalPreview {
-                imageLayer(original, imageSize: imageSize, viewport: viewport)
-                    .transition(.opacity)
-            } else if let edited = editor.editedPreview {
-                imageLayer(edited, imageSize: imageSize, viewport: viewport)
-                    .transition(.opacity)
+            let activeImage: CGImage? = {
+                if showOriginal {
+                    return (zoomScale > 1.01 ? (editor.zoomOriginalPreview ?? editor.originalPreview) : editor.originalPreview)
+                }
+                if zoomScale > 1.01, let zoom = editor.zoomPreview {
+                    return zoom
+                }
+                return editor.editedPreview ?? editor.originalPreview
+            }()
+
+            if let activeImage {
+                imageLayer(activeImage, imageSize: imageSize, viewport: viewport)
             } else {
                 ProgressView()
                     .tint(GrainTheme.paper)
@@ -1228,6 +1249,7 @@ private struct PhotoEditorCanvas: View {
                 if !isPinching {
                     isPinching = true
                     pinchBaseScale = zoomScale
+                    editor.prepareZoomPreview()
                 }
                 let targetScale = min(max(pinchBaseScale * value, 1.0), 6.0)
                 zoomScale = targetScale
@@ -1240,6 +1262,7 @@ private struct PhotoEditorCanvas: View {
                         zoomScale = 1.0
                         panOffset = .zero
                     }
+                    editor.releaseZoomPreview()
                 } else {
                     zoomScale = finalScale
                     withAnimation(.easeOut(duration: 0.16)) {
@@ -1260,6 +1283,7 @@ private struct PhotoEditorCanvas: View {
             zoomScale = 1.0
             panOffset = .zero
         }
+        editor.releaseZoomPreview()
         GrainHaptics.lightImpact(enabled: hapticsEnabled)
     }
 
@@ -1270,6 +1294,7 @@ private struct PhotoEditorCanvas: View {
             return
         }
 
+        editor.prepareZoomPreview()
         let target: CGFloat = 2.5
         // point 是照片画布坐标，换算到画布中心为原点的相对坐标系
         let canvasCenter = CGPoint(x: imageSize.width / 2, y: imageSize.height / 2)

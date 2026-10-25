@@ -35,6 +35,7 @@ final class EditorViewModel: ObservableObject {
     /// 放大查看时按需解码的全尺寸原图（带当前胶片/裁剪/马赛克），
     /// 平时为 nil，避免长期占用几十到上百 MB 内存
     @Published private(set) var zoomPreview: CGImage?
+    @Published private(set) var zoomOriginalPreview: CGImage?
     @Published private(set) var histogram: RGBHistogram?
     @Published private(set) var isPreparing = false
     @Published private(set) var isRecommending = false
@@ -191,6 +192,7 @@ final class EditorViewModel: ObservableObject {
         fullGradedPreview = nil
         editedPreview = nil
         zoomPreview = nil
+        zoomOriginalPreview = nil
         zoomPreviewTask?.cancel()
         zoomPreviewTask = nil
         histogram = nil
@@ -723,8 +725,21 @@ final class EditorViewModel: ObservableObject {
         }.value
     }
 
+    func renderFullResolutionOriginal() async throws -> CGImage {
+        guard let photo else {
+            throw ImageProcessorError.cannotOpenFile
+        }
+        let crop = crop
+        return try await Task.detached(priority: .userInitiated) {
+            try RawImageProcessor.renderFullResolutionOriginal(
+                from: photo.url,
+                crop: crop
+            )
+        }.value
+    }
+
     /// 编辑页放大查看时调用：按当前编辑参数解码全尺寸原图，
-    /// 用原图像素替换 1280px 的预览，放大后不再发糊。
+    /// 用原图解析度替换 1600px 的预览，放大后呈现 100% 原始画质细节，不再发糊。
     func prepareZoomPreview() {
         guard photo != nil, zoomPreview == nil else { return }
         zoomPreviewTask?.cancel()
@@ -735,7 +750,14 @@ final class EditorViewModel: ObservableObject {
                 guard !Task.isCancelled else { return }
                 self.zoomPreview = image
             } catch {
-                // 全尺寸解码失败（例如个别 RAW 不支持）时退回预览，不打断操作
+                // 全尺寸解码失败（例如个别非标准 RAW）时退回预览，不打断操作
+            }
+            if self.zoomOriginalPreview == nil {
+                do {
+                    let orig = try await self.renderFullResolutionOriginal()
+                    guard !Task.isCancelled else { return }
+                    self.zoomOriginalPreview = orig
+                } catch {}
             }
         }
     }
@@ -745,6 +767,7 @@ final class EditorViewModel: ObservableObject {
         zoomPreviewTask?.cancel()
         zoomPreviewTask = nil
         zoomPreview = nil
+        zoomOriginalPreview = nil
     }
 
     // MARK: - 编辑配方持久化
