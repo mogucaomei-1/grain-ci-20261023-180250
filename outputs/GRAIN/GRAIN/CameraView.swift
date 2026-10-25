@@ -580,11 +580,18 @@ final class CameraController: ObservableObject {
             self.audioMeterTimer?.invalidate()
             self.audioMeterTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
                 guard let self else { return }
-                if let audioConn = self.movieOutput.connection(with: .audio),
-                   let channel = audioConn.audioChannels.first {
-                    let power = channel.averagePowerLevel
-                    let norm = max(0.0, min(1.0, Float((power + 50.0) / 50.0)))
-                    self.liveAudioLevel = norm
+                guard self.movieAttached else { return }
+                if let audioConn = self.movieOutput.connection(with: .audio) {
+                    if !audioConn.isAudioMeteringEnabled {
+                        audioConn.isAudioMeteringEnabled = true
+                    }
+                    if let channel = audioConn.audioChannels.first {
+                        let power = channel.averagePowerLevel
+                        if !power.isNaN && !power.isInfinite {
+                            let norm = max(0.0, min(1.0, Float((power + 50.0) / 50.0)))
+                            self.liveAudioLevel = norm
+                        }
+                    }
                 }
             }
             self.updateStorageTimer?.invalidate()
@@ -800,8 +807,9 @@ final class CameraController: ObservableObject {
         session.addOutput(peakingOutput)
         peakingAttached = true
         updatePeakingConnection()
-        // 视频输出不参与静态拍照，但会话重配后同步一次照片尺寸，避免 48MP 被重置
-        if let device = cameraDevice, let dims = maximumPhotoDimensions(for: device) {
+        // 视频输出不参与静态拍照，但会话重配后同步一次照片尺寸，避免超出当前格式限制
+        if let device = cameraDevice, let dims = maximumPhotoDimensions(for: device),
+           device.activeFormat.supportedMaxPhotoDimensions.contains(where: { $0.width == dims.width && $0.height == dims.height }) {
             photoOutput.maxPhotoDimensions = dims
         }
         session.commitConfiguration()
@@ -1260,28 +1268,87 @@ final class CameraController: ObservableObject {
         }
     }
 
-    /// 切换到录像模式时配置音视频输出与对应防抖格式
+    /// 切换到录像模式时原子配置音视频输出、防抖格式、色彩空间与编码
     func prepareForVideoMode(
         quality: VideoQuality,
         stabilization: VideoStabilization,
-        codec: VideoCodecPreference
+        codec: VideoCodecPreference,
+        colorSpace: VideoColorSpacePreference = .rec709
     ) {
         Task {
             let micAllowed = await requestMediaAccess(for: .audio)
             sessionQueue.async { [weak self] in
                 guard let self else { return }
-                if micAllowed { self.attachAudioInput() }
-                self.attachMovieOutput()
-                self.configureVideoFormat(quality, stabilization: stabilization)
+                self.session.beginConfiguration()
+
+                // 1. 实况照片与录像输出互斥，切到录像模式时先行解除实况照片
+                if self.photoOutput.isLivePhotoCaptureEnabled {
+                    self.photoOutput.isLivePhotoCaptureEnabled = false
+                }
+                DispatchQueue.main.async {
+                    self.isLivePhotoArmed = false
+                }
+
+                // 2. 挂载音频输入
+                if micAllowed && self.audioInput == nil {
+                    if let mic = AVCaptureDevice.default(for: .audio),
+                       let input = try? AVCaptureDeviceInput(device: mic),
+                       self.session.canAddInput(input) {
+                        self.session.addInput(input)
+                        self.audioInput = input
+                    }
+                }
+
+                // 3. 挂载录像输出
+                if !self.movieAttached {
+                    if self.session.canAddOutput(self.movieOutput) {
+                        self.session.addOutput(self.movieOutput)
+                        self.movieAttached = true
+                    }
+                }
+
+                // 4. 配置视频专属 16:9 格式、帧率与防抖
+                self.configureVideoFormatInternal(quality, stabilization: stabilization)
+
+                // 5. 应用色彩空间
+                if let device = self.cameraDevice {
+                    let targetSpace = colorSpace.avColorSpace
+                    if device.activeFormat.supportedColorSpaces.contains(targetSpace) {
+                        do {
+                            try device.lockForConfiguration()
+                            device.activeColorSpace = targetSpace
+                            device.unlockForConfiguration()
+                        } catch {}
+                    }
+                }
+
+                // 6. 配置录像连接（防抖、旋转、镜像、编码格式）
                 self.configureMovieConnection(stabilization: stabilization, codec: codec)
+
+                self.session.commitConfiguration()
             }
         }
     }
 
-    /// 切回拍照模式时恢复照片最高可用分辨率档位与快门曝光帧率范围
-    func restorePhotoFormat() {
+    /// 切回拍照模式时恢复照片最高可用分辨率档位与快门曝光帧率范围，并恢复实况照片能力
+    func restorePhotoFormat(resolution: CameraResolution = .standard24) {
         sessionQueue.async { [weak self] in
             guard let self, let device = self.cameraDevice else { return }
+            self.session.beginConfiguration()
+
+            // 1. 移除录像输出，使 photoOutput 能够重新激活实况照片能力 (isLivePhotoCaptureSupported 恢复为 true)
+            if self.movieAttached {
+                self.session.removeOutput(self.movieOutput)
+                self.movieAttached = false
+            }
+
+            // 2. 如果实况照片未激活，移除音频输入以节约电量
+            if !self.photoOutput.isLivePhotoCaptureEnabled, let audioInput = self.audioInput {
+                self.session.removeInput(audioInput)
+                self.audioInput = nil
+            }
+
+            // 3. 重置视频帧率限制
             do {
                 try device.lockForConfiguration()
                 device.activeVideoMinFrameDuration = .invalid
@@ -1289,18 +1356,34 @@ final class CameraController: ObservableObject {
                 device.unlockForConfiguration()
             } catch {}
 
-            // 仅在当前 activeFormat 的照片分辨率确实低于支持的最大档位时才切换，避免不必要的重新协商导致黑屏
-            let maxArea = device.formats.map { self.maximumPhotoArea($0) }.max() ?? 0
-            if self.maximumPhotoArea(device.activeFormat) < maxArea {
-                let dims = self.promoteToHighestPhotoFormat(device)
-                if let dims,
-                   device.activeFormat.supportedMaxPhotoDimensions.contains(where: {
-                       $0.width == dims.width && $0.height == dims.height
-                   }) {
-                    self.photoOutput.maxPhotoDimensions = dims
-                }
+            // 4. 恢复最高照片格式与分辨率
+            let promoted = self.promoteToHighestPhotoFormat(device)
+            let dims = promoted ?? self.maximumPhotoDimensions(for: device)
+
+            // 5. 恢复高质量照片优先级
+            if device.activeFormat.isPhotoQualityPrioritizationSupported(.quality) {
+                self.photoOutput.maxPhotoQualityPrioritization = .quality
+            }
+
+            if let dims,
+               device.activeFormat.supportedMaxPhotoDimensions.contains(where: {
+                   $0.width == dims.width && $0.height == dims.height
+               }) {
+                self.photoOutput.maxPhotoDimensions = dims
             }
             self.applyPhotoMirroring(for: device)
+
+            self.session.commitConfiguration()
+
+            // 6. 重新发布相机能力（此时 isLivePhotoSupported 恢复为 true）
+            let liveSupported = device.position == .back
+            let rawSupported = self.supportsRawCapture
+            self.publishDeviceCapabilities(
+                device,
+                liveSupported: liveSupported,
+                rawSupported: rawSupported,
+                preserveZoom: true
+            )
         }
     }
 
@@ -1343,6 +1426,9 @@ final class CameraController: ObservableObject {
         stabilization: VideoStabilization,
         codec: VideoCodecPreference
     ) {
+        if let audioConn = self.movieOutput.connection(with: .audio) {
+            audioConn.isAudioMeteringEnabled = true
+        }
         guard let connection = self.movieOutput.connection(with: .video) else { return }
         // 竖屏录制：写 90° 旋转元数据，而不是把像素真的转一遍
         if connection.isVideoRotationAngleSupported(90) {
@@ -1423,6 +1509,15 @@ final class CameraController: ObservableObject {
         _ quality: VideoQuality,
         stabilization: VideoStabilization = .cinematicExtended
     ) {
+        session.beginConfiguration()
+        configureVideoFormatInternal(quality, stabilization: stabilization)
+        session.commitConfiguration()
+    }
+
+    private func configureVideoFormatInternal(
+        _ quality: VideoQuality,
+        stabilization: VideoStabilization = .cinematicExtended
+    ) {
         guard let device = cameraDevice else { return }
         let targetShort = quality.shortSide
         let targetLong = quality.longSide
@@ -1440,14 +1535,7 @@ final class CameraController: ObservableObject {
         let curSupportsStab = desiredMode == .off || device.activeFormat.isVideoStabilizationModeSupported(desiredMode)
 
         if curShort == targetShort && curLong == targetLong && is16by9 && curSupportsFPS && curSupportsStab {
-            do {
-                try device.lockForConfiguration()
-                let duration = CMTime(value: 1, timescale: Int32(quality.fps))
-                device.activeVideoMinFrameDuration = .invalid
-                device.activeVideoMaxFrameDuration = duration
-                device.activeVideoMinFrameDuration = duration
-                device.unlockForConfiguration()
-            } catch {}
+            applySafeFrameRate(to: device, targetFPS: targetFPS)
             return
         }
 
@@ -1472,10 +1560,6 @@ final class CameraController: ObservableObject {
                 let long = Int(max(dims.width, dims.height))
                 let ratio = Double(long) / max(Double(short), 1)
                 guard abs(ratio - (16.0 / 9.0)) < 0.05 else { continue }
-                let supportsFPS = format.videoSupportedFrameRateRanges.contains {
-                    $0.maxFrameRate >= targetFPS - 0.5
-                }
-                guard supportsFPS else { continue }
                 candidates.append(format)
             }
         }
@@ -1499,27 +1583,49 @@ final class CameraController: ObservableObject {
             }
         }
 
-        if best == nil {
-            best = candidates.first
+        guard let format = best ?? candidates.first else { return }
+
+        // 关键防护 1：降低照片优先级（视频格式大多不支持 .quality，强设会引发未捕获的 NSInvalidArgumentException）
+        if !format.isPhotoQualityPrioritizationSupported(.quality) {
+            if format.isPhotoQualityPrioritizationSupported(.balanced) {
+                photoOutput.maxPhotoQualityPrioritization = .balanced
+            } else {
+                photoOutput.maxPhotoQualityPrioritization = .speed
+            }
         }
 
-        guard let format = best else { return }
-        session.beginConfiguration()
+        // 关键防护 2：约束 photoOutput 尺寸到新格式支持的上限
         if let maxDim = format.supportedMaxPhotoDimensions.max(by: { Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height) }) {
             photoOutput.maxPhotoDimensions = maxDim
         }
+
         do {
             try device.lockForConfiguration()
             device.activeFormat = format
-            let duration = CMTime(value: 1, timescale: Int32(quality.fps))
-            device.activeVideoMinFrameDuration = .invalid
-            device.activeVideoMaxFrameDuration = duration
-            device.activeVideoMinFrameDuration = duration
             device.unlockForConfiguration()
-        } catch {
-            // 切不过去就用当前格式继续录，保证不中断
-        }
-        session.commitConfiguration()
+        } catch {}
+
+        applySafeFrameRate(to: device, targetFPS: targetFPS)
+    }
+
+    private func applySafeFrameRate(to device: AVCaptureDevice, targetFPS: Double) {
+        do {
+            try device.lockForConfiguration()
+            let ranges = device.activeFormat.videoSupportedFrameRateRanges
+            if let matchedRange = ranges.first(where: { targetFPS >= $0.minFrameRate - 0.5 && targetFPS <= $0.maxFrameRate + 0.5 }) {
+                let duration = CMTime(value: 1, timescale: Int32(targetFPS))
+                device.activeVideoMinFrameDuration = .invalid
+                device.activeVideoMaxFrameDuration = matchedRange.maxFrameDuration
+                device.activeVideoMinFrameDuration = duration
+            } else if let fallbackRange = ranges.first {
+                let clampedFPS = max(fallbackRange.minFrameRate, min(targetFPS, fallbackRange.maxFrameRate))
+                let duration = CMTime(value: 1, timescale: Int32(clampedFPS))
+                device.activeVideoMinFrameDuration = .invalid
+                device.activeVideoMaxFrameDuration = fallbackRange.maxFrameDuration
+                device.activeVideoMinFrameDuration = duration
+            }
+            device.unlockForConfiguration()
+        } catch {}
     }
 
     private func attachAudioInput() {
@@ -1546,8 +1652,9 @@ final class CameraController: ObservableObject {
         }
         session.addOutput(movieOutput)
         movieAttached = true
-        // 会话重配后同步一次照片尺寸，避免 48MP 被重置
-        if let device = cameraDevice, let dims = maximumPhotoDimensions(for: device) {
+        // 会话重配后同步一次照片尺寸，避免超出当前格式限制
+        if let device = cameraDevice, let dims = maximumPhotoDimensions(for: device),
+           device.activeFormat.supportedMaxPhotoDimensions.contains(where: { $0.width == dims.width && $0.height == dims.height }) {
             photoOutput.maxPhotoDimensions = dims
         }
         session.commitConfiguration()
@@ -2090,11 +2197,8 @@ final class CameraController: ObservableObject {
                 audioInput = aInput
             }
 
-            // 3. 录像输出常驻会话
-            if session.canAddOutput(movieOutput) {
-                session.addOutput(movieOutput)
-                movieAttached = true
-            }
+            // 录像输出按需挂载，避免在拍照模式下占用会话并导致实况照片（Live Photo）支持失效
+            movieAttached = false
 
             // 4. 元数据输出（人脸追焦）常驻会话
             metadataOutput.setMetadataObjectsDelegate(trackingProcessor, queue: metadataQueue)
@@ -3575,6 +3679,7 @@ struct CameraPreviewView: UIViewRepresentable {
                 fromLayerPoint: screenPoint
             )
             view.showFocusReticle(at: screenPoint, locked: false)
+            GrainFocusSound.playSonyFocusSound()
             parent.onFocus(devicePoint, false)
         }
 
@@ -3587,6 +3692,7 @@ struct CameraPreviewView: UIViewRepresentable {
                 fromLayerPoint: screenPoint
             )
             view.showFocusReticle(at: screenPoint, locked: true)
+            GrainFocusSound.playSonyFocusSound()
             parent.onFocus(devicePoint, true)
         }
     }
@@ -3913,8 +4019,6 @@ struct CameraView: View {
                             onFocus: { devicePoint, lock in
                                 camera.focus(at: devicePoint, lock: lock)
                                 GrainHaptics.mediumImpact(enabled: true)
-                                // 手动对焦给一声提示音，跟随「快门声音」开关
-                                GrainFocusSound.playIfEnabled()
                             }
                         )
                         .frame(width: rect.width, height: rect.height)
@@ -4110,33 +4214,35 @@ struct CameraView: View {
             videoAspect = VideoAspect(rawValue: storedVideoAspect) ?? .sixteenByNine
             videoColorSpace = VideoColorSpacePreference(rawValue: storedVideoColorSpace) ?? .rec709
             if captureMode == .video {
+                camera.prepareForVideoMode(
+                    quality: videoQuality,
+                    stabilization: stabilization,
+                    codec: videoCodec,
+                    colorSpace: videoColorSpace
+                )
                 camera.startAudioAndStorageMonitoring()
-                camera.applyColorSpace(videoColorSpace)
             }
         }
         .onChange(of: captureMode) { _, mode in
-            // 录像模式提前预热音视频输出与格式，解决开录时屏幕闪烁两下的问题
+            // 录像模式提前预热音视频输出与专属 16:9 格式，解决开录时屏幕闪烁两下的问题
             if mode == .video {
                 if livePhoto {
                     livePhoto = false
-                    if camera.isLivePhotoArmed {
-                        Task { _ = await camera.setLivePhotoEnabled(false) }
-                    }
                 }
                 camera.prepareForVideoMode(
                     quality: videoQuality,
                     stabilization: stabilization,
-                    codec: videoCodec
+                    codec: videoCodec,
+                    colorSpace: videoColorSpace
                 )
                 camera.startAudioAndStorageMonitoring()
-                camera.applyColorSpace(videoColorSpace)
             } else {
                 if torchOn {
                     torchOn = false
                     camera.setTorch(false)
                 }
                 camera.stopAudioAndStorageMonitoring()
-                camera.restorePhotoFormat()
+                camera.restorePhotoFormat(resolution: resolution)
             }
         }
         .onChange(of: peakingColorRaw) { _, value in
@@ -4402,7 +4508,8 @@ struct CameraView: View {
                                     camera.prepareForVideoMode(
                                         quality: option,
                                         stabilization: stabilization,
-                                        codec: videoCodec
+                                        codec: videoCodec,
+                                        colorSpace: videoColorSpace
                                     )
                                 }
                             }
@@ -4479,7 +4586,8 @@ struct CameraView: View {
                                         camera.prepareForVideoMode(
                                             quality: videoQuality,
                                             stabilization: stabilization,
-                                            codec: codec
+                                            codec: codec,
+                                            colorSpace: videoColorSpace
                                         )
                                     } label: {
                                         HStack {
