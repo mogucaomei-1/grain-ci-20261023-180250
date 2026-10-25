@@ -8,6 +8,15 @@ public struct RootView: View {
     @State private var playingVideo: VideoItem? = nil
     @State private var infoVideo: VideoItem? = nil
     @State private var showSettings = false
+    @AppStorage("appTheme") private var appTheme: String = "system"
+
+    private var activeColorScheme: ColorScheme? {
+        switch appTheme {
+        case "light": return .light
+        case "dark": return .dark
+        default: return nil
+        }
+    }
 
     public init() {}
 
@@ -44,11 +53,11 @@ public struct RootView: View {
             // 全屏播放器模态层
             if let video = playingVideo {
                 fullscreenPlayerView(for: video)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .transition(.opacity)
                     .zIndex(100)
             }
         }
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(activeColorScheme)
         // 视频详细参数 Sheet
         .sheet(item: $infoVideo) { video in
             VideoInfoSheet(item: video, metadata: video.metadata)
@@ -166,7 +175,7 @@ public struct RootView: View {
                 }
             )
         }
-        .statusBarHidden(!playerViewModel.showControls)
+        .statusBarHidden(true)
     }
 
     private func startPlayback(_ video: VideoItem) {

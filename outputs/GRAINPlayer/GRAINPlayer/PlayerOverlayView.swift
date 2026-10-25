@@ -112,6 +112,7 @@ public struct PlayerOverlayView: View {
                 // 4.1 屏幕右侧垂直居中独立悬浮倍速调节按钮
                 if viewModel.showControls && !viewModel.isControlsLocked {
                     floatingSpeedToggle
+                        .transition(.opacity)
                 }
 
                 // 5. HUD 顶栏与底栏
@@ -121,7 +122,7 @@ public struct PlayerOverlayView: View {
                         Spacer()
                         bottomBar
                     }
-                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .transition(.opacity)
                 }
             }
             .sheet(isPresented: $showSubtitlePicker) {
@@ -302,6 +303,8 @@ public struct PlayerOverlayView: View {
             )
             .ignoresSafeArea()
         )
+        .contentShape(Rectangle())
+        .onTapGesture {}
     }
 
     // MARK: - 底栏 (包含常规快退、播放、快进、静音等全套专业控制)
@@ -329,9 +332,9 @@ public struct PlayerOverlayView: View {
             }
             .padding(.horizontal, 16)
 
-            // 底部控制按钮行 (后退/暂停/前进 严格居中，左侧静音比例，右侧循环截图)
+            // 底部控制按钮行 (后退/暂停/前进 严格居中，左侧静音，右侧循环截图)
             HStack(alignment: .center, spacing: 0) {
-                // 左侧次要控制区 (靠左对齐)
+                // 左侧次要控制区 (靠左对齐，单静音按钮)
                 HStack(spacing: 12) {
                     // 静音开关
                     Button(action: { viewModel.toggleMute() }) {
@@ -341,20 +344,6 @@ public struct PlayerOverlayView: View {
                             .frame(width: 38, height: 38)
                             .background(GrainTheme.card)
                             .clipShape(Circle())
-                    }
-
-                    // 画面比例切换
-                    Button(action: { viewModel.cycleScaleMode() }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: viewModel.scaleMode.icon)
-                            Text(viewModel.scaleMode.rawValue)
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .foregroundColor(GrainTheme.paper)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 6)
-                        .background(GrainTheme.card)
-                        .cornerRadius(8)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -432,6 +421,8 @@ public struct PlayerOverlayView: View {
             )
             .ignoresSafeArea()
         )
+        .contentShape(Rectangle())
+        .onTapGesture {}
     }
 
     // MARK: - 屏幕左侧垂直居中悬浮锁定按钮

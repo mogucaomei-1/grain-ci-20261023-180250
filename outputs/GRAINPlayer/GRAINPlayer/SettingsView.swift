@@ -8,6 +8,7 @@ public struct SettingsView: View {
     @AppStorage("doubleTapSeekInterval") private var doubleTapSeekInterval: Int = 10
     @AppStorage("autoPictureInPicture") private var autoPiPEnabled: Bool = true
     @AppStorage("enableBackgroundAudio") private var backgroundAudioEnabled: Bool = true
+    @AppStorage("appTheme") private var appTheme: String = "system"
 
     public init() {}
 
@@ -17,6 +18,17 @@ public struct SettingsView: View {
                 GrainTheme.black.ignoresSafeArea()
 
                 List {
+                    // 外观主题设置 (白天/黑夜/系统)
+                    Section(header: Text("外观模式").foregroundColor(GrainTheme.muted)) {
+                        Picker("外观模式", selection: $appTheme) {
+                            Text("跟随系统").tag("system")
+                            Text("白天模式").tag("light")
+                            Text("黑夜模式").tag("dark")
+                        }
+                        .pickerStyle(.segmented)
+                        .listRowBackground(GrainTheme.surface)
+                    }
+
                     // 播放体验设置
                     Section(header: Text("播放设置").foregroundColor(GrainTheme.muted)) {
                         Toggle(isOn: $autoPiPEnabled) {
@@ -83,7 +95,7 @@ public struct SettingsView: View {
                             Text("应用版本")
                                 .foregroundColor(GrainTheme.paper)
                             Spacer()
-                            Text("1.0 (Build 2)")
+                            Text("1.0 (Build 5)")
                                 .font(.system(size: 13, design: .monospaced))
                                 .foregroundColor(GrainTheme.muted)
                         }

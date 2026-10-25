@@ -58,7 +58,15 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
     // MARK: - 画中画 (PiP)
     @Published public var isPiPAvailable: Bool = false
     @Published public var isPiPActive: Bool = false
-    public var pipController: AVPictureInPictureController?
+    public var pipController: AVPictureInPictureController? {
+        didSet {
+            if pipController != nil {
+                DispatchQueue.main.async { [weak self] in
+                    self?.isPiPAvailable = true
+                }
+            }
+        }
+    }
 
     // 内部私有属性
     private var timeObserverToken: Any?
@@ -103,7 +111,7 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
     private func setupAudioSession() {
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .moviePlayback, options: [.allowAirPlay, .duckOthers])
+            try session.setCategory(.playback, mode: .moviePlayback, options: [.allowAirPlay])
             try session.setActive(true)
         } catch {
             print("AudioSession 配置失败: \(error)")
@@ -449,11 +457,22 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
     }
 
     public func togglePictureInPicture() {
-        guard let pipController else { return }
+        guard let pipController else {
+            GrainHaptics.warning()
+            return
+        }
         if pipController.isPictureInPictureActive {
             pipController.stopPictureInPicture()
         } else {
-            pipController.startPictureInPicture()
+            if pipController.isPictureInPicturePossible {
+                pipController.startPictureInPicture()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    if pipController.isPictureInPicturePossible {
+                        pipController.startPictureInPicture()
+                    }
+                }
+            }
         }
         GrainHaptics.selection()
     }
@@ -520,7 +539,7 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
         currentSubtitleText = SubtitleParser.currentSubtitle(at: time, in: track.items)
     }
 
-    // MARK: - HUD 显隐调度
+    // MARK: - HUD 显隐调度 (平滑淡入淡出，杜绝闪退)
 
     public func toggleControlsVisibility() {
         guard !isControlsLocked else {
@@ -528,9 +547,13 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
             GrainHaptics.light()
             return
         }
-        showControls.toggle()
-        if showControls && isPlaying {
-            scheduleControlsDismissal()
+        withAnimation(.easeInOut(duration: 0.25)) {
+            showControls.toggle()
+        }
+        if showControls {
+            if isPlaying {
+                scheduleControlsDismissal()
+            }
         } else {
             controlsDismissTask?.cancel()
         }
@@ -540,9 +563,14 @@ public final class PlayerViewModel: NSObject, ObservableObject, AVPictureInPictu
     public func scheduleControlsDismissal() {
         controlsDismissTask?.cancel()
         controlsDismissTask = Task {
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
-            if self.isPlaying && !self.isScrubbing && !self.isControlsLocked {
-                self.showControls = false
+            try? await Task.sleep(nanoseconds: 4_500_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                if self.isPlaying && !self.isScrubbing && !self.isControlsLocked {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        self.showControls = false
+                    }
+                }
             }
         }
     }

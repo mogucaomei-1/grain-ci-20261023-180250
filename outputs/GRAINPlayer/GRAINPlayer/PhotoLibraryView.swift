@@ -615,12 +615,6 @@ struct PhotoVideoCard: View {
             .grainCard(cornerRadius: 12, strokeColor: isSelected ? GrainTheme.accent : GrainTheme.line)
         }
         .buttonStyle(.plain)
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.35)
-                .onEnded { _ in
-                    onLongPress()
-                }
-        )
         .contextMenu {
             if !isMultiSelecting {
                 Button(action: onTap) { Label("立即播放", systemImage: "play.fill") }

@@ -361,8 +361,11 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
     public func requestThumbnail(for asset: PHAsset, targetSize: CGSize = CGSize(width: 320, height: 180), completion: @escaping (UIImage?) -> Void) -> PHImageRequestID? {
         let key = NSString(string: "\(asset.localIdentifier)_\(Int(targetSize.width))")
         if let cached = thumbnailCache.object(forKey: key) {
-            DispatchQueue.main.async {
+            // 命中内存缓存时立即同步交付，彻底根治滑动时的排队掉帧卡顿
+            if Thread.isMainThread {
                 completion(cached)
+            } else {
+                DispatchQueue.main.async { completion(cached) }
             }
             return nil
         }
@@ -378,8 +381,12 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
             if !isDegraded {
                 self?.thumbnailCache.setObject(image, forKey: key)
             }
-            DispatchQueue.main.async {
+            if Thread.isMainThread {
                 completion(image)
+            } else {
+                DispatchQueue.main.async {
+                    completion(image)
+                }
             }
         }
     }

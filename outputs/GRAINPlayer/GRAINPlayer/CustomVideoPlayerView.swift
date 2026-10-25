@@ -44,14 +44,31 @@ public final class PlayerUIView: UIView {
     }
 
     private var pipController: AVPictureInPictureController?
+    private var readyObservation: NSKeyValueObservation?
+    private weak var currentPipDelegate: AVPictureInPictureControllerDelegate?
+    private var currentOnPiPReady: ((AVPictureInPictureController) -> Void)?
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .black
+        setupReadyObserver()
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        readyObservation?.invalidate()
+    }
+
+    private func setupReadyObserver() {
+        readyObservation = playerLayer.observe(\.isReadyForDisplay, options: [.new, .initial]) { [weak self] layer, _ in
+            guard let self, layer.isReadyForDisplay else { return }
+            DispatchQueue.main.async {
+                self.ensurePictureInPictureController()
+            }
+        }
     }
 
     public func configure(
@@ -60,18 +77,13 @@ public final class PlayerUIView: UIView {
         pipDelegate: AVPictureInPictureControllerDelegate?,
         onPiPReady: ((AVPictureInPictureController) -> Void)?
     ) {
+        self.currentPipDelegate = pipDelegate
+        self.currentOnPiPReady = onPiPReady
+
         if playerLayer.player !== player {
             playerLayer.player = player
-            if AVPictureInPictureController.isPictureInPictureSupported() && player != nil {
-                if pipController == nil {
-                    let pip = AVPictureInPictureController(playerLayer: playerLayer)
-                    pip?.delegate = pipDelegate
-                    pipController = pip
-                    if let pip {
-                        onPiPReady?(pip)
-                    }
-                }
-            }
+            pipController = nil
+            ensurePictureInPictureController()
         }
 
         let targetGravity: AVLayerVideoGravity
@@ -86,6 +98,27 @@ public final class PlayerUIView: UIView {
 
         if playerLayer.videoGravity != targetGravity {
             playerLayer.videoGravity = targetGravity
+        }
+    }
+
+    private func ensurePictureInPictureController() {
+        guard AVPictureInPictureController.isPictureInPictureSupported() else { return }
+        guard playerLayer.player != nil else { return }
+
+        if pipController == nil {
+            if let pip = AVPictureInPictureController(playerLayer: playerLayer) {
+                pip.delegate = currentPipDelegate
+                if #available(iOS 14.2, *) {
+                    pip.canStartPictureInPictureAutomaticallyFromInline = true
+                }
+                self.pipController = pip
+                currentOnPiPReady?(pip)
+            }
+        } else if let pip = pipController {
+            if #available(iOS 14.2, *) {
+                pip.canStartPictureInPictureAutomaticallyFromInline = true
+            }
+            currentOnPiPReady?(pip)
         }
     }
 
