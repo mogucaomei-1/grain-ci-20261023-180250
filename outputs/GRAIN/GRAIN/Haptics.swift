@@ -13,6 +13,7 @@ enum GrainHaptics {
     private static let selectionGenerator = UISelectionFeedbackGenerator()
     private static let lightGenerator = UIImpactFeedbackGenerator(style: .light)
     private static let mediumGenerator = UIImpactFeedbackGenerator(style: .medium)
+    private static let notificationGenerator = UINotificationFeedbackGenerator()
 
     static var isEnabled: Bool {
         UserDefaults.standard.object(forKey: "hapticsEnabled") as? Bool ?? true
@@ -22,6 +23,7 @@ enum GrainHaptics {
         selectionGenerator.prepare()
         lightGenerator.prepare()
         mediumGenerator.prepare()
+        notificationGenerator.prepare()
     }
 
     static func selection(enabled: Bool = true) {
@@ -40,6 +42,12 @@ enum GrainHaptics {
         guard enabled && isEnabled else { return }
         mediumGenerator.impactOccurred()
         mediumGenerator.prepare()
+    }
+
+    static func error(enabled: Bool = true) {
+        guard enabled && isEnabled else { return }
+        notificationGenerator.notificationOccurred(.error)
+        notificationGenerator.prepare()
     }
 }
 
