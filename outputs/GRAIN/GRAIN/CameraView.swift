@@ -139,13 +139,13 @@ enum VideoQuality: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .uhd4k120: "4K 120fps"
-        case .uhd4k60: "4K 60fps"
-        case .uhd4k30: "4K 30fps"
-        case .uhd4k24: "4K 24fps"
-        case .uhd4k20: "4K 20fps"
-        case .hd1080p60: "1080P 60fps"
-        case .hd1080p30: "1080P 30fps"
+        case .uhd4k120: "4K120"
+        case .uhd4k60: "4K60"
+        case .uhd4k30: "4K30"
+        case .uhd4k24: "4K24"
+        case .uhd4k20: "4K20"
+        case .hd1080p60: "1080P60"
+        case .hd1080p30: "1080P30"
         }
     }
 }
@@ -4160,22 +4160,33 @@ final class CameraLevelerMotion: ObservableObject {
     func start() {
         guard motionManager.isDeviceMotionAvailable else { return }
         motionManager.deviceMotionUpdateInterval = 1.0 / 30.0
-        motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, error in
+        motionManager.startDeviceMotionUpdates(to: .main) { [weak self] motion, error in
             guard let self, let motion else { return }
-            let roll = motion.attitude.roll
-            let rollDeg = roll * 180.0 / .pi
+            let gx = motion.gravity.x
+            let gy = motion.gravity.y
+            // 基于重力矢量计算屏幕 2D 倾斜角度：直立时 gx=0, gy=-1 -> angle=0°，杜绝欧拉角在竖拍时的万向节死锁
+            let angleDeg = atan2(gx, -gy) * 180.0 / .pi
 
-            // 计算与最近 0°、90°、-90°、180° 的角度差（支持横屏与竖屏拍摄）
-            let nearestCardinal = (rollDeg / 90.0).rounded() * 90.0
-            let delta = rollDeg - nearestCardinal
+            // 计算与最近水平/竖直参考位 (0°, 90°, -90°, 180°) 的角度差
+            let nearestCardinal = (angleDeg / 90.0).rounded() * 90.0
+            let delta = angleDeg - nearestCardinal
 
-            let level = abs(delta) <= 0.8
+            // 水平判定（带防抖迟滞：进入 <= 1.5°，脱出 > 2.2°）
+            let level: Bool
+            if self.isLevel {
+                level = abs(delta) <= 2.2
+            } else {
+                level = abs(delta) <= 1.5
+            }
+
             self.rollAngle = delta
             if level != self.isLevel {
                 self.isLevel = level
                 if level && !self.lastHapticLevel {
-                    GrainHaptics.mediumImpact(enabled: true)
-                    AudioServicesPlaySystemSound(1519)
+                    let impact = UIImpactFeedbackGenerator(style: .rigid)
+                    impact.prepare()
+                    impact.impactOccurred(intensity: 1.0)
+                    AudioServicesPlaySystemSound(1520)
                 }
                 self.lastHapticLevel = level
             }
@@ -5129,17 +5140,13 @@ struct CameraView: View {
                                 }
                             }
                         } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "video.fill")
-                                    .font(.system(size: 11, weight: .semibold))
-                                Text(videoQuality.title)
-                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            }
-                            .foregroundStyle(GrainTheme.paper)
-                            .padding(.horizontal, 9)
-                            .frame(height: size)
-                            .background(GrainTheme.surface.opacity(0.85), in: Capsule())
-                            .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
+                            Text(videoQuality.title)
+                                .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                                .foregroundStyle(GrainTheme.paper)
+                                .padding(.horizontal, 10)
+                                .frame(height: size)
+                                .background(GrainTheme.surface.opacity(0.85), in: Capsule())
+                                .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
                         }
                         .disabled(camera.isRecording)
 
