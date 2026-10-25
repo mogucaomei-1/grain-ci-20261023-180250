@@ -2055,3 +2055,14 @@ private enum CollageError: LocalizedError {
         }
     }
 }
+
+// MARK: - 系统通用分享面板 (GrainShareSheet)
+struct GrainShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
+}

@@ -1547,14 +1547,7 @@ final class CameraController: ObservableObject {
             connection.isVideoMirrored =
                 self.isUsingFrontCamera && self.frontMirrorEnabled
         }
-        // 录制连接层锁定恒定帧率 (CFR)，严禁动态抽帧
-        let duration = CMTime(value: 1, timescale: Int32(targetFPS))
-        if connection.isVideoMinFrameDurationSupported {
-            connection.videoMinFrameDuration = duration
-        }
-        if connection.isVideoMaxFrameDurationSupported {
-            connection.videoMaxFrameDuration = duration
-        }
+
     }
 
     func stopRecording() {
