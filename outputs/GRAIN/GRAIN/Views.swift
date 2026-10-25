@@ -408,17 +408,12 @@ private struct MinimalTopBar: View {
                 .accessibilityLabel("打开设置")
 
                 Button(action: onSettings) {
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text("GRAIN")
-                            .font(.system(size: 14, weight: .heavy, design: .rounded))
-                            .tracking(2.3)
-                            .foregroundStyle(GrainTheme.paper)
-                        Text("1.1")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundStyle(GrainTheme.accent)
-                    }
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+                    Text("GRAIN")
+                        .font(.system(size: 14, weight: .heavy, design: .rounded))
+                        .tracking(2.3)
+                        .foregroundStyle(GrainTheme.paper)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("打开设置")
@@ -632,7 +627,7 @@ private struct EditorWorkspace: View {
     @State private var showTextEditor = false
     @State private var showMosaicEditor = false
     @State private var didSwipeBack = false
-    @State private var editorToolPage: EditorToolPage = .film
+    @State private var editorToolPage: EditorToolPage = .adjust
     @State private var showAdvancedGrade = false
     @State private var isPickingWhiteBalance = false
 
@@ -734,8 +729,8 @@ private struct EditorWorkspace: View {
 }
 
 private enum EditorToolPage: Int {
-    case film
     case adjust
+    case film
 }
 
 private struct EditorToolsPager: View {
@@ -751,20 +746,6 @@ private struct EditorToolsPager: View {
             HStack(spacing: 16) {
                 Button {
                     withAnimation(.snappy(duration: 0.24)) {
-                        page = .film
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "camera.aperture")
-                        Text("胶片滤镜")
-                    }
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundStyle(page == .film ? GrainTheme.accent : GrainTheme.muted)
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    withAnimation(.snappy(duration: 0.24)) {
                         page = .adjust
                     }
                 } label: {
@@ -774,6 +755,20 @@ private struct EditorToolsPager: View {
                     }
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .foregroundStyle(page == .adjust ? GrainTheme.accent : GrainTheme.muted)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    withAnimation(.snappy(duration: 0.24)) {
+                        page = .film
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "camera.aperture")
+                        Text("胶片滤镜")
+                    }
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(page == .film ? GrainTheme.accent : GrainTheme.muted)
                 }
                 .buttonStyle(.plain)
 
@@ -840,17 +835,17 @@ private struct EditorToolsPager: View {
             .gesture(pageSwipeGesture)
 
             ZStack {
-                if page == .film {
-                    FilmPresetBar()
-                        .transition(.opacity.combined(with: .move(edge: .leading)))
-                } else {
+                if page == .adjust {
                     AdjustPanel(
                         onCrop: onCrop,
                         onMosaic: onMosaic,
                         onAdvanced: onAdvanced,
                         onAddText: onAddText
                     )
-                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                } else {
+                    FilmPresetBar()
+                        .transition(.opacity.combined(with: .move(edge: .trailing)))
                 }
             }
             .frame(maxHeight: .infinity)
@@ -868,7 +863,7 @@ private struct EditorToolsPager: View {
                 let vertical = abs(value.translation.height)
                 guard abs(horizontal) > 46, abs(horizontal) > vertical * 1.2 else { return }
                 withAnimation(.snappy(duration: 0.24)) {
-                    page = horizontal < 0 ? .adjust : .film
+                    page = horizontal < 0 ? .film : .adjust
                 }
             }
     }

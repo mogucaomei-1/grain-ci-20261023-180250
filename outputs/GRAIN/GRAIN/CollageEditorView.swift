@@ -586,10 +586,12 @@ struct CollageEditorView: View {
                 remove(asset)
             } label: {
                 Image(systemName: "xmark")
-                    .font(.system(size: 6.5, weight: .bold))
-                    .foregroundStyle(GrainTheme.paper)
-                    .frame(width: 16, height: 16)
-                    .background(Color.black.opacity(0.78), in: Circle())
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(Color.white)
+                    .frame(width: 17, height: 17)
+                    .background(Color.black.opacity(0.82), in: Circle())
+                    .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 0.6))
+                    .shadow(color: Color.black.opacity(0.2), radius: 2, y: 1)
             }
             .buttonStyle(.plain)
             .offset(x: 4, y: -4)

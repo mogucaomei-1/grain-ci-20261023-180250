@@ -380,12 +380,14 @@ struct PhotoLibraryHome: View {
                 VStack(spacing: 10) {
                     ProgressView().tint(GrainTheme.paper)
                     Text(statusText)
-                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                        .font(.system(size: 9.5, weight: .semibold, design: .rounded))
                         .foregroundStyle(GrainTheme.paper)
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 13)
-                .background(.black.opacity(0.74), in: Capsule())
+                .background(GrainTheme.surface.opacity(0.92), in: Capsule())
+                .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.8))
+                .shadow(color: Color.black.opacity(0.12), radius: 8, y: 3)
             }
         }
         .confirmationDialog(
