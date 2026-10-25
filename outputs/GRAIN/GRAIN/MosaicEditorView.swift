@@ -11,7 +11,7 @@ struct MosaicEditorView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            GrainTheme.black.ignoresSafeArea()
 
             if let image = editor.editedPreview {
                 GeometryReader { proxy in
@@ -81,7 +81,8 @@ struct MosaicEditorView: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(GrainTheme.paper)
                     .frame(width: 38, height: 38)
-                    .background(Color.black.opacity(0.58), in: Circle())
+                    .background(GrainTheme.raised, in: Circle())
+                    .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
             }
             .buttonStyle(.plain)
 
@@ -103,7 +104,8 @@ struct MosaicEditorView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(editor.canUndo ? GrainTheme.paper : GrainTheme.muted)
                     .frame(width: 36, height: 36)
-                    .background(Color.black.opacity(0.58), in: Circle())
+                    .background(GrainTheme.raised, in: Circle())
+                    .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
             }
             .buttonStyle(.plain)
             .disabled(!editor.canUndo)
@@ -116,7 +118,8 @@ struct MosaicEditorView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(GrainTheme.paper)
                     .frame(width: 36, height: 36)
-                    .background(Color.black.opacity(0.58), in: Circle())
+                    .background(GrainTheme.raised, in: Circle())
+                    .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
             }
             .buttonStyle(.plain)
             .disabled(editor.mosaicStrokes.isEmpty)
@@ -127,10 +130,10 @@ struct MosaicEditorView: View {
             } label: {
                 Text("完成")
                     .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundStyle(GrainTheme.black)
+                    .foregroundStyle(Color.white)
                     .padding(.horizontal, 13)
                     .frame(height: 34)
-                    .background(GrainTheme.paper, in: Capsule())
+                    .background(GrainTheme.accent, in: Capsule())
             }
             .buttonStyle(.plain)
         }
@@ -165,7 +168,7 @@ struct MosaicEditorView: View {
         .padding(.bottom, 20)
         .background(
             LinearGradient(
-                colors: [.clear, Color.black.opacity(0.88)],
+                colors: [.clear, GrainTheme.black.opacity(0.92)],
                 startPoint: .top,
                 endPoint: .bottom
             )

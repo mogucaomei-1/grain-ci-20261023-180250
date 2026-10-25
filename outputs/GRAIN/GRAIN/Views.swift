@@ -392,7 +392,6 @@ private struct MinimalTopBar: View {
     let onDelete: (() -> Void)?
 
     @AppStorage("homeToolOrder") private var homeToolOrder = "camera,files,collage"
-    @AppStorage("appearanceMode") private var appearanceMode = AppearanceMode.system
     @State private var draggingHomeTool: HomeTool?
     @State private var homeToolDrag: CGFloat = 0
     @State private var suppressHomeToolTap = false
@@ -400,71 +399,13 @@ private struct MinimalTopBar: View {
     var body: some View {
         HStack(spacing: 12) {
             HStack(spacing: 9) {
-                Menu {
-                    Section("外观模式") {
-                        Button {
-                            appearanceMode = .system
-                            GrainHaptics.selection()
-                        } label: {
-                            Label("跟随系统", systemImage: appearanceMode == .system ? "checkmark" : "circle.lefthalf.filled")
-                        }
-
-                        Button {
-                            appearanceMode = .light
-                            GrainHaptics.selection()
-                        } label: {
-                            Label("白天模式 (浅色)", systemImage: appearanceMode == .light ? "checkmark" : "sun.max")
-                        }
-
-                        Button {
-                            appearanceMode = .dark
-                            GrainHaptics.selection()
-                        } label: {
-                            Label("黑夜模式 (深色)", systemImage: appearanceMode == .dark ? "checkmark" : "moon")
-                        }
-                    }
-
-                    Section {
-                        Button(action: onSettings) {
-                            Label("偏好设置", systemImage: "gearshape")
-                        }
-                    }
-                } label: {
-                    ZStack(alignment: .bottomTrailing) {
-                        AnimatedEditorMark(size: 29)
-
-                        // 外观状态徽标
-                        Circle()
-                            .fill(GrainTheme.surface)
-                            .frame(width: 14, height: 14)
-                            .overlay(
-                                Image(systemName: appearanceMode.iconName)
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundStyle(appearanceMode == .light ? Color.orange : GrainTheme.accent)
-                            )
-                            .overlay(
-                                Circle()
-                                    .stroke(GrainTheme.line, lineWidth: 0.6)
-                            )
-                            .offset(x: 3, y: 3)
-                    }
-                    .frame(width: 38, height: 38)
-                    .contentShape(Rectangle())
-                } primaryAction: {
-                    withAnimation(.easeInOut(duration: 0.22)) {
-                        switch appearanceMode {
-                        case .system:
-                            appearanceMode = .light
-                        case .light:
-                            appearanceMode = .dark
-                        case .dark:
-                            appearanceMode = .system
-                        }
-                    }
-                    GrainHaptics.selection()
+                Button(action: onSettings) {
+                    AnimatedEditorMark(size: 29)
+                        .frame(width: 38, height: 38)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("切换外观模式：当前为\(appearanceMode.title)")
+                .accessibilityLabel("打开设置")
 
                 Button(action: onSettings) {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
@@ -561,13 +502,18 @@ private struct MinimalTopBar: View {
                 .accessibilityLabel("查看图片信息")
 
                 Button(action: onExport) {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(GrainTheme.black)
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(GrainTheme.paper)
                         .frame(width: 38, height: 38)
-                        .background(GrainTheme.paper, in: Circle())
+                        .background(GrainTheme.raised, in: Circle())
+                        .overlay(
+                            Circle()
+                                .stroke(GrainTheme.line, lineWidth: 0.6)
+                        )
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("导出或分享")
             }
         }
         .foregroundStyle(GrainTheme.paper)
@@ -995,7 +941,9 @@ private struct PhotoEditorCanvas: View {
                             .foregroundStyle(GrainTheme.paper)
                             .padding(.horizontal, 9)
                             .frame(height: 24)
-                            .background(.black.opacity(0.52), in: Capsule())
+                            .background(GrainTheme.surface.opacity(0.88), in: Capsule())
+                            .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
+                            .shadow(color: Color.black.opacity(0.10), radius: 3, y: 1)
 
                         Spacer()
 
@@ -1010,7 +958,9 @@ private struct PhotoEditorCanvas: View {
                                 .controlSize(.small)
                                 .tint(GrainTheme.paper)
                                 .padding(8)
-                                .background(.black.opacity(0.46), in: Circle())
+                                .background(GrainTheme.surface.opacity(0.88), in: Circle())
+                                .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
+                                .shadow(color: Color.black.opacity(0.10), radius: 3, y: 1)
                         }
                     }
 
@@ -1022,7 +972,9 @@ private struct PhotoEditorCanvas: View {
                             .foregroundStyle(GrainTheme.paper)
                             .padding(.horizontal, 10)
                             .frame(height: 27)
-                            .background(.black.opacity(0.48), in: Capsule())
+                            .background(GrainTheme.surface.opacity(0.88), in: Capsule())
+                            .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
+                            .shadow(color: Color.black.opacity(0.10), radius: 3, y: 1)
 
                         Spacer()
 
@@ -1034,7 +986,9 @@ private struct PhotoEditorCanvas: View {
                                     .font(.system(size: 11, weight: .semibold))
                                     .foregroundStyle(GrainTheme.paper)
                                     .frame(width: 30, height: 29)
-                                    .background(.black.opacity(0.52), in: Capsule())
+                                    .background(GrainTheme.surface.opacity(0.88), in: Capsule())
+                                    .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
+                                    .shadow(color: Color.black.opacity(0.10), radius: 3, y: 1)
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("播放实况照片")
@@ -1050,7 +1004,9 @@ private struct PhotoEditorCanvas: View {
                                     showFocusPeaking ? GrainTheme.accent : GrainTheme.paper
                                 )
                                 .frame(width: 30, height: 29)
-                                .background(.black.opacity(0.52), in: Capsule())
+                                .background(GrainTheme.surface.opacity(0.88), in: Capsule())
+                                .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
+                                .shadow(color: Color.black.opacity(0.10), radius: 3, y: 1)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(showFocusPeaking ? "关闭峰值对焦" : "显示峰值对焦")
@@ -1066,7 +1022,9 @@ private struct PhotoEditorCanvas: View {
                                     compareFraction == nil ? GrainTheme.paper : GrainTheme.accent
                                 )
                                 .frame(width: 30, height: 29)
-                                .background(.black.opacity(0.52), in: Capsule())
+                                .background(GrainTheme.surface.opacity(0.88), in: Capsule())
+                                .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
+                                .shadow(color: Color.black.opacity(0.10), radius: 3, y: 1)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(compareFraction == nil ? "开启前后对比" : "关闭前后对比")
@@ -1076,7 +1034,9 @@ private struct PhotoEditorCanvas: View {
                             .foregroundStyle(GrainTheme.paper)
                             .padding(.horizontal, 11)
                             .frame(height: 29)
-                            .background(.black.opacity(0.52), in: Capsule())
+                            .background(GrainTheme.surface.opacity(0.88), in: Capsule())
+                            .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
+                            .shadow(color: Color.black.opacity(0.10), radius: 3, y: 1)
                             .contentShape(Capsule())
                             .gesture(
                                 DragGesture(minimumDistance: 0)
@@ -1564,7 +1524,7 @@ private struct FullscreenPhotoView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            GrainTheme.black.ignoresSafeArea()
 
             if let image = fullResolutionImage ?? editor.editedPreview {
                 GeometryReader { proxy in
@@ -1640,7 +1600,8 @@ private struct FullscreenPhotoView: View {
                             .font(.system(size: 13, weight: .bold))
                             .foregroundStyle(GrainTheme.paper)
                             .frame(width: 40, height: 40)
-                            .background(Color.black.opacity(0.58), in: Circle())
+                            .background(GrainTheme.surface.opacity(0.85), in: Circle())
+                            .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
                     }
                     .buttonStyle(.plain)
 
@@ -1651,7 +1612,8 @@ private struct FullscreenPhotoView: View {
                         .foregroundStyle(GrainTheme.paper)
                         .padding(.horizontal, 11)
                         .frame(height: 29)
-                        .background(Color.black.opacity(0.58), in: Capsule())
+                        .background(GrainTheme.surface.opacity(0.85), in: Capsule())
+                        .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
                 }
                 .padding(.horizontal, 16)
 
@@ -1662,7 +1624,8 @@ private struct FullscreenPhotoView: View {
                     .foregroundStyle(GrainTheme.paper.opacity(0.72))
                     .padding(.horizontal, 12)
                     .frame(height: 28)
-                    .background(Color.black.opacity(0.56), in: Capsule())
+                    .background(GrainTheme.surface.opacity(0.85), in: Capsule())
+                    .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
                     .onTapGesture {
                         dismiss()
                     }
@@ -1683,7 +1646,8 @@ private struct FullscreenPhotoView: View {
                     .foregroundStyle(GrainTheme.paper)
                     .padding(.horizontal, 11)
                     .frame(height: 28)
-                    .background(Color.black.opacity(0.62), in: Capsule())
+                    .background(GrainTheme.surface.opacity(0.85), in: Capsule())
+                    .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
                     .padding(.top, 62)
 
                     Spacer()

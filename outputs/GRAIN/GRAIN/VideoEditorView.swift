@@ -636,11 +636,12 @@ public struct VideoEditorView: View {
                     Text(isMuted ? "静音" : "原声")
                         .font(.system(size: 10, weight: .bold, design: .rounded))
                 }
-                .foregroundStyle(isMuted ? GrainTheme.black : GrainTheme.paper)
+                .foregroundStyle(isMuted ? Color.white : GrainTheme.paper)
                 .padding(.horizontal, 9)
                 .frame(height: 24)
-                .background(isMuted ? GrainTheme.accent : Color.black.opacity(0.55), in: Capsule())
-                .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 0.6))
+                .background(isMuted ? GrainTheme.accent : GrainTheme.surface.opacity(0.85), in: Capsule())
+                .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
+                .shadow(color: Color.black.opacity(0.10), radius: 3, y: 1)
             }
             .buttonStyle(.plain)
 
@@ -653,11 +654,12 @@ public struct VideoEditorView: View {
                     Text(isComparing ? "原片" : "对比")
                         .font(.system(size: 10, weight: .bold, design: .rounded))
                 }
-                .foregroundStyle(isComparing ? GrainTheme.black : GrainTheme.paper)
+                .foregroundStyle(isComparing ? Color.white : GrainTheme.paper)
                 .padding(.horizontal, 9)
                 .frame(height: 24)
-                .background(isComparing ? GrainTheme.accent : Color.black.opacity(0.55), in: Capsule())
-                .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 0.6))
+                .background(isComparing ? GrainTheme.accent : GrainTheme.surface.opacity(0.85), in: Capsule())
+                .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
+                .shadow(color: Color.black.opacity(0.10), radius: 3, y: 1)
             }
             .buttonStyle(.plain)
             .simultaneousGesture(
@@ -1914,7 +1916,7 @@ public struct VideoEditorView: View {
                     .scaleEffect(1.2)
                 Text("正在导出视频…")
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(GrainTheme.paper)
+                    .foregroundStyle(Color.white)
             }
         }
     }

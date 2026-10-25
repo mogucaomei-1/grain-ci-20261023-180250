@@ -3335,7 +3335,7 @@ struct CameraView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            GrainTheme.black.ignoresSafeArea()
             VStack(spacing: 0) {
                 topBar
 
@@ -3344,7 +3344,7 @@ struct CameraView: View {
                     // 这样才能做到“看到什么就拍到什么”，而不是始终铺满屏幕。
                     let rect = fittedFrame(for: effectiveAspect.ratio, in: proxy.size)
                     ZStack {
-                        Color.black
+                        GrainTheme.black
 
                         CameraPreviewView(
                             session: camera.session,
@@ -3410,7 +3410,7 @@ struct CameraView: View {
                     .animation(.easeInOut(duration: 0.24), value: effectiveAspect)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.black)
+                .background(GrainTheme.black)
                 .clipped()
 
                 cameraControls
@@ -3422,7 +3422,8 @@ struct CameraView: View {
                     .font(.system(size: 96, weight: .bold, design: .rounded))
                     .foregroundStyle(GrainTheme.paper)
                     .frame(width: 160, height: 160)
-                    .background(Color.black.opacity(0.48), in: Circle())
+                    .background(GrainTheme.surface.opacity(0.85), in: Circle())
+                    .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
                     .transition(.scale.combined(with: .opacity))
             }
 
@@ -3441,7 +3442,8 @@ struct CameraView: View {
                     }
                     .padding(.horizontal, 11)
                     .frame(height: 30)
-                    .background(Color.black.opacity(0.62), in: Capsule())
+                    .background(GrainTheme.surface.opacity(0.85), in: Capsule())
+                    .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
                     .padding(.top, 62)
                     Spacer()
                 }
@@ -3454,7 +3456,8 @@ struct CameraView: View {
                         .foregroundStyle(GrainTheme.paper)
                         .padding(.horizontal, 12)
                         .frame(height: 28)
-                        .background(Color.black.opacity(0.7), in: Capsule())
+                        .background(GrainTheme.surface.opacity(0.85), in: Capsule())
+                        .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
                         .padding(.top, 104)
                     Spacer()
                 }
@@ -3465,7 +3468,8 @@ struct CameraView: View {
                 ProgressView()
                     .tint(GrainTheme.paper)
                     .padding(16)
-                    .background(Color.black.opacity(0.62), in: Circle())
+                    .background(GrainTheme.surface.opacity(0.85), in: Circle())
+                    .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
             }
 
             if let error = camera.errorMessage {
@@ -3688,12 +3692,12 @@ struct CameraView: View {
                 .foregroundStyle(camera.exposureManual ? GrainTheme.black : GrainTheme.paper)
                 .frame(width: 28, height: 28)
                 .background(
-                    camera.exposureManual ? GrainTheme.accent : Color.black.opacity(0.54),
+                    camera.exposureManual ? GrainTheme.accent : GrainTheme.surface.opacity(0.85),
                     in: Capsule()
                 )
                 .overlay {
                     Capsule()
-                        .stroke(Color.white.opacity(0.22), lineWidth: 0.8)
+                        .stroke(GrainTheme.line, lineWidth: 0.8)
                 }
         }
         .buttonStyle(.plain)
@@ -3719,8 +3723,11 @@ struct CameraView: View {
                             .background(
                                 zoom == camera.selectedZoom
                                     ? GrainTheme.paper
-                                    : Color.black.opacity(0.54),
+                                    : GrainTheme.surface.opacity(0.85),
                                 in: Circle()
+                            )
+                            .overlay(
+                                Circle().stroke(GrainTheme.line, lineWidth: 0.6)
                             )
                     }
                     .buttonStyle(.plain)
@@ -3755,8 +3762,11 @@ struct CameraView: View {
                     .padding(.horizontal, 8)
                     .frame(height: 26)
                     .background(
-                        trackingActive ? GrainTheme.accent : Color.black.opacity(0.54),
+                        trackingActive ? GrainTheme.accent : GrainTheme.surface.opacity(0.85),
                         in: Capsule()
+                    )
+                    .overlay(
+                        Capsule().stroke(GrainTheme.line, lineWidth: 0.6)
                     )
                     .opacity(
                         camera.focusTrackingEnabled || camera.isManualFocusActive
@@ -3788,7 +3798,8 @@ struct CameraView: View {
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(GrainTheme.paper)
                     .frame(width: size, height: size)
-                    .background(Color.black.opacity(0.58), in: Circle())
+                    .background(GrainTheme.surface.opacity(0.85), in: Circle())
+                    .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
             }
             .buttonStyle(.plain)
 
@@ -3805,7 +3816,8 @@ struct CameraView: View {
                             showCameraFilters ? GrainTheme.accent : GrainTheme.muted
                     )
                     .frame(width: size, height: size)
-                    .background(Color.black.opacity(0.58), in: Circle())
+                    .background(GrainTheme.surface.opacity(0.85), in: Circle())
+                    .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
             }
             .buttonStyle(.plain)
 
@@ -3822,7 +3834,8 @@ struct CameraView: View {
                             mirrorFront ? GrainTheme.accent : GrainTheme.paper.opacity(0.55)
                         )
                         .frame(width: size, height: size)
-                        .background(Color.black.opacity(0.58), in: Circle())
+                        .background(GrainTheme.surface.opacity(0.85), in: Circle())
+                        .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(mirrorFront ? "关闭自拍镜像" : "开启自拍镜像")
@@ -3854,7 +3867,8 @@ struct CameraView: View {
                         livePhoto ? GrainTheme.accent : GrainTheme.paper.opacity(0.62)
                     )
                     .frame(width: size, height: size)
-                    .background(Color.black.opacity(0.58), in: Circle())
+                    .background(GrainTheme.surface.opacity(0.85), in: Circle())
+                    .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
                 }
                 .buttonStyle(.plain)
                 .disabled(!camera.isLivePhotoSupported || format == .raw || isPreparingLivePhoto)
@@ -3870,7 +3884,8 @@ struct CameraView: View {
                         showGrid ? GrainTheme.accent : GrainTheme.paper.opacity(0.62)
                     )
                     .frame(width: size, height: size)
-                    .background(Color.black.opacity(0.58), in: Circle())
+                    .background(GrainTheme.surface.opacity(0.85), in: Circle())
+                    .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
             }
             .buttonStyle(.plain)
 
@@ -3892,7 +3907,8 @@ struct CameraView: View {
                         timer == .off ? GrainTheme.paper.opacity(0.62) : GrainTheme.accent
                     )
                     .frame(width: size, height: size)
-                    .background(Color.black.opacity(0.58), in: Circle())
+                    .background(GrainTheme.surface.opacity(0.85), in: Circle())
+                    .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
                 }
             }
         }
@@ -3917,7 +3933,8 @@ struct CameraView: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(lightActive ? GrainTheme.accent : GrainTheme.paper.opacity(0.55))
                 .frame(width: size, height: size)
-                .background(Color.black.opacity(0.58), in: Circle())
+                .background(GrainTheme.surface.opacity(0.85), in: Circle())
+                .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
@@ -3963,10 +3980,10 @@ struct CameraView: View {
         .padding(.horizontal, 12)
         .padding(.top, 10)
         .padding(.bottom, 14)
-        .background(Color.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 22))
+        .background(GrainTheme.surface.opacity(0.92), in: RoundedRectangle(cornerRadius: 22))
         .overlay {
             RoundedRectangle(cornerRadius: 22)
-                .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                .stroke(GrainTheme.line, lineWidth: 0.8)
         }
         .padding(.horizontal, 10)
     }
@@ -4036,8 +4053,11 @@ struct CameraView: View {
                     .foregroundStyle(resolution == option ? GrainTheme.black : GrainTheme.paper)
                     .frame(width: 48, height: 30)
                     .background(
-                        resolution == option ? GrainTheme.paper : Color.black.opacity(0.54),
+                        resolution == option ? GrainTheme.paper : GrainTheme.raised,
                         in: Capsule()
+                    )
+                    .overlay(
+                        Capsule().stroke(GrainTheme.line, lineWidth: 0.6)
                     )
                     .opacity(
                         livePhoto
@@ -4098,8 +4118,11 @@ struct CameraView: View {
             .background(
                 camera.isFocusPeakingEnabled
                     ? GrainTheme.accent
-                    : Color.black.opacity(0.54),
+                    : GrainTheme.raised,
                 in: Capsule()
+            )
+            .overlay(
+                Capsule().stroke(GrainTheme.line, lineWidth: 0.6)
             )
         }
         .buttonStyle(.plain)
@@ -4221,9 +4244,9 @@ struct CameraView: View {
                     captureMode == .video ? GrainTheme.accent : GrainTheme.paper
                 )
                 .frame(width: sideButton, height: sideButton)
-                .background(Color.black.opacity(0.54), in: Circle())
+                .background(GrainTheme.surface.opacity(0.85), in: Circle())
                 .overlay {
-                    Circle().stroke(Color.white.opacity(0.16), lineWidth: 0.8)
+                    Circle().stroke(GrainTheme.line, lineWidth: 0.8)
                 }
         }
         .buttonStyle(.plain)
@@ -4267,7 +4290,7 @@ struct CameraView: View {
         } label: {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.black.opacity(0.54))
+                    .fill(GrainTheme.surface.opacity(0.85))
                 if let thumbnail = camera.latestCaptureThumbnail {
                     Image(uiImage: thumbnail)
                         .resizable()
@@ -4282,7 +4305,7 @@ struct CameraView: View {
             .frame(width: sideButton, height: sideButton)
             .overlay {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color.white.opacity(0.18), lineWidth: 0.8)
+                    .stroke(GrainTheme.line, lineWidth: 0.8)
             }
         }
         .buttonStyle(.plain)
@@ -4302,9 +4325,9 @@ struct CameraView: View {
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(GrainTheme.paper)
                 .frame(width: sideButton, height: sideButton)
-                .background(Color.black.opacity(0.54), in: Circle())
+                .background(GrainTheme.surface.opacity(0.85), in: Circle())
                 .overlay {
-                    Circle().stroke(Color.white.opacity(0.16), lineWidth: 0.8)
+                    Circle().stroke(GrainTheme.line, lineWidth: 0.8)
                 }
         }
         .buttonStyle(.plain)
@@ -4379,7 +4402,7 @@ struct CameraView: View {
                                         .stroke(
                                             cameraProfile == profile
                                                 ? GrainTheme.accent
-                                                : Color.white.opacity(0.08),
+                                                : GrainTheme.line,
                                             lineWidth: cameraProfile == profile ? 1.8 : 0.7
                                         )
                                 }
@@ -4563,6 +4586,7 @@ private struct MenuChip: View {
         .foregroundStyle(GrainTheme.paper)
         .padding(.horizontal, 9)
         .frame(height: 30)
-        .background(Color.black.opacity(0.54), in: Capsule())
+        .background(GrainTheme.raised, in: Capsule())
+        .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
     }
 }

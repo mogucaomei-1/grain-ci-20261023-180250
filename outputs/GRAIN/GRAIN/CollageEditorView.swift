@@ -230,12 +230,13 @@ enum CollageLayoutEngine {
 
 struct CollageEditorView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @State private var selectedAssets: [PHAsset]
     @State private var template: CollageTemplate = .auto
     @State private var ratio: CollageRatio = .square
     @State private var spacing: Double = 6
     @State private var corner: Double = 8
-    @State private var backgroundID = "black"
+    @State private var backgroundID: String? = nil
     @State private var previewImages: [String: UIImage] = [:]
     @State private var isLoading = true
     @State private var isRendering = false
@@ -252,8 +253,12 @@ struct CollageEditorView: View {
         _isLoading = State(initialValue: !assets.isEmpty)
     }
 
+    private var effectiveBackgroundID: String {
+        backgroundID ?? (colorScheme == .light ? "white" : "black")
+    }
+
     private var background: CollageBackgroundOption {
-        CollageBackgroundOption.all.first { $0.id == backgroundID }
+        CollageBackgroundOption.all.first { $0.id == effectiveBackgroundID }
             ?? CollageBackgroundOption.all[0]
     }
 
@@ -445,7 +450,7 @@ struct CollageEditorView: View {
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 0.8)
+                    .stroke(GrainTheme.line, lineWidth: 0.8)
             }
             .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
             .animation(.snappy(duration: 0.26), value: template)
@@ -487,10 +492,10 @@ struct CollageEditorView: View {
             ) {
                 Text("从照片图库添加")
                     .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundStyle(GrainTheme.black)
+                    .foregroundStyle(Color.white)
                     .padding(.horizontal, 16)
                     .frame(height: 38)
-                    .background(GrainTheme.paper, in: Capsule())
+                    .background(GrainTheme.accent, in: Capsule())
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -749,10 +754,10 @@ struct CollageEditorView: View {
                         .frame(width: 21, height: 21)
                         .overlay {
                             Circle().stroke(
-                                backgroundID == option.id
+                                effectiveBackgroundID == option.id
                                     ? GrainTheme.accent
-                                    : Color.white.opacity(0.17),
-                                lineWidth: backgroundID == option.id ? 1.8 : 0.8
+                                    : GrainTheme.line,
+                                lineWidth: effectiveBackgroundID == option.id ? 1.8 : 0.8
                             )
                         }
                 }

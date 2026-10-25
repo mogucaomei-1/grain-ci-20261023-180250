@@ -677,7 +677,7 @@ struct PhotoLibraryHome: View {
                     Text(Self.formatDuration(asset.duration))
                         .font(.system(size: 9, weight: .bold, design: .rounded))
                 }
-                .foregroundStyle(GrainTheme.paper)
+                .foregroundStyle(Color.white)
                 .padding(.horizontal, 4.5)
                 .padding(.vertical, 2.5)
                 .background(Color.black.opacity(0.68), in: Capsule())
@@ -1003,7 +1003,7 @@ private struct AssetFormatBadge: View {
             Text(label)
                 .font(.system(size: 7.5, weight: .bold, design: .monospaced))
                 .tracking(0.5)
-                .foregroundStyle(GrainTheme.paper)
+                .foregroundStyle(Color.white)
                 .padding(.horizontal, 5)
                 .frame(height: 15)
                 .background(.black.opacity(0.56), in: Capsule())

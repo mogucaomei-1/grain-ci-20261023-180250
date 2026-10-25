@@ -13,7 +13,7 @@ struct LivePhotoViewer: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            GrainTheme.black.ignoresSafeArea()
 
             if let livePhoto {
                 LivePhotoContainer(livePhoto: livePhoto, playbackToken: playbackToken)
@@ -45,7 +45,8 @@ struct LivePhotoViewer: View {
                             .font(.system(size: 12, weight: .bold))
                             .foregroundStyle(GrainTheme.paper)
                             .frame(width: 34, height: 34)
-                            .background(.black.opacity(0.6), in: Circle())
+                            .background(GrainTheme.surface.opacity(0.85), in: Circle())
+                            .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
                     }
                     .buttonStyle(.plain)
                 }
@@ -61,10 +62,10 @@ struct LivePhotoViewer: View {
                             Text("重播实况")
                         }
                         .font(.system(size: 11, weight: .bold, design: .rounded))
-                        .foregroundStyle(GrainTheme.black)
+                        .foregroundStyle(Color.white)
                         .padding(.horizontal, 16)
                         .frame(height: 40)
-                        .background(GrainTheme.paper, in: Capsule())
+                        .background(GrainTheme.accent, in: Capsule())
                     }
                     .buttonStyle(.plain)
                 }
