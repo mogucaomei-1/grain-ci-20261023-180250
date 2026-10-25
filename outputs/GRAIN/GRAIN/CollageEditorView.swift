@@ -2,6 +2,7 @@ import Photos
 import PhotosUI
 import SwiftUI
 import UIKit
+import ImageIO
 
 // MARK: - 版式
 
@@ -99,6 +100,123 @@ struct CollageBackgroundOption: Identifiable {
     ]
 }
 
+// MARK: - 编辑工作台分类与相框/水印模型
+
+enum EditorDeckTab: String, CaseIterable, Identifiable {
+    case layout = "排版边距"
+    case filmFrame = "胶片相框"
+    case watermark = "水印数据"
+    case stickers = "贴纸表情"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .layout: return "square.grid.2x2"
+        case .filmFrame: return "film"
+        case .watermark: return "character.cursor.ibeam"
+        case .stickers: return "face.smiling"
+        }
+    }
+}
+
+enum FilmFrameStyle: String, CaseIterable, Identifiable {
+    case none = "无边框"
+    case polaroid = "拍立得"
+    case sprocket35mm = "35mm齿孔"
+    case mediumFormat = "哈苏中画幅"
+    case disposable = "一次性相机"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .none: return "slash.circle"
+        case .polaroid: return "rectangle.portrait"
+        case .sprocket35mm: return "film"
+        case .mediumFormat: return "viewfinder"
+        case .disposable: return "camera.metering.matrix"
+        }
+    }
+}
+
+struct EditorSticker: Identifiable, Equatable {
+    let id: UUID
+    var text: String
+    var position: CGPoint // 归一化坐标 0...1
+    var scale: CGFloat
+
+    init(id: UUID = UUID(), text: String, position: CGPoint = CGPoint(x: 0.5, y: 0.5), scale: CGFloat = 1.0) {
+        self.id = id
+        self.text = text
+        self.position = position
+        self.scale = scale
+    }
+}
+
+struct PhotoEXIFInfo: Equatable {
+    var cameraModel: String = "GRAIN OPTICS"
+    var focalLength: String = "24mm"
+    var aperture: String = "f/1.8"
+    var shutterSpeed: String = "1/250s"
+    var iso: String = "ISO 100"
+    var dateString: String = "2026.10.25"
+    var locationString: String = "TOKYO, JAPAN"
+
+    static func extract(from asset: PHAsset) async -> PhotoEXIFInfo {
+        var info = PhotoEXIFInfo()
+        let date = asset.creationDate ?? Date()
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy.MM.dd"
+        info.dateString = formatter.string(from: date)
+
+        if let loc = asset.location {
+            let lat = abs(loc.coordinate.latitude)
+            let lon = abs(loc.coordinate.longitude)
+            let latDir = loc.coordinate.latitude >= 0 ? "N" : "S"
+            let lonDir = loc.coordinate.longitude >= 0 ? "E" : "W"
+            info.locationString = String(format: "%.2f°%@ %.2f°%@", lat, latDir, lon, lonDir)
+        }
+
+        let options = PHImageRequestOptions()
+        options.isNetworkAccessAllowed = true
+        options.isSynchronous = false
+        options.deliveryMode = .fastFormat
+
+        await withCheckedContinuation { continuation in
+            PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, _ in
+                if let data = data, let source = CGImageSourceCreateWithData(data as CFData, nil),
+                   let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] {
+                    if let tiff = properties[kCGImagePropertyTIFFDictionary as String] as? [String: Any],
+                       let model = tiff[kCGImagePropertyTIFFModel as String] as? String {
+                        info.cameraModel = model.replacingOccurrences(of: "iPhone ", with: "IPHONE ")
+                    }
+                    if let exif = properties[kCGImagePropertyExifDictionary as String] as? [String: Any] {
+                        if let fNumber = exif[kCGImagePropertyExifFNumber as String] as? Double {
+                            info.aperture = String(format: "f/%.1f", fNumber)
+                        }
+                        if let exposureTime = exif[kCGImagePropertyExifExposureTime as String] as? Double {
+                            if exposureTime >= 1.0 {
+                                info.shutterSpeed = String(format: "%.1fs", exposureTime)
+                            } else if exposureTime > 0 {
+                                info.shutterSpeed = "1/\(Int((1.0 / exposureTime).rounded()))s"
+                            }
+                        }
+                        if let isos = exif[kCGImagePropertyExifISOSpeedRatings as String] as? [Int], let firstISO = isos.first {
+                            info.iso = "ISO \(firstISO)"
+                        }
+                        if let focal = exif[kCGImagePropertyExifFocalLength as String] as? Double {
+                            info.focalLength = "\(Int(focal.rounded()))mm"
+                        }
+                    }
+                }
+                continuation.resume()
+            }
+        }
+        return info
+    }
+}
+
 // MARK: - 版式计算
 
 enum CollageLayoutEngine {
@@ -122,7 +240,7 @@ enum CollageLayoutEngine {
         }
     }
 
-    /// 归一化格子 → 实际像素矩形（含间距与圆角所需的留白）
+    /// 归一化格子 → 实际像素矩形（含间距与圆角所需的留白，支持 0...100 自由调节）
     static func cellRects(
         slots: [CGRect],
         in size: CGSize,
@@ -130,7 +248,7 @@ enum CollageLayoutEngine {
     ) -> [CGRect] {
         guard size.width > 1, size.height > 1, !slots.isEmpty else { return [] }
         let shortest = min(size.width, size.height)
-        let maxGap = shortest / CGFloat(max(slots.count, 1)) * 0.5
+        let maxGap = shortest * (slots.count == 1 ? 0.38 : (0.50 / CGFloat(max(slots.count, 1))))
         let gap = min(max(gapFraction, 0) * shortest, maxGap)
         let inset = gap / 2
         let available = CGRect(origin: .zero, size: size).insetBy(dx: inset, dy: inset)
@@ -226,7 +344,7 @@ enum CollageLayoutEngine {
     }
 }
 
-// MARK: - 拼图页
+// MARK: - 照片与拼图编辑工作台
 
 struct CollageEditorView: View {
     @Environment(\.dismiss) private var dismiss
@@ -234,8 +352,8 @@ struct CollageEditorView: View {
     @State private var selectedAssets: [PHAsset]
     @State private var template: CollageTemplate = .auto
     @State private var ratio: CollageRatio = .square
-    @State private var spacing: Double = 6
-    @State private var corner: Double = 8
+    @State private var spacing: Double = 8
+    @State private var corner: Double = 10
     @State private var backgroundID: String? = nil
     @State private var previewImages: [String: UIImage] = [:]
     @State private var isLoading = true
@@ -247,6 +365,17 @@ struct CollageEditorView: View {
     @State private var pickerError: String?
     @State private var notice: String?
     @State private var errorMessage: String?
+
+    // 新增：编辑工作台状态
+    @State private var activeTab: EditorDeckTab = .layout
+    @State private var filmFrame: FilmFrameStyle = .none
+    @State private var showDateStamp: Bool = false
+    @State private var dateStampStyle: Int = 0 // 0: 橙色石英点阵, 1: 极简现代, 2: 经典英文
+    @State private var showLocationStamp: Bool = false
+    @State private var locationText: String = ""
+    @State private var showEXIFBar: Bool = false
+    @State private var stickers: [EditorSticker] = []
+    @State private var exifInfo: PhotoEXIFInfo = PhotoEXIFInfo()
 
     init(assets: [PHAsset]) {
         _selectedAssets = State(initialValue: Array(assets.prefix(10)))
@@ -278,7 +407,7 @@ struct CollageEditorView: View {
                 VStack(spacing: 10) {
                     ProgressView()
                         .tint(GrainTheme.paper)
-                    Text(isRendering ? "正在生成拼图" : "正在读取照片")
+                    Text(isRendering ? "正在渲染高清成品" : "正在读取照片")
                         .font(.system(size: 10, weight: .semibold, design: .rounded))
                         .foregroundStyle(GrainTheme.paper)
                 }
@@ -305,6 +434,9 @@ struct CollageEditorView: View {
         .simultaneousGesture(backSwipeGesture)
         .task {
             await loadPreviewImages()
+            if let first = selectedAssets.first {
+                exifInfo = await PhotoEXIFInfo.extract(from: first)
+            }
         }
         .onChange(of: pickerItems) { _, items in
             Task { await addPickedAssets(items) }
@@ -321,7 +453,7 @@ struct CollageEditorView: View {
             }
         }
         .alert(
-            "拼图处理失败",
+            "编辑处理失败",
             isPresented: Binding(
                 get: { errorMessage != nil },
                 set: { if !$0 { errorMessage = nil } }
@@ -344,7 +476,7 @@ struct CollageEditorView: View {
         }
     }
 
-    // MARK: 顶栏
+    // MARK: 顶栏（将“拼图”升级为“编辑”）
 
     private var topBar: some View {
         HStack(spacing: 12) {
@@ -360,10 +492,10 @@ struct CollageEditorView: View {
             .buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("拼图")
+                Text("编辑")
                     .font(.system(size: 23, weight: .bold, design: .serif))
                     .foregroundStyle(GrainTheme.paper)
-                Text("\(selectedAssets.count) 张 · 最多 10 张")
+                Text(selectedAssets.isEmpty ? "未选择照片" : "\(selectedAssets.count) 张 · 最多 10 张")
                     .font(.system(size: 8.5, weight: .medium, design: .monospaced))
                     .foregroundStyle(GrainTheme.muted)
             }
@@ -414,7 +546,7 @@ struct CollageEditorView: View {
         .padding(.bottom, 8)
     }
 
-    // MARK: 画布预览
+    // MARK: 画布预览与多图层合成
 
     private var preview: some View {
         GeometryReader { proxy in
@@ -424,10 +556,11 @@ struct CollageEditorView: View {
                 count: selectedAssets.count,
                 ratio: ratio.value
             )
+            let gapFraction = CGFloat(spacing) / 100.0 * (selectedAssets.count <= 1 ? 0.38 : (0.50 / CGFloat(max(slots.count, 1))))
             let rects = CollageLayoutEngine.cellRects(
                 slots: slots,
                 in: size,
-                gapFraction: CGFloat(spacing) / 320
+                gapFraction: gapFraction
             )
 
             ZStack(alignment: .topLeading) {
@@ -440,10 +573,34 @@ struct CollageEditorView: View {
                         if item.offset < selectedAssets.count {
                             collageCell(
                                 asset: selectedAssets[item.offset],
-                                rect: item.element
+                                rect: item.element,
+                                canvasSize: size
                             )
                         }
                     }
+                }
+
+                // 1. 胶片模拟相框 (拍立得、35mm齿孔、哈苏中画幅等)
+                filmFrameOverlay(size: size)
+
+                // 2. EXIF 拍摄参数白条 / 铭牌
+                if showEXIFBar {
+                    exifBarOverlay(size: size)
+                }
+
+                // 3. 经典橙色石英点阵日期印记
+                if showDateStamp {
+                    dateStampOverlay(size: size)
+                }
+
+                // 4. 拍摄地点水印
+                if showLocationStamp {
+                    locationStampOverlay(size: size)
+                }
+
+                // 5. 表情包与贴纸自由放置层
+                ForEach(stickers) { sticker in
+                    stickerView(sticker: sticker, canvasSize: size)
                 }
             }
             .frame(width: size.width, height: size.height)
@@ -452,11 +609,13 @@ struct CollageEditorView: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .stroke(GrainTheme.line, lineWidth: 0.8)
             }
+            .shadow(color: Color.black.opacity(0.38), radius: 14, y: 6)
             .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
             .animation(.snappy(duration: 0.26), value: template)
             .animation(.snappy(duration: 0.26), value: ratio)
             .animation(.snappy(duration: 0.18), value: spacing)
             .animation(.snappy(duration: 0.18), value: corner)
+            .animation(.snappy(duration: 0.22), value: filmFrame)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 6)
@@ -481,7 +640,7 @@ struct CollageEditorView: View {
             Image(systemName: "rectangle.stack.badge.plus")
                 .font(.system(size: 34, weight: .light))
                 .foregroundStyle(GrainTheme.muted)
-            Text("添加照片开始制作拼图")
+            Text("添加照片开启复古工作台")
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                 .foregroundStyle(GrainTheme.muted)
             PhotosPicker(
@@ -501,8 +660,11 @@ struct CollageEditorView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func collageCell(asset: PHAsset, rect: CGRect) -> some View {
-        ZStack {
+    private func collageCell(asset: PHAsset, rect: CGRect, canvasSize: CGSize) -> some View {
+        let maxRadius = min(rect.width, rect.height) / 2
+        let calculatedRadius = min(CGFloat(corner) / 100.0 * maxRadius, maxRadius)
+
+        return ZStack {
             background.color
             if let image = previewImages[asset.localIdentifier] {
                 Image(uiImage: image)
@@ -519,11 +681,243 @@ struct CollageEditorView: View {
         .frame(width: rect.width, height: rect.height)
         .clipShape(
             RoundedRectangle(
-                cornerRadius: min(CGFloat(corner), min(rect.width, rect.height) / 2),
+                cornerRadius: calculatedRadius,
                 style: .continuous
             )
         )
         .position(x: rect.midX, y: rect.midY)
+    }
+
+    // MARK: - 胶片模拟相框覆盖层
+
+    @ViewBuilder
+    private func filmFrameOverlay(size: CGSize) -> some View {
+        switch filmFrame {
+        case .none:
+            EmptyView()
+        case .polaroid:
+            // 拍立得经典白底边框与宽下巴
+            let borderT = size.width * 0.05
+            let borderB = size.height * 0.16
+            ZStack(alignment: .bottom) {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.white, lineWidth: borderT)
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(height: borderB)
+                HStack {
+                    Text(exifInfo.dateString)
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color.black.opacity(0.65))
+                    Spacer()
+                    Text("POLAROID · GRAIN")
+                        .font(.system(size: 8, weight: .heavy, design: .rounded))
+                        .foregroundStyle(Color.black.opacity(0.40))
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, borderB * 0.28)
+            }
+            .frame(width: size.width, height: size.height)
+            .allowsHitTesting(false)
+
+        case .sprocket35mm:
+            // 35mm 胶卷上下齿孔与底片编码
+            let barH = size.height * 0.09
+            VStack(spacing: 0) {
+                // 上齿孔带
+                sprocketBar(width: size.width, height: barH, text: "KODAK PORTRA 400 · 36")
+                Spacer()
+                // 下齿孔带
+                sprocketBar(width: size.width, height: barH, text: "FILM 135 · 36A · DX 400")
+            }
+            .frame(width: size.width, height: size.height)
+            .allowsHitTesting(false)
+
+        case .mediumFormat:
+            // 哈苏 6x6 暗房边缘暗角与 V 型暗卡槽
+            ZStack {
+                Rectangle()
+                    .stroke(Color.black, lineWidth: size.width * 0.04)
+                VStack {
+                    HStack {
+                        Text("HASSELBLAD 6X6")
+                            .font(.system(size: 7.5, weight: .heavy, design: .monospaced))
+                            .foregroundStyle(Color.white.opacity(0.5))
+                            .padding(6)
+                        Spacer()
+                    }
+                    Spacer()
+                }
+            }
+            .frame(width: size.width, height: size.height)
+            .allowsHitTesting(false)
+
+        case .disposable:
+            // 一次性相机复古纸质框标
+            ZStack {
+                Rectangle()
+                    .stroke(Color.black.opacity(0.85), lineWidth: size.width * 0.035)
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        Text("DISPOSABLE 400")
+                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                            .foregroundStyle(GrainTheme.accent)
+                            .padding(6)
+                    }
+                }
+            }
+            .frame(width: size.width, height: size.height)
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func sprocketBar(width: CGFloat, height: CGFloat, text: String) -> some View {
+        ZStack {
+            Color.black
+            HStack(spacing: 7) {
+                ForEach(0..<max(1, Int(width / 16)), id: \.self) { _ in
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.white.opacity(0.22))
+                        .frame(width: 8, height: height * 0.45)
+                }
+            }
+            HStack {
+                Text(text)
+                    .font(.system(size: 7, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Color(red: 1.0, green: 0.72, blue: 0.15))
+                    .padding(.horizontal, 8)
+                Spacer()
+            }
+        }
+        .frame(width: width, height: height)
+    }
+
+    // MARK: - EXIF 拍摄参数铭牌横幅
+
+    private var exifParamText: String {
+        "\(exifInfo.cameraModel) · \(exifInfo.focalLength) · \(exifInfo.aperture) · \(exifInfo.shutterSpeed) · \(exifInfo.iso)"
+    }
+
+    private func exifBarOverlay(size: CGSize) -> some View {
+        VStack {
+            Spacer()
+            HStack(spacing: 5) {
+                Image(systemName: "camera.aperture")
+                    .font(.system(size: 8.5, weight: .bold))
+                Text(exifParamText)
+                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+            }
+            .foregroundStyle(Color.white)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4.5)
+            .background(Color.black.opacity(0.72), in: Capsule())
+            .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 0.6))
+            .padding(.bottom, 8)
+        }
+        .frame(width: size.width, height: size.height)
+        .allowsHitTesting(false)
+    }
+
+    // MARK: - 日期水印印记 (经典石英橙色点阵)
+
+    private func dateStampOverlay(size: CGSize) -> some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                let displayDate: String = {
+                    switch dateStampStyle {
+                    case 0:
+                        // 经典 90 年代胶片橙色缩写: '26 10 25
+                        let parts = exifInfo.dateString.split(separator: ".")
+                        if parts.count == 3 {
+                            let yy = String(parts[0].suffix(2))
+                            return "'\(yy) \(parts[1]) \(parts[2])"
+                        }
+                        return "'26 10 25"
+                    case 1:
+                        return exifInfo.dateString
+                    default:
+                        return "OCT 25 '26"
+                    }
+                }()
+
+                Text(displayDate)
+                    .font(.system(size: 11.5, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(Color(red: 1.0, green: 0.48, blue: 0.08))
+                    .shadow(color: Color(red: 1.0, green: 0.40, blue: 0.0).opacity(0.85), radius: 3, y: 1)
+                    .padding(8)
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .allowsHitTesting(false)
+    }
+
+    // MARK: - 地址水印
+
+    private func locationStampOverlay(size: CGSize) -> some View {
+        VStack {
+            Spacer()
+            HStack {
+                HStack(spacing: 4) {
+                    Image(systemName: "mappin.and.ellipse")
+                        .font(.system(size: 8, weight: .bold))
+                    Text(locationText.isEmpty ? exifInfo.locationString : locationText)
+                        .font(.system(size: 8.5, weight: .bold, design: .rounded))
+                }
+                .foregroundStyle(Color.white.opacity(0.92))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3.5)
+                .background(Color.black.opacity(0.65), in: Capsule())
+                .padding(8)
+
+                Spacer()
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .allowsHitTesting(false)
+    }
+
+    // MARK: - 贴纸交互视图 (支持拖动排版与轻触移除)
+
+    private func stickerView(sticker: EditorSticker, canvasSize: CGSize) -> some View {
+        let posX = sticker.position.x * canvasSize.width
+        let posY = sticker.position.y * canvasSize.height
+
+        return ZStack(alignment: .topTrailing) {
+            Text(sticker.text)
+                .font(.system(size: sticker.text.count > 2 ? 11 : 24, weight: .black, design: .rounded))
+                .foregroundStyle(GrainTheme.paper)
+                .padding(sticker.text.count > 2 ? 5 : 0)
+                .background(sticker.text.count > 2 ? GrainTheme.raised : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+                .shadow(color: Color.black.opacity(0.4), radius: 3, y: 1)
+
+            Button {
+                withAnimation(.snappy(duration: 0.2)) {
+                    stickers.removeAll { $0.id == sticker.id }
+                }
+                GrainHaptics.selection()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.red)
+                    .background(Color.white, in: Circle())
+            }
+            .offset(x: 6, y: -6)
+        }
+        .position(x: posX, y: posY)
+        .gesture(
+            DragGesture()
+                .onChanged { val in
+                    if let idx = stickers.firstIndex(where: { $0.id == sticker.id }) {
+                        let newX = min(max(val.location.x / canvasSize.width, 0.05), 0.95)
+                        let newY = min(max(val.location.y / canvasSize.height, 0.05), 0.95)
+                        stickers[idx].position = CGPoint(x: newX, y: newY)
+                    }
+                }
+        )
     }
 
     // MARK: 照片条
@@ -620,35 +1014,281 @@ struct CollageEditorView: View {
         }
     }
 
-    // MARK: 控制区
+    // MARK: - 控制区与模块化功能 Deck
 
     private var controls: some View {
-        VStack(spacing: 7) {
-            templateRow
-            ratioRow
-            sliderRow(
-                title: "间距",
-                value: Binding(
-                    get: { spacing },
-                    set: { spacing = $0 }
-                ),
-                range: 0...20,
-                display: "\(Int(spacing))"
-            )
-            sliderRow(
-                title: "圆角",
-                value: Binding(
-                    get: { corner },
-                    set: { corner = $0 }
-                ),
-                range: 0...24,
-                display: "\(Int(corner))"
-            )
-            backgroundRow
+        VStack(spacing: 8) {
+            // 顶层 4 大功能分类 Deck 切换条
+            categoryDeck
+
+            switch activeTab {
+            case .layout:
+                layoutControls
+            case .filmFrame:
+                filmFrameControls
+            case .watermark:
+                watermarkControls
+            case .stickers:
+                stickersControls
+            }
+
             actionRow
         }
         .padding(.top, 4)
         .padding(.bottom, 10)
+    }
+
+    private var categoryDeck: some View {
+        HStack(spacing: 6) {
+            ForEach(EditorDeckTab.allCases) { tab in
+                Button {
+                    withAnimation(.snappy(duration: 0.22)) {
+                        activeTab = tab
+                    }
+                    GrainHaptics.selection(enabled: true)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: tab.icon)
+                            .font(.system(size: 9.5, weight: .bold))
+                        Text(tab.rawValue)
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                    }
+                    .foregroundStyle(activeTab == tab ? GrainTheme.black : GrainTheme.paper)
+                    .padding(.horizontal, 9)
+                    .frame(height: 28)
+                    .background(activeTab == tab ? GrainTheme.accent : GrainTheme.raised, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 18)
+    }
+
+    // 1. 排版与边距控制面板
+    private var layoutControls: some View {
+        VStack(spacing: 6) {
+            templateRow
+            ratioRow
+            sliderRow(
+                title: "间距",
+                value: Binding(get: { spacing }, set: { spacing = $0 }),
+                range: 0...100,
+                display: "\(Int(spacing))"
+            )
+            sliderRow(
+                title: "圆角",
+                value: Binding(get: { corner }, set: { corner = $0 }),
+                range: 0...100,
+                display: "\(Int(corner))"
+            )
+            backgroundRow
+        }
+    }
+
+    // 2. 胶片相框控制面板
+    private var filmFrameControls: some View {
+        VStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(FilmFrameStyle.allCases) { style in
+                        Button {
+                            withAnimation(.snappy(duration: 0.22)) {
+                                filmFrame = style
+                            }
+                            GrainHaptics.selection(enabled: true)
+                        } label: {
+                            VStack(spacing: 4) {
+                                Image(systemName: style.icon)
+                                    .font(.system(size: 14, weight: .bold))
+                                Text(style.rawValue)
+                                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                            }
+                            .foregroundStyle(filmFrame == style ? GrainTheme.black : GrainTheme.paper)
+                            .frame(width: 70, height: 50)
+                            .background(filmFrame == style ? GrainTheme.accent : GrainTheme.raised, in: RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 18)
+            }
+            .frame(height: 54)
+
+            Text("胶片相框模拟经典暗房相纸、35mm 齿孔胶卷底片与拍立得白框")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(GrainTheme.muted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 18)
+        }
+    }
+
+    // 3. 水印与数据面板 (日期、地址、EXIF 拍摄参数)
+    private var watermarkControls: some View {
+        VStack(spacing: 6) {
+            // 日期开关与样式切换
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation { showDateStamp.toggle() }
+                    GrainHaptics.selection(enabled: true)
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: showDateStamp ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(showDateStamp ? GrainTheme.accent : GrainTheme.muted)
+                        Text("日期印记")
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .foregroundStyle(GrainTheme.paper)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 30)
+                    .background(GrainTheme.raised, in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                if showDateStamp {
+                    HStack(spacing: 5) {
+                        Button("石英点阵") { dateStampStyle = 0 }
+                            .font(.system(size: 9, weight: dateStampStyle == 0 ? .bold : .medium))
+                            .foregroundStyle(dateStampStyle == 0 ? GrainTheme.accent : GrainTheme.muted)
+                        Text("·").foregroundStyle(GrainTheme.muted)
+                        Button("现代极简") { dateStampStyle = 1 }
+                            .font(.system(size: 9, weight: dateStampStyle == 1 ? .bold : .medium))
+                            .foregroundStyle(dateStampStyle == 1 ? GrainTheme.accent : GrainTheme.muted)
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(height: 30)
+                    .background(GrainTheme.surface, in: Capsule())
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 18)
+
+            // 地址水印开关
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation { showLocationStamp.toggle() }
+                    GrainHaptics.selection(enabled: true)
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: showLocationStamp ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(showLocationStamp ? GrainTheme.accent : GrainTheme.muted)
+                        Text("拍摄地址")
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .foregroundStyle(GrainTheme.paper)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 30)
+                    .background(GrainTheme.raised, in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                if showLocationStamp {
+                    TextField("输入地址或城市", text: $locationText)
+                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(GrainTheme.paper)
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .background(GrainTheme.surface, in: Capsule())
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 18)
+
+            // EXIF 拍摄参数铭牌开关
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation { showEXIFBar.toggle() }
+                    GrainHaptics.selection(enabled: true)
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: showEXIFBar ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(showEXIFBar ? GrainTheme.accent : GrainTheme.muted)
+                        Text("EXIF 拍摄数据")
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .foregroundStyle(GrainTheme.paper)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 30)
+                    .background(GrainTheme.raised, in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                if showEXIFBar {
+                    Text(exifParamText)
+                        .font(.system(size: 8, weight: .medium, design: .monospaced))
+                        .foregroundStyle(GrainTheme.muted)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 18)
+        }
+    }
+
+    // 4. 贴纸与表情包面板
+    private var stickersControls: some View {
+        VStack(spacing: 7) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    let emojiStickers = ["🎞️", "📷", "📸", "⚡️", "☀️", "🌙", "📼", "🌈", "☕️", "🖤", "✨", "🎬"]
+                    ForEach(emojiStickers, id: \.self) { emoji in
+                        Button {
+                            addSticker(emoji)
+                        } label: {
+                            Text(emoji)
+                                .font(.system(size: 19))
+                                .frame(width: 36, height: 36)
+                                .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    let labelStickers = ["FILM", "RAW", "35MM", "PORTRA", "GRAIN", "EXPOSED"]
+                    ForEach(labelStickers, id: \.self) { badge in
+                        Button {
+                            addSticker(badge)
+                        } label: {
+                            Text(badge)
+                                .font(.system(size: 9.5, weight: .black, design: .monospaced))
+                                .foregroundStyle(GrainTheme.paper)
+                                .padding(.horizontal, 7)
+                                .frame(height: 36)
+                                .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 18)
+            }
+            .frame(height: 40)
+
+            HStack {
+                Text("轻按贴纸添加到照片上，按住可任意拖拽排版")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(GrainTheme.muted)
+                Spacer()
+                if !stickers.isEmpty {
+                    Button("清空贴纸") {
+                        withAnimation { stickers.removeAll() }
+                    }
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color.red)
+                }
+            }
+            .padding(.horizontal, 18)
+        }
+    }
+
+    private func addSticker(_ text: String) {
+        let newX = Double.random(in: 0.35...0.65)
+        let newY = Double.random(in: 0.35...0.65)
+        let s = EditorSticker(text: text, position: CGPoint(x: newX, y: newY))
+        withAnimation(.snappy(duration: 0.2)) {
+            stickers.append(s)
+        }
+        GrainHaptics.selection(enabled: true)
     }
 
     private var templateRow: some View {
@@ -735,7 +1375,7 @@ struct CollageEditorView: View {
                 .foregroundStyle(GrainTheme.paper)
                 .frame(width: 28, alignment: .trailing)
         }
-        .frame(height: 30)
+        .frame(height: 28)
         .padding(.horizontal, 18)
     }
 
@@ -768,7 +1408,7 @@ struct CollageEditorView: View {
 
             Spacer()
         }
-        .frame(height: 30)
+        .frame(height: 28)
         .padding(.horizontal, 18)
     }
 
@@ -801,107 +1441,129 @@ struct CollageEditorView: View {
             .disabled(isLoading || isRendering || selectedAssets.isEmpty)
         }
         .padding(.horizontal, 18)
-        .padding(.top, 2)
+        .padding(.top, 4)
     }
 
-    // MARK: 手势
+    // MARK: 手势与交互
 
-    /// 从屏幕最左侧往右滑返回主页
     private var backSwipeGesture: some Gesture {
-        DragGesture(minimumDistance: 18, coordinateSpace: .global)
+        DragGesture(minimumDistance: 20)
             .onEnded { value in
-                guard value.startLocation.x <= 26,
-                      value.translation.width > 88,
-                      abs(value.translation.height) < 110,
-                      abs(value.translation.width) > abs(value.translation.height) * 1.8
-                else { return }
-                dismiss()
+                if value.startLocation.x < 36, value.translation.width > 80 {
+                    dismiss()
+                }
             }
     }
 
-    // MARK: 数据
+    private func shuffleOrder() {
+        withAnimation(.snappy(duration: 0.26)) {
+            selectedAssets.shuffle()
+        }
+        GrainHaptics.mediumImpact(enabled: true)
+        showNotice("已打乱照片顺序")
+    }
 
-    @MainActor
-    private func loadPreviewImages() async {
-        guard !selectedAssets.isEmpty else {
-            isLoading = false
+    private func makeCover(_ asset: PHAsset) {
+        guard let index = selectedAssets.firstIndex(of: asset), index > 0 else { return }
+        withAnimation(.snappy(duration: 0.24)) {
+            selectedAssets.remove(at: index)
+            selectedAssets.insert(asset, at: 0)
+        }
+        GrainHaptics.selection(enabled: true)
+        showNotice("已设为封面")
+    }
+
+    private func move(_ asset: PHAsset, offset: Int) {
+        guard let index = selectedAssets.firstIndex(of: asset) else { return }
+        let target = index + offset
+        guard target >= 0, target < selectedAssets.count else { return }
+        withAnimation(.snappy(duration: 0.24)) {
+            selectedAssets.remove(at: index)
+            selectedAssets.insert(asset, at: target)
+        }
+        GrainHaptics.selection(enabled: true)
+    }
+
+    private func remove(_ asset: PHAsset) {
+        withAnimation(.snappy(duration: 0.24)) {
+            selectedAssets.removeAll { $0 == asset }
+            previewImages.removeValue(forKey: asset.localIdentifier)
+        }
+        GrainHaptics.selection(enabled: true)
+        showNotice("已移除照片")
+    }
+
+    private func addPickedAssets(_ items: [PhotosPickerItem]) async {
+        guard !items.isEmpty else { return }
+        pickerError = nil
+        let ids = items.compactMap(\.itemIdentifier)
+        guard !ids.isEmpty else {
+            pickerError = "未能读取所选照片的标识符"
             return
         }
+
+        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
+        var added: [PHAsset] = []
+        fetch.enumerateObjects { asset, _, _ in
+            if !self.selectedAssets.contains(asset) {
+                added.append(asset)
+            }
+        }
+
+        let capacity = max(0, 10 - selectedAssets.count)
+        let trimmed = Array(added.prefix(capacity))
+        guard !trimmed.isEmpty else { return }
+
+        await MainActor.run {
+            selectedAssets.append(contentsOf: trimmed)
+            pickerItems.removeAll()
+        }
+
+        for asset in trimmed {
+            if let img = await CollageImageLoader.image(for: asset, targetSize: CGSize(width: 480, height: 480)) {
+                await MainActor.run {
+                    previewImages[asset.localIdentifier] = img
+                }
+            }
+        }
+        GrainHaptics.selection(enabled: true)
+        showNotice("已添加 \(trimmed.count) 张照片")
+    }
+
+    private func loadPreviewImages() async {
         isLoading = true
-        for asset in selectedAssets where previewImages[asset.localIdentifier] == nil {
-            let image = await CollageImageLoader.image(
-                for: asset,
-                targetSize: CGSize(width: 900, height: 900)
-            )
-            if let image {
-                previewImages[asset.localIdentifier] = image
+        for asset in selectedAssets {
+            if previewImages[asset.localIdentifier] == nil {
+                if let img = await CollageImageLoader.image(
+                    for: asset,
+                    targetSize: CGSize(width: 480, height: 480)
+                ) {
+                    await MainActor.run {
+                        previewImages[asset.localIdentifier] = img
+                    }
+                }
             }
         }
         isLoading = false
     }
 
-    @MainActor
-    private func addPickedAssets(_ items: [PhotosPickerItem]) async {
-        guard !items.isEmpty else { return }
-        let identifiers = items.compactMap(\.itemIdentifier)
-        let fetched = PHAsset.fetchAssets(
-            withLocalIdentifiers: identifiers,
-            options: nil
-        )
-        var lookup: [String: PHAsset] = [:]
-        fetched.enumerateObjects { asset, _, _ in
-            lookup[asset.localIdentifier] = asset
+    private func showNotice(_ text: String) {
+        notice = text
+        Task {
+            try? await Task.sleep(nanoseconds: 1_400_000_000)
+            await MainActor.run {
+                if notice == text {
+                    notice = nil
+                }
+            }
         }
-        let additions = identifiers.compactMap { lookup[$0] }.filter { asset in
-            !selectedAssets.contains { $0.localIdentifier == asset.localIdentifier }
-        }
-        guard !additions.isEmpty else {
-            pickerError = "没有找到可添加的照片，请重新选择。"
-            pickerItems = []
-            return
-        }
-        selectedAssets.append(contentsOf: additions.prefix(10 - selectedAssets.count))
-        pickerItems = []
-        await loadPreviewImages()
     }
 
-    private func makeCover(_ asset: PHAsset) {
-        guard let index = selectedAssets.firstIndex(where: {
-            $0.localIdentifier == asset.localIdentifier
-        }), index > 0 else { return }
-        withAnimation(.snappy(duration: 0.22)) {
-            let item = selectedAssets.remove(at: index)
-            selectedAssets.insert(item, at: 0)
+    private func replaceExportURL(with url: URL) {
+        if let existing = exportURL, existing != url {
+            try? FileManager.default.removeItem(at: existing)
         }
-        GrainHaptics.lightImpact(enabled: true)
-    }
-
-    private func move(_ asset: PHAsset, offset: Int) {
-        guard let index = selectedAssets.firstIndex(where: {
-            $0.localIdentifier == asset.localIdentifier
-        }) else { return }
-        let target = index + offset
-        guard selectedAssets.indices.contains(target) else { return }
-        withAnimation(.snappy(duration: 0.22)) {
-            selectedAssets.swapAt(index, target)
-        }
-        GrainHaptics.lightImpact(enabled: true)
-    }
-
-    private func remove(_ asset: PHAsset) {
-        withAnimation(.snappy(duration: 0.22)) {
-            selectedAssets.removeAll { $0.localIdentifier == asset.localIdentifier }
-            previewImages[asset.localIdentifier] = nil
-        }
-        GrainHaptics.lightImpact(enabled: true)
-    }
-
-    private func shuffleOrder() {
-        guard selectedAssets.count > 1 else { return }
-        withAnimation(.snappy(duration: 0.24)) {
-            selectedAssets.shuffle()
-        }
-        GrainHaptics.selection(enabled: true)
+        exportURL = url
     }
 
     // MARK: 生成与保存
@@ -916,7 +1578,7 @@ struct CollageEditorView: View {
                 let url = try await renderCollage()
                 try await saveCollageToLibrary(url)
                 replaceExportURL(with: url)
-                showNotice("拼图已保存到照片图库")
+                showNotice("作品已保存到照片图库")
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -942,6 +1604,8 @@ struct CollageEditorView: View {
         }
     }
 
+    // MARK: - 高清渲染与多层导出
+
     private func renderCollage() async throws -> URL {
         let assets = selectedAssets
         let templateValue = template
@@ -949,6 +1613,14 @@ struct CollageEditorView: View {
         let spacingValue = spacing
         let cornerValue = corner
         let backgroundValue = background
+        let filmFrameValue = filmFrame
+        let showDateStampValue = showDateStamp
+        let dateStampStyleValue = dateStampStyle
+        let showLocationStampValue = showLocationStamp
+        let locationTextValue = locationText
+        let showEXIFBarValue = showEXIFBar
+        let stickersValue = stickers
+        let exifInfoValue = exifInfo
 
         guard !assets.isEmpty, assets.count <= 10 else {
             throw CollageError.invalidPhotoCount
@@ -973,10 +1645,11 @@ struct CollageEditorView: View {
             count: assets.count,
             ratio: ratioValue
         )
+        let gapFraction = CGFloat(spacingValue) / 100.0 * (assets.count <= 1 ? 0.38 : (0.50 / CGFloat(max(slots.count, 1))))
         let rects = CollageLayoutEngine.cellRects(
             slots: slots,
             in: canvasSize,
-            gapFraction: CGFloat(spacingValue) / 320
+            gapFraction: gapFraction
         )
         guard rects.count >= assets.count else {
             throw CollageError.renderFailed
@@ -988,8 +1661,8 @@ struct CollageEditorView: View {
             maxCell.height = max(maxCell.height, rect.height)
         }
         let target = CGSize(
-            width: min(maxCell.width, 2200),
-            height: min(maxCell.height, 2200)
+            width: min(maxCell.width, 2400),
+            height: min(maxCell.height, 2400)
         )
 
         var images: [UIImage] = []
@@ -1004,7 +1677,6 @@ struct CollageEditorView: View {
             images.append(image)
         }
 
-        let cornerPixels = CGFloat(cornerValue) * (canvasSize.width / 356)
         let format = UIGraphicsImageRendererFormat()
         format.opaque = true
         format.scale = 1
@@ -1017,7 +1689,8 @@ struct CollageEditorView: View {
 
             for (index, image) in images.enumerated() where index < rects.count {
                 let rect = rects[index]
-                let radius = min(cornerPixels, min(rect.width, rect.height) / 2)
+                let maxRadius = min(rect.width, rect.height) / 2
+                let radius = min(CGFloat(cornerValue) / 100.0 * maxRadius, maxRadius)
                 cg.saveGState()
                 let path = UIBezierPath(roundedRect: rect, cornerRadius: radius)
                 cg.addPath(path.cgPath)
@@ -1025,13 +1698,34 @@ struct CollageEditorView: View {
                 drawAspectFill(image, in: rect, context: cg)
                 cg.restoreGState()
             }
+
+            // 1. 胶片模拟相框
+            drawFilmFrame(filmFrameValue, in: canvasSize, context: cg, exifInfo: exifInfoValue)
+
+            // 2. EXIF 拍摄参数横幅
+            if showEXIFBarValue {
+                drawEXIFBar(exifInfoValue, in: canvasSize, context: cg)
+            }
+
+            // 3. 日期印记
+            if showDateStampValue {
+                drawDateStamp(exifInfoValue.dateString, in: canvasSize, context: cg, style: dateStampStyleValue)
+            }
+
+            // 4. 地址水印
+            if showLocationStampValue {
+                drawLocationStamp(locationTextValue.isEmpty ? exifInfoValue.locationString : locationTextValue, in: canvasSize, context: cg)
+            }
+
+            // 5. 贴纸与表情包
+            drawStickers(stickersValue, in: canvasSize, context: cg)
         }
 
-        guard let data = collage.jpegData(compressionQuality: 1.0) else {
+        guard let data = collage.jpegData(compressionQuality: 0.98) else {
             throw CollageError.renderFailed
         }
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("GRAIN-collage-\(UUID().uuidString)")
+            .appendingPathComponent("GRAIN-edit-\(UUID().uuidString)")
             .appendingPathExtension("jpg")
         try data.write(to: url, options: .atomic)
         return url
@@ -1062,27 +1756,223 @@ struct CollageEditorView: View {
         context.restoreGState()
     }
 
+    // MARK: - 导出绘制辅助
+
+    private func drawFilmFrame(_ style: FilmFrameStyle, in size: CGSize, context: CGContext, exifInfo: PhotoEXIFInfo) {
+        switch style {
+        case .none:
+            break
+        case .polaroid:
+            let borderT = size.width * 0.05
+            let borderB = size.height * 0.16
+            context.saveGState()
+            context.setFillColor(UIColor.white.cgColor)
+            context.fill(CGRect(x: 0, y: 0, width: size.width, height: borderT))
+            context.fill(CGRect(x: 0, y: 0, width: borderT, height: size.height))
+            context.fill(CGRect(x: size.width - borderT, y: 0, width: borderT, height: size.height))
+            context.fill(CGRect(x: 0, y: size.height - borderB, width: size.width, height: borderB))
+
+            let dateText = NSString(string: exifInfo.dateString)
+            let dateAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.024, weight: .bold),
+                .foregroundColor: UIColor.black.withAlphaComponent(0.68)
+            ]
+            dateText.draw(at: CGPoint(x: borderT * 1.5, y: size.height - borderB * 0.55), withAttributes: dateAttrs)
+
+            let brandText = NSString(string: "POLAROID · GRAIN")
+            let brandAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: size.width * 0.020, weight: .heavy),
+                .foregroundColor: UIColor.black.withAlphaComponent(0.42)
+            ]
+            let brandSize = brandText.size(withAttributes: brandAttrs)
+            brandText.draw(at: CGPoint(x: size.width - borderT * 1.5 - brandSize.width, y: size.height - borderB * 0.55), withAttributes: brandAttrs)
+            context.restoreGState()
+
+        case .sprocket35mm:
+            let barH = size.height * 0.09
+            context.saveGState()
+            context.setFillColor(UIColor.black.cgColor)
+            context.fill(CGRect(x: 0, y: 0, width: size.width, height: barH))
+            context.fill(CGRect(x: 0, y: size.height - barH, width: size.width, height: barH))
+
+            // 齿孔
+            let holeW = size.width * 0.024
+            let holeH = barH * 0.52
+            let count = Int(size.width / (holeW * 1.8))
+            let step = size.width / CGFloat(max(count, 1))
+
+            context.setFillColor(UIColor.white.withAlphaComponent(0.24).cgColor)
+            for i in 0..<count {
+                let x = CGFloat(i) * step + step * 0.2
+                let topHole = CGRect(x: x, y: barH * 0.24, width: holeW, height: holeH)
+                let btmHole = CGRect(x: x, y: size.height - barH + barH * 0.24, width: holeW, height: holeH)
+                let p1 = UIBezierPath(roundedRect: topHole, cornerRadius: 3)
+                context.addPath(p1.cgPath)
+                context.fillPath()
+                let p2 = UIBezierPath(roundedRect: btmHole, cornerRadius: 3)
+                context.addPath(p2.cgPath)
+                context.fillPath()
+            }
+
+            // 胶片黄色字符
+            let filmOrange = UIColor(red: 1.0, green: 0.72, blue: 0.15, alpha: 1.0)
+            let txtAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.018, weight: .bold),
+                .foregroundColor: filmOrange
+            ]
+            NSString(string: "KODAK PORTRA 400 · 36").draw(at: CGPoint(x: 24, y: barH * 0.62), withAttributes: txtAttrs)
+            NSString(string: "FILM 135 · 36A · DX 400").draw(at: CGPoint(x: 24, y: size.height - barH * 0.38), withAttributes: txtAttrs)
+            context.restoreGState()
+
+        case .mediumFormat:
+            let border = size.width * 0.04
+            context.saveGState()
+            context.setFillColor(UIColor.black.cgColor)
+            context.fill(CGRect(x: 0, y: 0, width: size.width, height: border))
+            context.fill(CGRect(x: 0, y: 0, width: border, height: size.height))
+            context.fill(CGRect(x: size.width - border, y: 0, width: border, height: size.height))
+            context.fill(CGRect(x: 0, y: size.height - border, width: size.width, height: border))
+
+            let txtAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.016, weight: .heavy),
+                .foregroundColor: UIColor.white.withAlphaComponent(0.5)
+            ]
+            NSString(string: "HASSELBLAD 6X6 - 120 FILM").draw(at: CGPoint(x: border * 1.5, y: border * 0.2), withAttributes: txtAttrs)
+            context.restoreGState()
+
+        case .disposable:
+            let border = size.width * 0.035
+            context.saveGState()
+            context.setFillColor(UIColor.black.withAlphaComponent(0.85).cgColor)
+            context.fill(CGRect(x: 0, y: 0, width: size.width, height: border))
+            context.fill(CGRect(x: 0, y: 0, width: border, height: size.height))
+            context.fill(CGRect(x: size.width - border, y: 0, width: border, height: size.height))
+            context.fill(CGRect(x: 0, y: size.height - border, width: size.width, height: border))
+            context.restoreGState()
+        }
+    }
+
+    private func drawEXIFBar(_ info: PhotoEXIFInfo, in size: CGSize, context: CGContext) {
+        let text = NSString(string: "\(info.cameraModel) · \(info.focalLength) · \(info.aperture) · \(info.shutterSpeed) · \(info.iso)")
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.021, weight: .bold),
+            .foregroundColor: UIColor.white
+        ]
+        let textSize = text.size(withAttributes: attrs)
+        let pillRect = CGRect(
+            x: (size.width - textSize.width) / 2 - 20,
+            y: size.height - textSize.height - 40,
+            width: textSize.width + 40,
+            height: textSize.height + 16
+        )
+
+        context.saveGState()
+        context.setFillColor(UIColor.black.withAlphaComponent(0.75).cgColor)
+        let path = UIBezierPath(roundedRect: pillRect, cornerRadius: pillRect.height / 2)
+        context.addPath(path.cgPath)
+        context.fillPath()
+
+        text.draw(at: CGPoint(x: (size.width - textSize.width) / 2, y: pillRect.minY + 8), withAttributes: attrs)
+        context.restoreGState()
+    }
+
+    private func drawDateStamp(_ dateString: String, in size: CGSize, context: CGContext, style: Int) {
+        let display: String = {
+            switch style {
+            case 0:
+                let parts = dateString.split(separator: ".")
+                if parts.count == 3 {
+                    let yy = String(parts[0].suffix(2))
+                    return "'\(yy) \(parts[1]) \(parts[2])"
+                }
+                return "'26 10 25"
+            case 1:
+                return dateString
+            default:
+                return "OCT 25 '26"
+            }
+        }()
+
+        let text = NSString(string: display)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.030, weight: .heavy),
+            .foregroundColor: UIColor(red: 1.0, green: 0.48, blue: 0.08, alpha: 1.0)
+        ]
+        let textSize = text.size(withAttributes: attrs)
+        let pt = CGPoint(x: size.width - textSize.width - 36, y: size.height - textSize.height - 36)
+
+        context.saveGState()
+        context.setShadow(offset: CGSize(width: 0, height: 2), blur: 6, color: UIColor(red: 1.0, green: 0.4, blue: 0.0, alpha: 0.85).cgColor)
+        text.draw(at: pt, withAttributes: attrs)
+        context.restoreGState()
+    }
+
+    private func drawLocationStamp(_ location: String, in size: CGSize, context: CGContext) {
+        guard !location.isEmpty else { return }
+        let text = NSString(string: "📍 " + location)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: size.width * 0.021, weight: .bold),
+            .foregroundColor: UIColor.white
+        ]
+        let textSize = text.size(withAttributes: attrs)
+        let pillRect = CGRect(x: 36, y: size.height - textSize.height - 44, width: textSize.width + 24, height: textSize.height + 14)
+
+        context.saveGState()
+        context.setFillColor(UIColor.black.withAlphaComponent(0.68).cgColor)
+        let path = UIBezierPath(roundedRect: pillRect, cornerRadius: pillRect.height / 2)
+        context.addPath(path.cgPath)
+        context.fillPath()
+
+        text.draw(at: CGPoint(x: 48, y: pillRect.minY + 7), withAttributes: attrs)
+        context.restoreGState()
+    }
+
+    private func drawStickers(_ stickers: [EditorSticker], in size: CGSize, context: CGContext) {
+        for sticker in stickers {
+            let pt = CGPoint(x: sticker.position.x * size.width, y: sticker.position.y * size.height)
+            let isLabel = sticker.text.count > 2
+            let text = NSString(string: sticker.text)
+            let fontSize = isLabel ? size.width * 0.028 : size.width * 0.060
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: isLabel ? UIFont.monospacedSystemFont(ofSize: fontSize, weight: .heavy) : UIFont.systemFont(ofSize: fontSize),
+                .foregroundColor: UIColor.white
+            ]
+            let textSize = text.size(withAttributes: attrs)
+            let drawRect = CGRect(x: pt.x - textSize.width / 2, y: pt.y - textSize.height / 2, width: textSize.width, height: textSize.height)
+
+            context.saveGState()
+            if isLabel {
+                let bgRect = drawRect.insetBy(dx: -10, dy: -6)
+                context.setFillColor(UIColor(red: 0.15, green: 0.15, blue: 0.16, alpha: 0.95).cgColor)
+                let p = UIBezierPath(roundedRect: bgRect, cornerRadius: 6)
+                context.addPath(p.cgPath)
+                context.fillPath()
+            }
+            text.draw(in: drawRect, withAttributes: attrs)
+            context.restoreGState()
+        }
+    }
+
     private func saveCollageToLibrary(_ url: URL) async throws {
         let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
         if status == .notDetermined {
             let granted = await withCheckedContinuation { continuation in
-                PHPhotoLibrary.requestAuthorization(for: .addOnly) {
-                    continuation.resume(returning: $0 == .authorized || $0 == .limited)
+                PHPhotoLibrary.requestAuthorization(for: .addOnly) { newStatus in
+                    continuation.resume(returning: newStatus == .authorized || newStatus == .limited)
                 }
             }
             guard granted else { throw CollageError.photoLibraryDenied }
-        } else if status != .authorized, status != .limited {
+        } else if status != .authorized && status != .limited {
             throw CollageError.photoLibraryDenied
         }
 
-        try await withCheckedThrowingContinuation { continuation in
-            PHPhotoLibrary.shared().performChanges {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            PHPhotoLibrary.shared().performChanges({
                 let request = PHAssetCreationRequest.forAsset()
                 let options = PHAssetResourceCreationOptions()
-                options.originalFilename = "GRAIN-collage.jpg"
-                options.uniformTypeIdentifier = "public.jpeg"
+                options.shouldMoveFile = false
                 request.addResource(with: .photo, fileURL: url, options: options)
-            } completionHandler: { success, error in
+            }) { success, error in
                 if success {
                     continuation.resume()
                 } else {
@@ -1093,66 +1983,53 @@ struct CollageEditorView: View {
             }
         }
     }
-
-    private func showNotice(_ text: String) {
-        withAnimation(.easeOut(duration: 0.16)) {
-            notice = text
-        }
-        Task {
-            try? await Task.sleep(for: .seconds(2))
-            withAnimation(.easeIn(duration: 0.16)) {
-                notice = nil
-            }
-        }
-    }
-
-    private func replaceExportURL(with url: URL) {
-        if let exportURL, exportURL != url {
-            try? FileManager.default.removeItem(at: exportURL)
-        }
-        exportURL = url
-    }
 }
+
+// MARK: - 辅助图片加载
 
 private enum CollageImageLoader {
     static func image(for asset: PHAsset, targetSize: CGSize) async -> UIImage? {
         await withCheckedContinuation { continuation in
-            let gate = CollageImageContinuation(continuation)
             let options = PHImageRequestOptions()
             options.deliveryMode = .highQualityFormat
-            options.resizeMode = .exact
-            options.version = .current
+            options.resizeMode = .fast
             options.isNetworkAccessAllowed = true
+            options.isSynchronous = false
+
+            let gate = CollageImageContinuation(continuation)
 
             PHImageManager.default().requestImage(
                 for: asset,
                 targetSize: targetSize,
                 contentMode: .aspectFill,
                 options: options
-            ) { image, info in
-                if let degraded = info?[PHImageResultIsDegradedKey] as? Bool, degraded {
-                    return
+            ) { img, info in
+                let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+                if let img, !degraded {
+                    gate.resume(with: img)
+                } else if img == nil {
+                    gate.resume(with: nil)
                 }
-                gate.finish(image)
             }
         }
     }
 }
 
 private final class CollageImageContinuation: @unchecked Sendable {
+    private let continuation: CheckedContinuation<UIImage?, Never>
+    private var isResumed = false
     private let lock = NSLock()
-    private var continuation: CheckedContinuation<UIImage?, Never>?
 
     init(_ continuation: CheckedContinuation<UIImage?, Never>) {
         self.continuation = continuation
     }
 
-    func finish(_ image: UIImage?) {
+    func resume(with image: UIImage?) {
         lock.lock()
-        let continuation = continuation
-        self.continuation = nil
-        lock.unlock()
-        continuation?.resume(returning: image)
+        defer { lock.unlock() }
+        guard !isResumed else { return }
+        isResumed = true
+        continuation.resume(returning: image)
     }
 }
 
@@ -1166,31 +2043,15 @@ private enum CollageError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidPhotoCount:
-            "请选择 1 到 10 张照片制作拼图。"
+            return "请选择 1 到 10 张照片进行编辑"
         case .imageUnavailable:
-            "部分照片无法从 iCloud 读取，请检查网络后重试。"
+            return "未能从图库下载并解码所选照片的高清图"
         case .renderFailed:
-            "无法生成拼图，请减少照片数量后重试。"
+            return "生成图片失败，请检查设备内存后重试"
         case .photoLibraryDenied:
-            "请在系统设置中允许 GRAIN 向照片图库添加照片。"
+            return "未获得写入照片图库的权限，请在系统设置中允许访问"
         case .saveFailed:
-            "拼图保存失败，请检查存储空间后重试。"
+            return "保存到照片图库失败，请稍后重试"
         }
     }
-}
-
-struct GrainShareSheet: UIViewControllerRepresentable {
-    let items: [Any]
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(
-            activityItems: items,
-            applicationActivities: nil
-        )
-    }
-
-    func updateUIViewController(
-        _ uiViewController: UIActivityViewController,
-        context: Context
-    ) {}
 }

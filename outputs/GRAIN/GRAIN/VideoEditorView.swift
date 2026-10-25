@@ -300,6 +300,7 @@ public struct VideoEditorView: View {
     @State private var dragInitialTrimEnd: Double? = nil
     @State private var dragInitialTrimRange: (start: Double, end: Double)? = nil
     @State private var isTrimming = false
+    @State private var activeTrimHandle: String? = nil
 
     private let recipeHolder: VideoRecipeHolder
 
@@ -1225,12 +1226,13 @@ public struct VideoEditorView: View {
             let endRatio = CGFloat(recipe.trimEnd / totalDuration)
             let leftX = totalW * startRatio
             let rightX = totalW * endRatio
-            let boxW = max(rightX - leftX, 26)
+            let boxW = max(rightX - leftX, 32)
             let boxCenterX = leftX + (rightX - leftX) / 2
-            let handleW: CGFloat = boxW < 44 ? min(11, boxW * 0.32) : 15
+            let handleWidth: CGFloat = 16
+            let currentX = CGFloat(currentTime / totalDuration) * totalW
 
             ZStack {
-                // 1. 缩略图底条
+                // 1. 胶片缩略图轨道 (高度 44pt，全圆角收口)
                 HStack(spacing: 0) {
                     if thumbnails.isEmpty {
                         Color.white.opacity(0.08)
@@ -1239,56 +1241,202 @@ public struct VideoEditorView: View {
                             Image(uiImage: thumbnails[idx])
                                 .resizable()
                                 .aspectRatio(contentMode: .fill)
-                                .frame(width: totalW / CGFloat(thumbnails.count), height: 42)
+                                .frame(width: totalW / CGFloat(thumbnails.count), height: 44)
                                 .clipped()
                         }
                     }
                 }
-                .frame(width: totalW, height: 42)
+                .frame(width: totalW, height: 44)
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .position(x: totalW / 2, y: 23)
+                .position(x: totalW / 2, y: 24)
                 .allowsHitTesting(false)
 
-                // 2. 左侧未选中的暗层
-                Color.black.opacity(0.68)
-                    .frame(width: max(leftX, 0), height: 42)
-                    .position(x: max(leftX, 0) / 2, y: 23)
-                    .allowsHitTesting(false)
+                // 2. 左侧未选中暗层 (从 0 至 leftX)
+                if leftX > 0.5 {
+                    Color.black.opacity(0.72)
+                        .frame(width: max(leftX, 0), height: 44)
+                        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 6, bottomLeadingRadius: 6))
+                        .position(x: max(leftX, 0) / 2, y: 24)
+                        .allowsHitTesting(false)
+                }
 
-                // 3. 右侧未选中的暗层
-                Color.black.opacity(0.68)
-                    .frame(width: max(totalW - rightX, 0), height: 42)
-                    .position(x: rightX + max(totalW - rightX, 0) / 2, y: 23)
-                    .allowsHitTesting(false)
+                // 3. 右侧未选中暗层 (从 rightX 至 totalW)
+                if totalW - rightX > 0.5 {
+                    Color.black.opacity(0.72)
+                        .frame(width: max(totalW - rightX, 0), height: 44)
+                        .clipShape(UnevenRoundedRectangle(bottomTrailingRadius: 6, topTrailingRadius: 6))
+                        .position(x: rightX + max(totalW - rightX, 0) / 2, y: 24)
+                        .allowsHitTesting(false)
+                }
 
-                // 4. 黄色高亮裁剪选框（纯净无重叠边框，上下边条 + 左右把手无缝拼接，手势分区互不干扰，手感轻盈丝滑）
+                // 4. 当前播放进度指针 (极简白色播放游标)
+                if currentX >= leftX && currentX <= rightX {
+                    Capsule()
+                        .fill(Color.white)
+                        .frame(width: 2.5, height: 48)
+                        .shadow(color: Color.black.opacity(0.6), radius: 2, y: 1)
+                        .position(x: currentX, y: 24)
+                        .allowsHitTesting(false)
+                }
+
+                // 5. 顶层无缝高亮裁剪边框与把手
                 ZStack {
-                    // 上横轨
+                    // 上横轨 (3pt 厚度金色贯穿线条)
                     VStack {
                         Rectangle()
                             .fill(GrainTheme.accent)
-                            .frame(height: 2.5)
+                            .frame(height: 3)
                         Spacer()
                     }
 
-                    // 下横轨
+                    // 下横轨 (3pt 厚度金色贯穿线条)
                     VStack {
                         Spacer()
                         Rectangle()
                             .fill(GrainTheme.accent)
-                            .frame(height: 2.5)
+                            .frame(height: 3)
                     }
 
-                    // 中间选区平移响应层（排除了左右把手区域，带移动震动反馈与画面预览，无卡顿轻盈滑动）
-                    Color.white.opacity(0.001)
-                        .padding(.horizontal, handleW)
+                    // 左把手 (宽 16pt，高 48pt，内嵌双槽 tactile 握持条纹)
+                    HStack(spacing: 0) {
+                        HStack(spacing: 2.5) {
+                            Capsule()
+                                .fill(Color.black.opacity(0.68))
+                                .frame(width: 2, height: 16)
+                            Capsule()
+                                .fill(Color.black.opacity(0.68))
+                                .frame(width: 2, height: 16)
+                        }
+                        .frame(width: handleWidth, height: 48)
+                        .background(
+                            GrainTheme.accent,
+                            in: UnevenRoundedRectangle(topLeadingRadius: 6, bottomLeadingRadius: 6)
+                        )
                         .contentShape(Rectangle())
+
+                        Spacer(minLength: 0)
+                    }
+
+                    // 右把手 (宽 16pt，高 48pt，内嵌双槽 tactile 握持条纹)
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+
+                        HStack(spacing: 2.5) {
+                            Capsule()
+                                .fill(Color.black.opacity(0.68))
+                                .frame(width: 2, height: 16)
+                            Capsule()
+                                .fill(Color.black.opacity(0.68))
+                                .frame(width: 2, height: 16)
+                        }
+                        .frame(width: handleWidth, height: 48)
+                        .background(
+                            GrainTheme.accent,
+                            in: UnevenRoundedRectangle(bottomTrailingRadius: 6, topTrailingRadius: 6)
+                        )
+                        .contentShape(Rectangle())
+                    }
+                }
+                .frame(width: boxW, height: 48)
+                .position(x: boxCenterX, y: 24)
+                .allowsHitTesting(false)
+
+                // 6. 交互手势分区：独立轻盈响应，无交叉冲突
+                // 6.1 左把手手势
+                Color.clear
+                    .frame(width: 38, height: 48)
+                    .contentShape(Rectangle())
+                    .position(x: leftX + handleWidth / 2, y: 24)
+                    .gesture(
+                        DragGesture(minimumDistance: 1)
+                            .onChanged { val in
+                                if !isTrimming {
+                                    pause()
+                                    isTrimming = true
+                                    activeTrimHandle = "start"
+                                    dragInitialTrimStart = recipe.trimStart
+                                }
+                                let start = dragInitialTrimStart ?? recipe.trimStart
+                                let deltaSec = Double(val.translation.width / totalW) * totalDuration
+                                let newStart = min(max(start + deltaSec, 0), max(recipe.trimEnd - 0.5, 0))
+                                recipe.trimStart = newStart
+
+                                let now = CFAbsoluteTimeGetCurrent()
+                                if now - lastSeekTime >= 0.035 {
+                                    lastSeekTime = now
+                                    seekFrame(to: newStart, exact: false)
+                                }
+
+                                let step = Int(newStart * 5)
+                                if step != lastTrimHapticStep {
+                                    lastTrimHapticStep = step
+                                    GrainHaptics.selection()
+                                    AudioServicesPlaySystemSound(1519)
+                                }
+                            }
+                            .onEnded { _ in
+                                isTrimming = false
+                                activeTrimHandle = nil
+                                dragInitialTrimStart = nil
+                                recipeHolder.recipe = recipe
+                                seekFrame(to: recipe.trimStart, exact: true)
+                            }
+                    )
+
+                // 6.2 右把手手势
+                Color.clear
+                    .frame(width: 38, height: 48)
+                    .contentShape(Rectangle())
+                    .position(x: rightX - handleWidth / 2, y: 24)
+                    .gesture(
+                        DragGesture(minimumDistance: 1)
+                            .onChanged { val in
+                                if !isTrimming {
+                                    pause()
+                                    isTrimming = true
+                                    activeTrimHandle = "end"
+                                    dragInitialTrimEnd = recipe.trimEnd
+                                }
+                                let end = dragInitialTrimEnd ?? recipe.trimEnd
+                                let deltaSec = Double(val.translation.width / totalW) * totalDuration
+                                let newEnd = min(max(end + deltaSec, recipe.trimStart + 0.5), totalDuration)
+                                recipe.trimEnd = newEnd
+
+                                let now = CFAbsoluteTimeGetCurrent()
+                                if now - lastSeekTime >= 0.035 {
+                                    lastSeekTime = now
+                                    seekFrame(to: newEnd, exact: false)
+                                }
+
+                                let step = Int(newEnd * 5)
+                                if step != lastTrimHapticStep {
+                                    lastTrimHapticStep = step
+                                    GrainHaptics.selection()
+                                    AudioServicesPlaySystemSound(1519)
+                                }
+                            }
+                            .onEnded { _ in
+                                isTrimming = false
+                                activeTrimHandle = nil
+                                dragInitialTrimEnd = nil
+                                recipeHolder.recipe = recipe
+                                seekFrame(to: recipe.trimEnd, exact: true)
+                            }
+                    )
+
+                // 6.3 选区平移手势 (整个窗口左右拖拽)
+                if boxW > 36 {
+                    Color.clear
+                        .frame(width: max(boxW - 36, 10), height: 48)
+                        .contentShape(Rectangle())
+                        .position(x: boxCenterX, y: 24)
                         .gesture(
                             DragGesture(minimumDistance: 1)
                                 .onChanged { val in
                                     if !isTrimming {
                                         pause()
                                         isTrimming = true
+                                        activeTrimHandle = "range"
                                         dragInitialTrimRange = (start: recipe.trimStart, end: recipe.trimEnd)
                                     }
                                     guard let range = dragInitialTrimRange else { return }
@@ -1323,115 +1471,58 @@ public struct VideoEditorView: View {
                                 }
                                 .onEnded { _ in
                                     isTrimming = false
+                                    activeTrimHandle = nil
                                     dragInitialTrimRange = nil
                                     recipeHolder.recipe = recipe
                                     seekFrame(to: recipe.trimStart, exact: true)
                                 }
                         )
-
-                    // 左侧手柄（固定于选区最左端，带有微圆角与纯色把手，无重叠描边）
-                    HStack(spacing: 0) {
-                        HStack(spacing: 0) {
-                            Image(systemName: "chevron.compact.left")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(GrainTheme.black)
-                        }
-                        .frame(width: handleW, height: 46)
-                        .background(GrainTheme.accent, in: UnevenRoundedRectangle(topLeadingRadius: 6, bottomLeadingRadius: 6))
-                        .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture(minimumDistance: 1)
-                                .onChanged { val in
-                                    if !isTrimming {
-                                        pause()
-                                        isTrimming = true
-                                        dragInitialTrimStart = recipe.trimStart
-                                    }
-                                    let start = dragInitialTrimStart ?? recipe.trimStart
-                                    let deltaSec = Double(val.translation.width / totalW) * totalDuration
-                                    let newStart = min(max(start + deltaSec, 0), max(recipe.trimEnd - 0.5, 0))
-                                    recipe.trimStart = newStart
-
-                                    let now = CFAbsoluteTimeGetCurrent()
-                                    if now - lastSeekTime >= 0.035 {
-                                        lastSeekTime = now
-                                        seekFrame(to: newStart, exact: false)
-                                    }
-
-                                    let step = Int(newStart * 5)
-                                    if step != lastTrimHapticStep {
-                                        lastTrimHapticStep = step
-                                        GrainHaptics.selection()
-                                        AudioServicesPlaySystemSound(1519)
-                                    }
-                                }
-                                .onEnded { _ in
-                                    isTrimming = false
-                                    dragInitialTrimStart = nil
-                                    recipeHolder.recipe = recipe
-                                    seekFrame(to: recipe.trimStart, exact: true)
-                                }
-                        )
-
-                        Spacer(minLength: 0)
-                    }
-
-                    // 右侧手柄（固定于选区最右端，带有微圆角与纯色把手，无重叠描边）
-                    HStack(spacing: 0) {
-                        Spacer(minLength: 0)
-
-                        HStack(spacing: 0) {
-                            Image(systemName: "chevron.compact.right")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(GrainTheme.black)
-                        }
-                        .frame(width: handleW, height: 46)
-                        .background(GrainTheme.accent, in: UnevenRoundedRectangle(bottomTrailingRadius: 6, topTrailingRadius: 6))
-                        .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture(minimumDistance: 1)
-                                .onChanged { val in
-                                    if !isTrimming {
-                                        pause()
-                                        isTrimming = true
-                                        dragInitialTrimEnd = recipe.trimEnd
-                                    }
-                                    let end = dragInitialTrimEnd ?? recipe.trimEnd
-                                    let deltaSec = Double(val.translation.width / totalW) * totalDuration
-                                    let newEnd = min(max(end + deltaSec, recipe.trimStart + 0.5), totalDuration)
-                                    recipe.trimEnd = newEnd
-
-                                    let now = CFAbsoluteTimeGetCurrent()
-                                    if now - lastSeekTime >= 0.035 {
-                                        lastSeekTime = now
-                                        seekFrame(to: newEnd, exact: false)
-                                    }
-
-                                    let step = Int(newEnd * 5)
-                                    if step != lastTrimHapticStep {
-                                        lastTrimHapticStep = step
-                                        GrainHaptics.selection()
-                                        AudioServicesPlaySystemSound(1519)
-                                    }
-                                }
-                                .onEnded { _ in
-                                    isTrimming = false
-                                    dragInitialTrimEnd = nil
-                                    recipeHolder.recipe = recipe
-                                    seekFrame(to: recipe.trimEnd, exact: true)
-                                }
-                        )
-                    }
                 }
-                .frame(width: boxW, height: 46)
-                .position(x: boxCenterX, y: 23)
+
+                // 7. 悬浮时间刻度气泡 (实时反馈当前修剪点时间戳或选区时长)
+                if let handle = activeTrimHandle {
+                    let bubbleX: CGFloat = {
+                        switch handle {
+                        case "start": return min(max(leftX, 36), totalW - 36)
+                        case "end": return min(max(rightX, 36), totalW - 36)
+                        default: return min(max(boxCenterX, 36), totalW - 36)
+                        }
+                    }()
+                    let bubbleText: String = {
+                        switch handle {
+                        case "start":
+                            let s = recipe.trimStart
+                            return String(format: "%02d:%04.1f", Int(s) / 60, s.truncatingRemainder(dividingBy: 60))
+                        case "end":
+                            let s = recipe.trimEnd
+                            return String(format: "%02d:%04.1f", Int(s) / 60, s.truncatingRemainder(dividingBy: 60))
+                        default:
+                            return String(format: "选区 %.1fs", recipe.trimEnd - recipe.trimStart)
+                        }
+                    }()
+
+                    HStack(spacing: 4) {
+                        Image(systemName: handle == "range" ? "arrow.left.and.right" : "clock")
+                            .font(.system(size: 8, weight: .bold))
+                        Text(bubbleText)
+                            .font(.system(size: 9.5, weight: .heavy, design: .monospaced))
+                    }
+                    .foregroundStyle(GrainTheme.black)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(GrainTheme.accent, in: Capsule())
+                    .shadow(color: Color.black.opacity(0.35), radius: 3, y: 1.5)
+                    .position(x: bubbleX, y: -8)
+                    .transition(.opacity)
+                }
             }
-            .frame(width: totalW, height: 46)
+            .frame(width: totalW, height: 48)
             .padding(.horizontal, 16)
         }
-        .frame(height: 48)
+        .frame(height: 52)
         .frame(maxWidth: .infinity)
     }
+
 
     // MARK: - 播放与滤镜管线控制
 

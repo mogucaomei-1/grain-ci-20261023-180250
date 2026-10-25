@@ -1284,7 +1284,7 @@ final class CameraController: ObservableObject {
                     self.attachMovieOutput()
                 }
                 self.configureVideoFormat(quality, stabilization: stabilization)
-                self.configureMovieConnection(stabilization: stabilization, codec: codec)
+                self.configureMovieConnection(stabilization: stabilization, codec: codec, targetFPS: Double(quality.fps))
 
                 let ext = container.fileExtension
                 let url = FileManager.default.temporaryDirectory
@@ -1532,7 +1532,8 @@ final class CameraController: ObservableObject {
 
     private func configureMovieConnection(
         stabilization: VideoStabilization,
-        codec: VideoCodecPreference
+        codec: VideoCodecPreference,
+        targetFPS: Double = 60
     ) {
         guard let connection = self.movieOutput.connection(with: .video) else { return }
         // 竖屏录制：写 90° 旋转元数据，而不是把像素真的转一遍
@@ -1545,6 +1546,14 @@ final class CameraController: ObservableObject {
             connection.automaticallyAdjustsVideoMirroring = false
             connection.isVideoMirrored =
                 self.isUsingFrontCamera && self.frontMirrorEnabled
+        }
+        // 录制连接层锁定恒定帧率 (CFR)，严禁动态抽帧
+        let duration = CMTime(value: 1, timescale: Int32(targetFPS))
+        if connection.isVideoMinFrameDurationSupported {
+            connection.videoMinFrameDuration = duration
+        }
+        if connection.isVideoMaxFrameDurationSupported {
+            connection.videoMaxFrameDuration = duration
         }
     }
 
@@ -1611,6 +1620,20 @@ final class CameraController: ObservableObject {
         session.commitConfiguration()
     }
 
+    @Published var isVideoHDREnabled: Bool = false
+
+    func setVideoHDR(
+        _ enabled: Bool,
+        quality: VideoQuality,
+        stabilization: VideoStabilization
+    ) {
+        isVideoHDREnabled = enabled
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.configureVideoFormat(quality, stabilization: stabilization)
+        }
+    }
+
     private func configureVideoFormatInternal(
         _ quality: VideoQuality,
         stabilization: VideoStabilization = .cinematicExtended
@@ -1621,7 +1644,7 @@ final class CameraController: ObservableObject {
         let targetFPS = Double(quality.fps)
         let desiredMode = stabilization.mode
 
-        // 检查当前格式是否已经是尺寸匹配、支持帧率且支持当前防抖的 16:9 视频格式
+        // 检查当前格式是否已经是尺寸匹配、支持帧率、HDR 与防抖的 16:9 视频格式
         let currentDims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
         let curShort = Int(min(currentDims.width, currentDims.height))
         let curLong = Int(max(currentDims.width, currentDims.height))
@@ -1630,8 +1653,19 @@ final class CameraController: ObservableObject {
             $0.maxFrameRate >= targetFPS - 0.5
         }
         let curSupportsStab = desiredMode == .off || device.activeFormat.isVideoStabilizationModeSupported(desiredMode)
+        let curHDRMatches = !isVideoHDREnabled || device.activeFormat.isVideoHDRSupported
 
-        if curShort == targetShort && curLong == targetLong && is16by9 && curSupportsFPS && curSupportsStab {
+        if curShort == targetShort && curLong == targetLong && is16by9 && curSupportsFPS && curSupportsStab && curHDRMatches {
+            do {
+                try device.lockForConfiguration()
+                if device.activeFormat.isVideoHDRSupported {
+                    device.isVideoHDREnabled = isVideoHDREnabled
+                }
+                if isVideoHDREnabled && device.activeFormat.supportedColorSpaces.contains(.HLG_BT2020) {
+                    device.activeColorSpace = .HLG_BT2020
+                }
+                device.unlockForConfiguration()
+            } catch {}
             applySafeFrameRate(to: device, targetFPS: targetFPS)
             return
         }
@@ -1661,6 +1695,14 @@ final class CameraController: ObservableObject {
             }
         }
 
+        // 若开启视频 HDR，优先锁定支持 10-bit HDR 的硬件格式
+        if isVideoHDREnabled {
+            let hdrCandidates = candidates.filter { $0.isVideoHDRSupported }
+            if !hdrCandidates.isEmpty {
+                candidates = hdrCandidates
+            }
+        }
+
         // 优先挑选支持目标防抖档位的硬件格式
         var best: AVCaptureDevice.Format? = nil
         for format in candidates {
@@ -1682,10 +1724,16 @@ final class CameraController: ObservableObject {
 
         guard let format = best ?? candidates.first else { return }
 
-        // 1. 先切换设备 activeFormat 到目标格式
+        // 1. 先切换设备 activeFormat 到目标格式，并配置 10-bit HDR 与 HLG_BT2020 色彩空间
         do {
             try device.lockForConfiguration()
             device.activeFormat = format
+            if format.isVideoHDRSupported {
+                device.isVideoHDREnabled = isVideoHDREnabled
+            }
+            if isVideoHDREnabled && format.supportedColorSpaces.contains(.HLG_BT2020) {
+                device.activeColorSpace = .HLG_BT2020
+            }
             device.unlockForConfiguration()
         } catch {}
 
@@ -1696,7 +1744,7 @@ final class CameraController: ObservableObject {
             photoOutput.maxPhotoDimensions = maxDim
         }
 
-        // 3. 应用安全帧率
+        // 3. 应用安全恒定帧率 (锁定 60.00 CFR)
         applySafeFrameRate(to: device, targetFPS: targetFPS)
     }
 
@@ -1708,18 +1756,18 @@ final class CameraController: ObservableObject {
             device.activeVideoMinFrameDuration = .invalid
             device.activeVideoMaxFrameDuration = .invalid
 
-            if let matchedRange = ranges.first(where: { targetFPS >= $0.minFrameRate - 0.5 && targetFPS <= $0.maxFrameRate + 0.5 }) {
+            if let _ = ranges.first(where: { targetFPS >= $0.minFrameRate - 0.5 && targetFPS <= $0.maxFrameRate + 0.5 }) {
                 let duration = CMTime(value: 1, timescale: Int32(targetFPS))
-                // AVFoundation 约束：minFrameDuration 必须 <= maxFrameDuration
-                let safeMaxDuration = max(matchedRange.maxFrameDuration, duration)
-                device.activeVideoMaxFrameDuration = safeMaxDuration
+                // 彻底锁定恒定帧率 (CFR)：
+                // 严禁使用 matchedRange.maxFrameDuration（如 1/24s 或 1/30s，会导致弱光/动态曝光下自动降频至 44/53 帧）。
+                // 将 minFrameDuration 与 maxFrameDuration 强制设为相同的值，硬件级锁定绝对恒定目标帧率！
                 device.activeVideoMinFrameDuration = duration
+                device.activeVideoMaxFrameDuration = duration
             } else if let fallbackRange = ranges.first {
                 let clampedFPS = max(fallbackRange.minFrameRate, min(targetFPS, fallbackRange.maxFrameRate))
                 let duration = CMTime(value: 1, timescale: Int32(clampedFPS))
-                let safeMaxDuration = max(fallbackRange.maxFrameDuration, duration)
-                device.activeVideoMaxFrameDuration = safeMaxDuration
                 device.activeVideoMinFrameDuration = duration
+                device.activeVideoMaxFrameDuration = duration
             }
             device.unlockForConfiguration()
         } catch {}
@@ -4503,6 +4551,7 @@ struct CameraView: View {
     @State private var captureMode: CameraMode = .photo
     @State private var videoQuality: VideoQuality = .uhd4k30
     @AppStorage("cameraVideoQuality") private var storedVideoQuality = VideoQuality.uhd4k30.rawValue
+    @AppStorage("cameraVideoHDREnabled") private var videoHDREnabled = false
     @State private var stabilization: VideoStabilization = .standard
     @AppStorage("cameraVideoStabilization") private var storedStabilization = VideoStabilization.standard.rawValue
     @State private var videoCodec: VideoCodecPreference = .hevc
@@ -4628,8 +4677,34 @@ struct CameraView: View {
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.midX, y: rect.midY)
 
-                        VStack(spacing: 0) {
+                        VStack(spacing: 8) {
                             Spacer(minLength: 0)
+                            if camera.isRecording {
+                                HStack(spacing: 6) {
+                                    Circle()
+                                        .fill(Color.red)
+                                        .frame(width: 8, height: 8)
+                                    Text(recordingTimeText)
+                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(GrainTheme.paper)
+                                    Text(videoQuality.title)
+                                        .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                                        .foregroundStyle(GrainTheme.paper.opacity(0.72))
+                                    if videoHDREnabled {
+                                        Text("HDR")
+                                            .font(.system(size: 8, weight: .heavy, design: .rounded))
+                                            .foregroundStyle(GrainTheme.accent)
+                                            .padding(.horizontal, 4)
+                                            .padding(.vertical, 1.5)
+                                            .background(GrainTheme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 3))
+                                    }
+                                }
+                                .padding(.horizontal, 11)
+                                .frame(height: 30)
+                                .background(GrainTheme.surface.opacity(0.85), in: Capsule())
+                                .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
+                                .padding(.bottom, 2)
+                            }
                             zoomBar
                         }
                         .frame(width: rect.width, height: rect.height)
@@ -4655,28 +4730,6 @@ struct CameraView: View {
                     .background(GrainTheme.surface.opacity(0.85), in: Circle())
                     .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
                     .transition(.scale.combined(with: .opacity))
-            }
-
-            if camera.isRecording {
-                VStack {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(Color.red)
-                            .frame(width: 8, height: 8)
-                        Text(recordingTimeText)
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundStyle(GrainTheme.paper)
-                        Text(videoQuality.title)
-                            .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                            .foregroundStyle(GrainTheme.paper.opacity(0.72))
-                    }
-                    .padding(.horizontal, 11)
-                    .frame(height: 30)
-                    .background(GrainTheme.surface.opacity(0.85), in: Capsule())
-                    .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
-                    .padding(.top, 62)
-                    Spacer()
-                }
             }
 
             if let recordingError = camera.recordingError {
@@ -4831,6 +4884,7 @@ struct CameraView: View {
             videoAspect = VideoAspect(rawValue: storedVideoAspect) ?? .sixteenByNine
             videoColorSpace = VideoColorSpacePreference(rawValue: storedVideoColorSpace) ?? .rec709
             if captureMode == .video {
+                camera.setVideoHDR(videoHDREnabled, quality: videoQuality, stabilization: stabilization)
                 camera.prepareForVideoMode(
                     quality: videoQuality,
                     stabilization: stabilization,
@@ -4851,6 +4905,7 @@ struct CameraView: View {
                 if livePhoto {
                     livePhoto = false
                 }
+                camera.setVideoHDR(videoHDREnabled, quality: videoQuality, stabilization: stabilization)
                 camera.prepareForVideoMode(
                     quality: videoQuality,
                     stabilization: stabilization,
@@ -5234,6 +5289,25 @@ struct CameraView: View {
                             }
                         } label: {
                             TopBarIconButton(systemName: "film.fill", size: size)
+                        }
+                        .disabled(camera.isRecording)
+
+                        // 5. 视频 10-bit HDR 开关 (Dolby Vision / HLG)
+                        Button {
+                            videoHDREnabled.toggle()
+                            GrainHaptics.selection(enabled: true)
+                            camera.setVideoHDR(videoHDREnabled, quality: videoQuality, stabilization: stabilization)
+                        } label: {
+                            Text("HDR")
+                                .font(.system(size: 10.5, weight: .heavy, design: .rounded))
+                                .foregroundStyle(videoHDREnabled ? GrainTheme.black : GrainTheme.paper)
+                                .padding(.horizontal, 9)
+                                .frame(height: size)
+                                .background(
+                                    videoHDREnabled ? GrainTheme.accent : GrainTheme.surface.opacity(0.85),
+                                    in: Capsule()
+                                )
+                                .overlay(Capsule().stroke(videoHDREnabled ? GrainTheme.accent : GrainTheme.line, lineWidth: 0.6))
                         }
                         .disabled(camera.isRecording)
                     }

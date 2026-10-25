@@ -42,6 +42,35 @@ jobs:
           set -euo pipefail
           APP_PATH=$(find ci/unsigned/GRAIN.xcarchive/Products/Applications -maxdepth 1 -type d -name "*.app" -print -quit)
           test -n "$APP_PATH"
+
+          # 编译并内嵌官方 WidgetKit App Extension (.appex)
+          echo "=== Building GRAINWidgetsExtension.appex ==="
+          IPHONEOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          EXTENSION_DIR="ci/unsigned/GRAINWidgetsExtension.appex"
+          mkdir -p "$EXTENSION_DIR"
+
+          xcrun --sdk iphoneos swiftc \
+            -target arm64-apple-ios17.0 \
+            -sdk "$IPHONEOS_SDK" \
+            -O \
+            -parse-as-library \
+            -framework SwiftUI \
+            -framework WidgetKit \
+            -framework Foundation \
+            -Xlinker -rpath -Xlinker @executable_path/Frameworks \
+            -Xlinker -rpath -Xlinker @executable_path/../../Frameworks \
+            outputs/GRAIN/GRAINWidgetsExtension/GRAINWidgetsBundle.swift \
+            -o "$EXTENSION_DIR/GRAINWidgetsExtension"
+
+          cp outputs/GRAIN/GRAINWidgetsExtension/Info.plist "$EXTENSION_DIR/Info.plist"
+          printf 'XPC!????' > "$EXTENSION_DIR/PkgInfo"
+
+          # 内嵌至主 App 的 PlugIns 目录
+          mkdir -p "$APP_PATH/PlugIns"
+          cp -R "$EXTENSION_DIR" "$APP_PATH/PlugIns/"
+          echo "=== PlugIns embedded successfully ==="
+          ls -la "$APP_PATH/PlugIns/GRAINWidgetsExtension.appex"
+
           mkdir -p ci/unsigned/Payload
           cp -R "$APP_PATH" ci/unsigned/Payload/
           cd ci/unsigned
