@@ -350,7 +350,7 @@ public struct VideoEditorView: View {
                 errorAlert(errorMessage)
             }
         }
-        .statusBarHidden()
+        .statusBarHidden(false)
         // 边缘滑动返回：增加保护，裁剪页面或在底控栏操作时不误触发，彻底解决拖动闪退
         .simultaneousGesture(edgeSwipeBackGesture)
         .confirmationDialog(

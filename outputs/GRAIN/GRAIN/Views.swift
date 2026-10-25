@@ -66,6 +66,11 @@ struct RootView: View {
                     VStack(spacing: 0) {
                         MinimalTopBar(
                             hasPhoto: true,
+                            onCancel: {
+                                cancelPendingLibraryImport()
+                                editor.returnHome()
+                                Task { await photoLibrary.refresh() }
+                            },
                             onCamera: nil,
                             onFiles: showFileImportButton ? { showDocumentPicker = true } : nil,
                             onCollage: nil,
@@ -300,16 +305,14 @@ struct RootView: View {
         libraryImportTask = nil
     }
 
-    /// 编辑页左右滑动切换到图库中的相邻照片
+    /// 编辑页左右滑动切换到图库中的相邻照片（自动跳过视频文件）
     private func switchLibraryPhoto(_ offset: Int) {
-        guard let identifier = editor.sourceAssetIdentifier,
-              let index = photoLibrary.assets.firstIndex(where: {
-                  $0.localIdentifier == identifier
-              })
-        else { return }
+        guard let identifier = editor.sourceAssetIdentifier else { return }
+        let photos = photoLibrary.assets.filter { $0.mediaType == .image }
+        guard let index = photos.firstIndex(where: { $0.localIdentifier == identifier }) else { return }
         let targetIndex = index + offset
-        guard photoLibrary.assets.indices.contains(targetIndex) else { return }
-        importLibraryAsset(photoLibrary.assets[targetIndex])
+        guard photos.indices.contains(targetIndex) else { return }
+        importLibraryAsset(photos[targetIndex])
     }
 
     /// 视频编辑页左右滑动切换到图库中的相邻视频，顺序与照片一致
@@ -381,6 +384,7 @@ private enum HomeTool: String, CaseIterable, Identifiable {
 
 private struct MinimalTopBar: View {
     let hasPhoto: Bool
+    var onCancel: (() -> Void)? = nil
     let onCamera: (() -> Void)?
     let onFiles: (() -> Void)?
     let onCollage: (() -> Void)?
@@ -398,25 +402,39 @@ private struct MinimalTopBar: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            HStack(spacing: 9) {
-                Button(action: onSettings) {
-                    AnimatedEditorMark(size: 29)
-                        .frame(width: 38, height: 38)
-                        .contentShape(Rectangle())
+            if hasPhoto {
+                if let onCancel {
+                    Button(action: onCancel) {
+                        Text("取消")
+                            .font(.system(size: 15, weight: .medium, design: .rounded))
+                            .foregroundStyle(GrainTheme.paper)
+                            .padding(.horizontal, 4)
+                            .frame(height: 38)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("取消并返回主页")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("打开设置")
+            } else {
+                HStack(spacing: 9) {
+                    Button(action: onSettings) {
+                        AnimatedEditorMark(size: 29)
+                            .frame(width: 38, height: 38)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("打开设置")
 
-                Button(action: onSettings) {
-                    Text("GRAIN")
-                        .font(.system(size: 14, weight: .heavy, design: .rounded))
-                        .tracking(2.3)
-                        .foregroundStyle(GrainTheme.paper)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                    Button(action: onSettings) {
+                        Text("GRAIN")
+                            .font(.system(size: 14, weight: .heavy, design: .rounded))
+                            .tracking(2.3)
+                            .foregroundStyle(GrainTheme.paper)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("打开设置")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("打开设置")
             }
 
             Spacer()
@@ -893,11 +911,11 @@ private struct PhotoEditorCanvas: View {
     @State private var peakingMask: CGImage?
     /// 双指放大查看照片；双击复位
     @State private var zoomScale: CGFloat = 1
+    @State private var pinchBaseScale: CGFloat = 1
     @State private var isPinching = false
     @State private var isPanning = false
     @State private var panOffset: CGSize = .zero
     @State private var panBase: CGSize = .zero
-    @GestureState private var pinchZoom: CGFloat = 1
 
     var body: some View {
         GeometryReader { proxy in
@@ -913,7 +931,7 @@ private struct PhotoEditorCanvas: View {
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .scaleEffect(
                         photoScale(viewport: proxy.size, imageSize: imageSize)
-                            * zoomScale * pinchZoom,
+                            * zoomScale,
                         anchor: .center
                     )
                     .offset(
@@ -1054,7 +1072,7 @@ private struct PhotoEditorCanvas: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
             .simultaneousGesture(switchPhotoGesture)
-            .simultaneousGesture(pinchZoomGesture)
+            .simultaneousGesture(pinchZoomGesture(viewport: proxy.size, imageSize: imageSize))
             .simultaneousGesture(zoomPanGesture(viewport: proxy.size, imageSize: imageSize))
         }
         .padding(.horizontal, 12)
@@ -1069,15 +1087,6 @@ private struct PhotoEditorCanvas: View {
                 await buildPeakingMask()
             } else {
                 peakingMask = nil
-            }
-        }
-        .onChange(of: zoomScale) { oldValue, newValue in
-            let wasZoomed = oldValue > 1.01
-            let isZoomed = newValue > 1.01
-            if isZoomed && !wasZoomed {
-                editor.prepareZoomPreview()
-            } else if !isZoomed && wasZoomed {
-                editor.releaseZoomPreview()
             }
         }
     }
@@ -1123,10 +1132,6 @@ private struct PhotoEditorCanvas: View {
         ZStack {
             if showOriginal, let original = editor.originalPreview {
                 imageLayer(original, imageSize: imageSize, viewport: viewport)
-                    .transition(.opacity)
-            } else if zoomScale > 1.01, let zoom = editor.zoomPreview {
-                // 放大时用全尺寸原图，替换 1280px 的预览，细节不再发糊
-                imageLayer(zoom, imageSize: imageSize, viewport: viewport)
                     .transition(.opacity)
             } else if let edited = editor.editedPreview {
                 imageLayer(edited, imageSize: imageSize, viewport: viewport)
@@ -1216,53 +1221,61 @@ private struct PhotoEditorCanvas: View {
             .position(x: viewport.width / 2, y: viewport.height / 2)
     }
 
-    /// 双指放大查看；松手后由双击复位（单击不会进入全屏）
-    private var pinchZoomGesture: some Gesture {
+    /// 双指放大查看；直接跟手无跳变，松手后由双击复位
+    private func pinchZoomGesture(viewport: CGSize, imageSize: CGSize) -> some Gesture {
         MagnificationGesture()
-            .updating($pinchZoom) { value, state, _ in
-                state = value
-            }
-            .onChanged { _ in
+            .onChanged { value in
                 if !isPinching {
                     isPinching = true
+                    pinchBaseScale = zoomScale
                 }
+                let targetScale = min(max(pinchBaseScale * value, 1.0), 6.0)
+                zoomScale = targetScale
             }
             .onEnded { value in
                 isPinching = false
-                let updated = zoomScale * value
-                if updated <= 1.02 {
+                let finalScale = min(max(pinchBaseScale * value, 1.0), 6.0)
+                if finalScale <= 1.05 {
                     withAnimation(.easeOut(duration: 0.24)) {
-                        zoomScale = 1
+                        zoomScale = 1.0
                         panOffset = .zero
                     }
                 } else {
-                    zoomScale = min(updated, 6)
+                    zoomScale = finalScale
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        panOffset = clampedPan(
+                            panOffset,
+                            viewport: viewport,
+                            imageSize: imageSize,
+                            scale: finalScale
+                        )
+                    }
                 }
             }
     }
 
     private func resetZoom() {
         guard zoomScale > 1.01 else { return }
-        withAnimation(.easeOut(duration: 0.26)) {
-            zoomScale = 1
+        withAnimation(.easeOut(duration: 0.25)) {
+            zoomScale = 1.0
             panOffset = .zero
         }
         GrainHaptics.lightImpact(enabled: hapticsEnabled)
     }
 
-    /// 双击：未放大时放大到双击的位置，已放大时缩回原始大小
+    /// 双击：未放大时平滑放大到双击的位置，已放大时缩回原始大小（一步到位，绝不二次跳跃）
     private func handleDoubleTap(at point: CGPoint, viewport: CGSize, imageSize: CGSize) {
-        if zoomScale > 1.01 {
+        if zoomScale > 1.05 {
             resetZoom()
             return
         }
 
         let target: CGFloat = 2.5
-        // point 是照片画布坐标，先换算到画布中心为原点的坐标系
+        // point 是照片画布坐标，换算到画布中心为原点的相对坐标系
         let canvasCenter = CGPoint(x: imageSize.width / 2, y: imageSize.height / 2)
         let dx = point.x - canvasCenter.x
         let dy = point.y - canvasCenter.y
-        let proposed = CGSize(width: -dx * target, height: -dy * target)
+        let proposed = CGSize(width: -dx * (target - 1), height: -dy * (target - 1))
 
         withAnimation(.easeOut(duration: 0.28)) {
             zoomScale = target
@@ -1278,31 +1291,41 @@ private struct PhotoEditorCanvas: View {
 
     /// 放大后左右/上下拖动查看照片其余部分
     private func zoomPanGesture(viewport: CGSize, imageSize: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 2)
+        DragGesture(minimumDistance: 1)
             .onChanged { value in
                 guard zoomScale > 1.01 else { return }
                 if !isPanning {
                     isPanning = true
                     panBase = panOffset
                 }
+                let proposed = CGSize(
+                    width: panBase.width + value.translation.width,
+                    height: panBase.height + value.translation.height
+                )
                 panOffset = clampedPan(
-                    CGSize(
-                        width: panBase.width + value.translation.width,
-                        height: panBase.height + value.translation.height
-                    ),
+                    proposed,
                     viewport: viewport,
-                    imageSize: imageSize
+                    imageSize: imageSize,
+                    scale: zoomScale
                 )
             }
             .onEnded { _ in
                 isPanning = false
                 panBase = panOffset
+                withAnimation(.easeOut(duration: 0.20)) {
+                    panOffset = clampedPan(
+                        panOffset,
+                        viewport: viewport,
+                        imageSize: imageSize,
+                        scale: zoomScale
+                    )
+                }
             }
     }
 
     private func displayedPan(viewport: CGSize, imageSize: CGSize) -> CGSize {
-        guard zoomScale > 1.01 else { return .zero }
-        return clampedPan(panOffset, viewport: viewport, imageSize: imageSize)
+        guard zoomScale > 1.001 else { return .zero }
+        return panOffset
     }
 
     private func clampedPan(
@@ -1330,7 +1353,8 @@ private struct PhotoEditorCanvas: View {
                 guard selectedTextID == nil,
                       compareFraction == nil,
                       zoomScale <= 1.01,
-                      !isPinching
+                      !isPinching,
+                      !isPanning
                 else { return }
                 let horizontal = value.translation.width
                 let vertical = value.translation.height

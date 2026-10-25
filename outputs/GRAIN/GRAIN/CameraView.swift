@@ -132,30 +132,30 @@ enum VideoQuality: String, CaseIterable, Identifiable {
     }
 }
 
-/// 录像防抖档位，对应 AVCaptureVideoStabilizationMode 的可用项
+/// 录像防抖档位：增强、电影级、标准、关
 enum VideoStabilization: String, CaseIterable, Identifiable {
-    case off
-    case standard
-    case cinematic
     case cinematicExtended
+    case cinematic
+    case standard
+    case off
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .off: "防抖关"
-        case .standard: "标准防抖"
-        case .cinematic: "电影级防抖"
-        case .cinematicExtended: "增强防抖"
+        case .cinematicExtended: "增强"
+        case .cinematic: "电影级"
+        case .standard: "标准"
+        case .off: "关"
         }
     }
 
     var mode: AVCaptureVideoStabilizationMode {
         switch self {
-        case .off: .off
-        case .standard: .standard
-        case .cinematic: .cinematic
         case .cinematicExtended: .cinematicExtended
+        case .cinematic: .cinematic
+        case .standard: .standard
+        case .off: .off
         }
     }
 }
@@ -181,120 +181,6 @@ enum VideoCodecPreference: String, CaseIterable, Identifiable {
     var title: String { self == .hevc ? "HEVC" : "H.264" }
 
     var codecType: AVVideoCodecType { self == .hevc ? .hevc : .h264 }
-}
-
-/// 录像色彩 LUT 预设：支持灰片 LOG、电影青橙、复古胶片、经典黑白、青蓝冷调
-enum VideoLUTOption: String, CaseIterable, Identifiable {
-    case standard       // 原画 / 标准
-    case logFlat        // 灰片 LOG (低反差·高动态·提暗压亮·低饱和)
-    case cinematic      // 电影 (Teal & Orange 青橙电影感)
-    case warmVintage    // 复古胶片 (暖阳金秋 35mm 胶片感)
-    case monochrome     // 经典黑白 (纪实高反差黑白)
-    case coolNordic     // 青蓝冷调 (清冷北欧电影调)
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .standard: "原画 (Rec.709)"
-        case .logFlat: "灰片 (Flat LOG)"
-        case .cinematic: "电影 (Teal & Orange)"
-        case .warmVintage: "复古胶片 (35mm)"
-        case .monochrome: "经典黑白 (B&W)"
-        case .coolNordic: "青蓝冷调 (Nordic)"
-        }
-    }
-
-    var shortTitle: String {
-        switch self {
-        case .standard: "原画"
-        case .logFlat: "灰片"
-        case .cinematic: "电影"
-        case .warmVintage: "复古"
-        case .monochrome: "黑白"
-        case .coolNordic: "冷调"
-        }
-    }
-
-    var iconName: String {
-        switch self {
-        case .standard: "circle"
-        case .logFlat: "waveform.path.ecg"
-        case .cinematic: "film.fill"
-        case .warmVintage: "sun.max.fill"
-        case .monochrome: "circle.lefthalf.filled"
-        case .coolNordic: "snowflake"
-        }
-    }
-
-    func apply(to image: CIImage) -> CIImage {
-        switch self {
-        case .standard:
-            return image
-        case .logFlat:
-            // 灰片 LOG：极低反差、压低高光、提亮暗部、低饱和，经典 Log 曲线
-            var graded = image.applyingFilter("CIExposureAdjust", parameters: [
-                kCIInputEVKey: 0.15
-            ])
-            graded = graded.applyingFilter("CIHighlightShadowAdjust", parameters: [
-                "inputHighlightAmount": 0.55,
-                "inputShadowAmount": 0.85
-            ])
-            graded = graded.applyingFilter("CIColorControls", parameters: [
-                kCIInputContrastKey: 0.68,
-                kCIInputSaturationKey: 0.62
-            ])
-            return graded
-        case .cinematic:
-            // 电影 Teal & Orange：青橙冷暖反差
-            var graded = image.applyingFilter("CITemperatureAndTint", parameters: [
-                "inputNeutral": CIVector(x: 6500, y: 0),
-                "inputTargetNeutral": CIVector(x: 6850, y: 10)
-            ])
-            graded = graded.applyingFilter("CIColorControls", parameters: [
-                kCIInputContrastKey: 1.15,
-                kCIInputSaturationKey: 1.12
-            ])
-            return graded
-        case .warmVintage:
-            // 复古胶片：温暖金秋
-            var graded = image.applyingFilter("CITemperatureAndTint", parameters: [
-                "inputNeutral": CIVector(x: 6500, y: 0),
-                "inputTargetNeutral": CIVector(x: 7400, y: 16)
-            ])
-            graded = graded.applyingFilter("CIHighlightShadowAdjust", parameters: [
-                "inputHighlightAmount": 0.88,
-                "inputShadowAmount": 0.30
-            ])
-            graded = graded.applyingFilter("CIColorControls", parameters: [
-                kCIInputContrastKey: 1.05,
-                kCIInputSaturationKey: 0.94
-            ])
-            return graded
-        case .monochrome:
-            // 经典黑白
-            var graded = image.applyingFilter("CIColorControls", parameters: [
-                kCIInputSaturationKey: 0.0,
-                kCIInputContrastKey: 1.25
-            ])
-            graded = graded.applyingFilter("CIHighlightShadowAdjust", parameters: [
-                "inputHighlightAmount": 0.90,
-                "inputShadowAmount": 0.20
-            ])
-            return graded
-        case .coolNordic:
-            // 青蓝冷调
-            var graded = image.applyingFilter("CITemperatureAndTint", parameters: [
-                "inputNeutral": CIVector(x: 6500, y: 0),
-                "inputTargetNeutral": CIVector(x: 5200, y: -14)
-            ])
-            graded = graded.applyingFilter("CIColorControls", parameters: [
-                kCIInputContrastKey: 1.08,
-                kCIInputSaturationKey: 0.90
-            ])
-            return graded
-        }
-    }
 }
 
 /// 相机工作模式：拍照 / 录像
@@ -953,20 +839,15 @@ final class CameraController: ObservableObject {
     private let recordingDelegate = MovieRecordingDelegate()
     private var recordingTimer: Timer?
     private var recordingURL: URL?
-    private var activeRecordingLUT: VideoLUTOption = .standard
-    private var activeRecordingContainer: VideoContainerPreference = .mov
 
     func startRecording(
         quality: VideoQuality,
         stabilization: VideoStabilization,
         codec: VideoCodecPreference,
-        container: VideoContainerPreference = .mov,
-        lut: VideoLUTOption = .standard
+        container: VideoContainerPreference = .mov
     ) {
         guard !isRecording else { return }
         recordingError = nil
-        activeRecordingLUT = lut
-        activeRecordingContainer = container
         recordingDelegate.onFinish = { [weak self] url, error in
             self?.finishRecording(url: url, error: error)
         }
@@ -1044,6 +925,35 @@ final class CameraController: ObservableObject {
         }
     }
 
+    /// 动态切换防抖档位（增强、电影级、标准、关）
+    func setVideoStabilization(_ stabilization: VideoStabilization) {
+        sessionQueue.async { [weak self] in
+            guard let self, let connection = self.movieOutput.connection(with: .video) else { return }
+            self.applyStabilization(stabilization, to: connection)
+        }
+    }
+
+    private func applyStabilization(
+        _ stabilization: VideoStabilization,
+        to connection: AVCaptureConnection
+    ) {
+        guard connection.isVideoStabilizationSupported else { return }
+        let targetMode = stabilization.mode
+        guard let device = cameraDevice else {
+            connection.preferredVideoStabilizationMode = targetMode
+            return
+        }
+        if device.activeFormat.isVideoStabilizationModeSupported(targetMode) {
+            connection.preferredVideoStabilizationMode = targetMode
+        } else if targetMode == .cinematicExtended && device.activeFormat.isVideoStabilizationModeSupported(.cinematic) {
+            connection.preferredVideoStabilizationMode = .cinematic
+        } else if targetMode != .off && device.activeFormat.isVideoStabilizationModeSupported(.standard) {
+            connection.preferredVideoStabilizationMode = .standard
+        } else {
+            connection.preferredVideoStabilizationMode = targetMode == .off ? .off : .auto
+        }
+    }
+
     private func configureMovieConnection(
         stabilization: VideoStabilization,
         codec: VideoCodecPreference
@@ -1054,7 +964,7 @@ final class CameraController: ObservableObject {
             connection.videoRotationAngle = 90
         }
         if connection.isVideoStabilizationSupported {
-            connection.preferredVideoStabilizationMode = stabilization.mode
+            applyStabilization(stabilization, to: connection)
         }
         // 前置自拍镜像与拍照保持一致
         if connection.isVideoMirroringSupported {
@@ -1154,8 +1064,14 @@ final class CameraController: ObservableObject {
                 $0.maxFrameRate >= Double(quality.fps) - 0.5
             }
             guard supportsFPS else { continue }
-            best = format
-            break
+            // 优先选择支持增强/电影级防抖的硬件格式
+            if format.isVideoStabilizationModeSupported(.cinematicExtended) || format.isVideoStabilizationModeSupported(.cinematic) {
+                best = format
+                break
+            }
+            if best == nil {
+                best = format
+            }
         }
         guard let format = best, format != device.activeFormat else { return }
         do {
@@ -1201,7 +1117,7 @@ final class CameraController: ObservableObject {
         session.commitConfiguration()
     }
 
-    /// 录制结束后：应用色彩 LUT 并写入相册
+    /// 录制结束后：抽取首帧缩略图并写入相册
     private func finishRecording(url: URL?, error: Error?) {
         DispatchQueue.main.async { [weak self] in
             self?.stopRecordingTimer()
@@ -1215,39 +1131,22 @@ final class CameraController: ObservableObject {
             guard let self else { return }
             guard let url else { return }
 
+            // 1. 抽取视频首帧作为左下角缩略图实时显示
+            let asset = AVAsset(url: url)
+            let generator = AVAssetImageGenerator(asset: asset)
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 160, height: 160)
+            let time = CMTime(seconds: 0.1, preferredTimescale: 600)
+            if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
+                let thumbnail = UIImage(cgImage: cgImage)
+                DispatchQueue.main.async {
+                    self.latestCaptureThumbnail = thumbnail
+                }
+            }
+
             Task {
-                var targetURL = url
-                var processedURL: URL?
-
-                if self.activeRecordingLUT != .standard {
-                    do {
-                        let lutURL = try await Self.applyLUT(
-                            self.activeRecordingLUT,
-                            sourceURL: url,
-                            container: self.activeRecordingContainer
-                        )
-                        targetURL = lutURL
-                        processedURL = lutURL
-                    } catch {
-                        targetURL = url
-                    }
-                }
-
-                // 1. 抽取视频首帧作为左下角缩略图实时显示
-                let asset = AVAsset(url: targetURL)
-                let generator = AVAssetImageGenerator(asset: asset)
-                generator.appliesPreferredTrackTransform = true
-                generator.maximumSize = CGSize(width: 160, height: 160)
-                let time = CMTime(seconds: 0.1, preferredTimescale: 600)
-                if let cgImage = try? generator.copyCGImage(at: time, actualTime: nil) {
-                    let thumbnail = UIImage(cgImage: cgImage)
-                    DispatchQueue.main.async {
-                        self.latestCaptureThumbnail = thumbnail
-                    }
-                }
-
                 do {
-                    let assetID = try await Self.saveVideoToLibrary(targetURL)
+                    let assetID = try await Self.saveVideoToLibrary(url)
                     DispatchQueue.main.async {
                         self.latestCaptureAssetIdentifier = assetID
                         GrainHaptics.mediumImpact()
@@ -1257,58 +1156,7 @@ final class CameraController: ObservableObject {
                         self?.recordingError = error.localizedDescription
                     }
                 }
-
                 try? FileManager.default.removeItem(at: url)
-                if let processedURL {
-                    try? FileManager.default.removeItem(at: processedURL)
-                }
-            }
-        }
-    }
-
-    /// 应用色彩 LUT（支持灰片 LOG、电影、复古胶片、经典黑白、青蓝冷调）
-    private static func applyLUT(
-        _ lut: VideoLUTOption,
-        sourceURL: URL,
-        container: VideoContainerPreference
-    ) async throws -> URL {
-        let asset = AVURLAsset(url: sourceURL)
-        let composition = AVVideoComposition(asset: asset) { request in
-            let source = request.sourceImage.clampedToExtent()
-            let output = lut.apply(to: source).cropped(to: request.sourceImage.extent)
-            request.finish(with: output, context: nil)
-        }
-
-        let outputURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("GRAIN-LUT-\(Int(Date().timeIntervalSince1970)).\(container.fileExtension)")
-        try? FileManager.default.removeItem(at: outputURL)
-
-        guard let exportSession = AVAssetExportSession(
-            asset: asset,
-            presetName: AVAssetExportPresetHighestQuality
-        ) else {
-            return sourceURL
-        }
-
-        exportSession.outputURL = outputURL
-        exportSession.outputFileType = container.outputFileType
-        exportSession.videoComposition = composition
-        exportSession.shouldOptimizeForNetworkUse = true
-
-        return try await withCheckedThrowingContinuation { continuation in
-            exportSession.exportAsynchronously {
-                switch exportSession.status {
-                case .completed:
-                    continuation.resume(returning: outputURL)
-                case .failed, .cancelled:
-                    continuation.resume(throwing: exportSession.error ?? NSError(
-                        domain: "studio.grain.rawfilm",
-                        code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "视频 LUT 滤镜导出失败"]
-                    ))
-                default:
-                    continuation.resume(returning: outputURL)
-                }
             }
         }
     }
@@ -3500,8 +3348,6 @@ struct CameraView: View {
     @AppStorage("cameraVideoCodec") private var storedVideoCodec = VideoCodecPreference.hevc.rawValue
     @State private var videoContainer: VideoContainerPreference = .mov
     @AppStorage("cameraVideoContainer") private var storedVideoContainer = VideoContainerPreference.mov.rawValue
-    @State private var videoLUT: VideoLUTOption = .standard
-    @AppStorage("cameraVideoLUT") private var storedVideoLUT = VideoLUTOption.standard.rawValue
     /// 录像补光：录像用的是常亮手电筒
     @State private var torchOn = false
 
@@ -3626,11 +3472,6 @@ struct CameraView: View {
                         Text(videoQuality.title)
                             .font(.system(size: 9.5, weight: .bold, design: .rounded))
                             .foregroundStyle(GrainTheme.paper.opacity(0.72))
-                        if videoLUT != .standard {
-                            Text(videoLUT.shortTitle)
-                                .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                                .foregroundStyle(GrainTheme.accent)
-                        }
                     }
                     .padding(.horizontal, 11)
                     .frame(height: 30)
@@ -3721,7 +3562,6 @@ struct CameraView: View {
             stabilization = VideoStabilization(rawValue: storedStabilization) ?? .standard
             videoCodec = VideoCodecPreference(rawValue: storedVideoCodec) ?? .hevc
             videoContainer = VideoContainerPreference(rawValue: storedVideoContainer) ?? .mov
-            videoLUT = VideoLUTOption(rawValue: storedVideoLUT) ?? .standard
         }
         .onChange(of: captureMode) { _, mode in
             // 录像模式提前预热音视频输出与格式，解决开录时屏幕闪烁两下的问题
@@ -4204,9 +4044,17 @@ struct CameraView: View {
 
                 Menu {
                     ForEach(VideoStabilization.allCases) { option in
-                        Button(option.title) {
+                        Button {
                             stabilization = option
                             storedStabilization = option.rawValue
+                            camera.setVideoStabilization(option)
+                        } label: {
+                            HStack {
+                                Text(option.title)
+                                if stabilization == option {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
                         }
                     }
                 } label: {
@@ -4214,58 +4062,45 @@ struct CameraView: View {
                 }
                 .disabled(camera.isRecording)
 
-                // 格式与编码整合：HEVC 放在 MP4 / MOV 菜单内
+                // 封装格式与编码：按钮名称显示所选格式（MP4 / MOV），HEVC 为其中的编码选项
                 Menu {
-                    ForEach(VideoContainerPreference.allCases) { container in
-                        Section(container.title) {
-                            ForEach(availableVideoCodecOptions) { codec in
-                                Button {
-                                    videoContainer = container
-                                    storedVideoContainer = container.rawValue
-                                    videoCodec = codec
-                                    storedVideoCodec = codec.rawValue
-                                    camera.prepareForVideoMode(
-                                        quality: videoQuality,
-                                        stabilization: stabilization,
-                                        codec: codec
-                                    )
-                                } label: {
-                                    HStack {
-                                        Text("\(container.title) · \(codec.title)")
-                                        if videoContainer == container && videoCodec == codec {
-                                            Image(systemName: "checkmark")
-                                        }
+                    Section("封装格式") {
+                        ForEach(VideoContainerPreference.allCases) { container in
+                            Button {
+                                videoContainer = container
+                                storedVideoContainer = container.rawValue
+                            } label: {
+                                HStack {
+                                    Text(container.title)
+                                    if videoContainer == container {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Section("编码") {
+                        ForEach(availableVideoCodecOptions) { codec in
+                            Button {
+                                videoCodec = codec
+                                storedVideoCodec = codec.rawValue
+                                camera.prepareForVideoMode(
+                                    quality: videoQuality,
+                                    stabilization: stabilization,
+                                    codec: codec
+                                )
+                            } label: {
+                                HStack {
+                                    Text(codec.title == "HEVC" ? "HEVC (高效)" : "H.264 (兼容)")
+                                    if videoCodec == codec {
+                                        Image(systemName: "checkmark")
                                     }
                                 }
                             }
                         }
                     }
                 } label: {
-                    MenuChip(title: "\(videoContainer.title) · \(videoCodec.title)", symbol: "film")
-                }
-                .disabled(camera.isRecording)
-
-                // 色彩 LUT：灰片 LOG、电影青橙、复古胶片、经典黑白、青蓝冷调
-                Menu {
-                    ForEach(VideoLUTOption.allCases) { option in
-                        Button {
-                            videoLUT = option
-                            storedVideoLUT = option.rawValue
-                            GrainHaptics.selection(enabled: true)
-                        } label: {
-                            HStack {
-                                Label(option.title, systemImage: option.iconName)
-                                if videoLUT == option {
-                                    Image(systemName: "checkmark")
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    MenuChip(
-                        title: videoLUT == .standard ? "LUT" : videoLUT.shortTitle,
-                        symbol: "camera.filters"
-                    )
+                    MenuChip(title: videoContainer.title, symbol: "doc")
                 }
                 .disabled(camera.isRecording)
             } else {
@@ -4407,8 +4242,7 @@ struct CameraView: View {
                         quality: videoQuality,
                         stabilization: stabilization,
                         codec: videoCodec,
-                        container: videoContainer,
-                        lut: videoLUT
+                        container: videoContainer
                     )
                 }
             } else {
@@ -4661,11 +4495,7 @@ struct CameraView: View {
         GeometryReader { proxy in
             let rect = fittedFrame(for: effectiveAspect.ratio, in: proxy.size)
 
-            if captureMode == .video {
-                if videoLUT != .standard {
-                    videoLUTPreviewOverlay(lut: videoLUT, rect: rect)
-                }
-            } else if cameraProfile != .neutral {
+            if cameraProfile != .neutral {
                 ZStack {
                     LinearGradient(
                         colors: cameraProfile.uiPalette,
@@ -4695,67 +4525,6 @@ struct CameraView: View {
                 .allowsHitTesting(false)
             }
         }
-    }
-
-    /// 录像取景器色彩 LUT 实时预览
-    @ViewBuilder
-    private func videoLUTPreviewOverlay(lut: VideoLUTOption, rect: CGRect) -> some View {
-        Group {
-            switch lut {
-            case .standard:
-                EmptyView()
-            case .logFlat:
-                // 灰片 LOG：提暗部、压高光、降反差、低饱和度
-                ZStack {
-                    Color.white.opacity(0.12)
-                        .blendMode(.screen)
-                    Color(white: 0.78).opacity(0.35)
-                        .blendMode(.multiply)
-                    Color.gray.opacity(0.38)
-                        .blendMode(.saturation)
-                }
-            case .cinematic:
-                // 电影 Teal & Orange 青橙反差
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.95, green: 0.65, blue: 0.35).opacity(0.28),
-                        Color(red: 0.10, green: 0.55, blue: 0.65).opacity(0.30)
-                    ],
-                    startPoint: .topTrailing,
-                    endPoint: .bottomLeading
-                )
-                .blendMode(.softLight)
-            case .warmVintage:
-                // 复古胶片 35mm
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.95, green: 0.72, blue: 0.40).opacity(0.30),
-                        Color(red: 0.85, green: 0.55, blue: 0.30).opacity(0.24)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .blendMode(.softLight)
-            case .monochrome:
-                // 经典黑白
-                Color.black
-                    .blendMode(.saturation)
-            case .coolNordic:
-                // 青蓝冷调
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.20, green: 0.60, blue: 0.85).opacity(0.30),
-                        Color(red: 0.15, green: 0.45, blue: 0.75).opacity(0.25)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .blendMode(.softLight)
-            }
-        }
-        .frame(width: rect.width, height: rect.height)
-        .position(x: rect.midX, y: rect.midY)
-        .allowsHitTesting(false)
     }
 
     private var framingOverlay: some View {
