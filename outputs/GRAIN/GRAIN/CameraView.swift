@@ -9,6 +9,17 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+extension AVCaptureConnection {
+    /// 安全设置竖屏朝向：优先采用 iOS 17+ 的 videoRotationAngle (90°)，未支持时回退到 videoOrientation，严防双调引发 NSInvalidArgumentException
+    func applyPortraitOrientationSafely() {
+        if isVideoRotationAngleSupported(90) {
+            videoRotationAngle = 90
+        } else if isVideoOrientationSupported {
+            videoOrientation = .portrait
+        }
+    }
+}
+
 enum CameraCaptureFormat: String, CaseIterable, Identifiable {
     case heif
     case jpeg
@@ -831,12 +842,7 @@ final class CameraController: ObservableObject {
     /// 分析图的方向必须和预览层一致，否则红色描边会和画面对不上
     private func updatePeakingConnection() {
         guard let connection = peakingOutput.connection(with: .video) else { return }
-        if connection.isVideoOrientationSupported {
-            connection.videoOrientation = .portrait
-        }
-        if connection.isVideoRotationAngleSupported(90) {
-            connection.videoRotationAngle = 90
-        }
+        connection.applyPortraitOrientationSafely()
         if connection.isVideoMirroringSupported {
             connection.automaticallyAdjustsVideoMirroring = false
             connection.isVideoMirrored = cameraDevice?.position == .front
@@ -1283,7 +1289,12 @@ final class CameraController: ObservableObject {
                 guard let self else { return }
                 self.session.beginConfiguration()
 
-                // 1. 实况照片与录像输出互斥，切到录像模式时先行解除实况照片
+                // 1. 设置 sessionPreset 为 .inputPriority（严禁在 .photo preset 下挂载 movieOutput，否则 commitConfiguration 必闪退）
+                if self.session.canSetSessionPreset(.inputPriority) {
+                    self.session.sessionPreset = .inputPriority
+                }
+
+                // 2. 实况照片与录像输出互斥，切到录像模式时先行解除实况照片
                 if self.photoOutput.isLivePhotoCaptureEnabled {
                     self.photoOutput.isLivePhotoCaptureEnabled = false
                 }
@@ -1291,13 +1302,20 @@ final class CameraController: ObservableObject {
                     self.isLivePhotoArmed = false
                 }
 
-                // 2. 移除与录像输出冲突的峰值/直方图视频数据输出 (AVCaptureVideoDataOutput)
+                // 3. 移除与录像输出冲突的峰值/直方图视频数据输出 (AVCaptureVideoDataOutput)
                 if self.peakingAttached {
                     self.session.removeOutput(self.peakingOutput)
                     self.peakingAttached = false
                 }
 
-                // 3. 挂载音频输入
+                // 4. 移除与录像可能冲突的人脸元数据输出 (AVCaptureMetadataOutput)
+                if self.metadataAttached {
+                    self.session.removeOutput(self.metadataOutput)
+                    self.metadataAttached = false
+                    self.trackingProcessor.onSubject = nil
+                }
+
+                // 5. 挂载音频输入
                 if micAllowed && self.audioInput == nil {
                     if let mic = AVCaptureDevice.default(for: .audio),
                        let input = try? AVCaptureDeviceInput(device: mic),
@@ -1307,7 +1325,7 @@ final class CameraController: ObservableObject {
                     }
                 }
 
-                // 4. 挂载录像输出
+                // 6. 挂载录像输出
                 if !self.movieAttached {
                     if self.session.canAddOutput(self.movieOutput) {
                         self.session.addOutput(self.movieOutput)
@@ -1315,10 +1333,10 @@ final class CameraController: ObservableObject {
                     }
                 }
 
-                // 5. 配置视频专属 16:9 格式、帧率与防抖
+                // 7. 配置视频专属 16:9 格式、帧率与防抖
                 self.configureVideoFormatInternal(quality, stabilization: stabilization)
 
-                // 6. 应用色彩空间
+                // 8. 应用色彩空间
                 if let device = self.cameraDevice {
                     let targetSpace = colorSpace.avColorSpace
                     if device.activeFormat.supportedColorSpaces.contains(targetSpace) {
@@ -1330,12 +1348,13 @@ final class CameraController: ObservableObject {
                     }
                 }
 
-                // 7. 配置录像连接（防抖、旋转、镜像）
-                self.configureMovieConnection(stabilization: stabilization, codec: codec)
-
+                // 9. 提交配置完成图连接
                 self.session.commitConfiguration()
 
-                // 8. 提交配置后再安全更新可用的录像编码选项
+                // 10. 会话提交后安全配置录像连接（防抖、旋转、镜像），避免在 beginConfiguration 中操作未就绪的连接导致闪退
+                self.configureMovieConnection(stabilization: stabilization, codec: codec)
+
+                // 11. 提交配置后安全更新可用的录像编码选项
                 let codecs = self.movieOutput.availableVideoCodecTypes
                 DispatchQueue.main.async {
                     self.availableVideoCodecs = codecs
@@ -1360,16 +1379,28 @@ final class CameraController: ObservableObject {
             if !self.peakingAttached, self.session.canAddOutput(self.peakingOutput) {
                 self.session.addOutput(self.peakingOutput)
                 self.peakingAttached = true
-                self.updatePeakingConnection()
             }
 
-            // 3. 如果实况照片未激活，移除音频输入以节约电量
+            // 3. 如果需要，重新挂载人脸追焦 (AVCaptureMetadataOutput)
+            if self.faceTrackingEnabled, !self.metadataAttached, self.session.canAddOutput(self.metadataOutput) {
+                self.session.addOutput(self.metadataOutput)
+                let wanted: [AVMetadataObject.ObjectType] = [.face]
+                    .filter { self.metadataOutput.availableMetadataObjectTypes.contains($0) }
+                if !wanted.isEmpty {
+                    self.metadataOutput.metadataObjectTypes = wanted
+                    self.metadataAttached = true
+                } else {
+                    self.session.removeOutput(self.metadataOutput)
+                }
+            }
+
+            // 4. 如果实况照片未激活，移除音频输入以节约电量
             if !self.photoOutput.isLivePhotoCaptureEnabled, let audioInput = self.audioInput {
                 self.session.removeInput(audioInput)
                 self.audioInput = nil
             }
 
-            // 4. 重置视频帧率限制
+            // 5. 重置视频帧率限制
             do {
                 try device.lockForConfiguration()
                 device.activeVideoMinFrameDuration = .invalid
@@ -1377,14 +1408,18 @@ final class CameraController: ObservableObject {
                 device.unlockForConfiguration()
             } catch {}
 
-            // 5. 恢复照片最高分辨率格式或实况模式
+            // 6. 恢复照片最高分辨率格式或实况模式
             if self.photoOutput.isLivePhotoCaptureEnabled {
-                self.session.sessionPreset = .photo
+                if self.session.canSetSessionPreset(.photo) {
+                    self.session.sessionPreset = .photo
+                }
                 if !self.photoOutput.isLivePhotoCaptureSupported {
                     self.selectLivePhotoFormat(for: device)
                 }
             } else {
-                self.session.sessionPreset = .inputPriority
+                if self.session.canSetSessionPreset(.inputPriority) {
+                    self.session.sessionPreset = .inputPriority
+                }
                 _ = self.promoteToHighestPhotoFormat(device)
             }
             let promoted = self.photoOutput.isLivePhotoCaptureEnabled
@@ -1392,7 +1427,7 @@ final class CameraController: ObservableObject {
                 : self.promoteToHighestPhotoFormat(device)
             let dims = promoted ?? self.maximumPhotoDimensions(for: device)
 
-            // 6. 恢复高质量照片优先级
+            // 7. 恢复高质量照片优先级
             self.photoOutput.maxPhotoQualityPrioritization = .quality
 
             if let dims,
@@ -1405,8 +1440,13 @@ final class CameraController: ObservableObject {
 
             self.session.commitConfiguration()
 
-            // 7. 重新发布相机能力（此时 isLivePhotoSupported 恢复为 true）
-            let liveSupported = self.photoOutput.isLivePhotoCaptureSupported || device.position == .back
+            // 8. 提交会话后安全更新峰值连接
+            if self.peakingAttached {
+                self.updatePeakingConnection()
+            }
+
+            // 9. 重新发布相机能力（此时 isLivePhotoSupported 恢复为 true）
+            let liveSupported = self.photoOutput.isLivePhotoCaptureSupported || device.position == .back || device.position == .front
             let rawSupported = self.supportsRawCapture
             self.publishDeviceCapabilities(
                 device,
@@ -1458,9 +1498,7 @@ final class CameraController: ObservableObject {
     ) {
         guard let connection = self.movieOutput.connection(with: .video) else { return }
         // 竖屏录制：写 90° 旋转元数据，而不是把像素真的转一遍
-        if connection.isVideoRotationAngleSupported(90) {
-            connection.videoRotationAngle = 90
-        }
+        connection.applyPortraitOrientationSafely()
         if connection.isVideoStabilizationSupported {
             applyStabilization(stabilization, to: connection)
         }
@@ -1470,8 +1508,6 @@ final class CameraController: ObservableObject {
             connection.isVideoMirrored =
                 self.isUsingFrontCamera && self.frontMirrorEnabled
         }
-        // AVCaptureMovieFileOutput 默认以 HEVC 录制，无需在会话未提交时强行 setOutputSettings，
-        // 规避 iOS 对未激活连接抛出 NSInvalidArgumentException 导致闪退
     }
 
     func stopRecording() {
@@ -1604,20 +1640,21 @@ final class CameraController: ObservableObject {
 
         guard let format = best ?? candidates.first else { return }
 
-        // 关键防护 1：降低照片优先级（视频模式下设为 .balanced，避免因视频格式不支持 .quality 引发未捕获异常）
-        photoOutput.maxPhotoQualityPrioritization = .balanced
-
-        // 关键防护 2：约束 photoOutput 尺寸到新格式支持的上限
-        if let maxDim = format.supportedMaxPhotoDimensions.max(by: { Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height) }) {
-            photoOutput.maxPhotoDimensions = maxDim
-        }
-
+        // 1. 先切换设备 activeFormat 到目标格式
         do {
             try device.lockForConfiguration()
             device.activeFormat = format
             device.unlockForConfiguration()
         } catch {}
 
+        // 2. 在 activeFormat 生效后，再将 photoOutput 约束到新格式实际支持的尺寸，并降低优先级为 .balanced
+        photoOutput.maxPhotoQualityPrioritization = .balanced
+        if let maxDim = device.activeFormat.supportedMaxPhotoDimensions.max(by: { Int($0.width) * Int($0.height) < Int($1.width) * Int($1.height) }),
+           device.activeFormat.supportedMaxPhotoDimensions.contains(where: { $0.width == maxDim.width && $0.height == maxDim.height }) {
+            photoOutput.maxPhotoDimensions = maxDim
+        }
+
+        // 3. 应用安全帧率
         applySafeFrameRate(to: device, targetFPS: targetFPS)
     }
 
@@ -1625,6 +1662,10 @@ final class CameraController: ObservableObject {
         do {
             try device.lockForConfiguration()
             let ranges = device.activeFormat.videoSupportedFrameRateRanges
+            // 先将 min 与 max 置为 .invalid，避免先后赋值因互相比较越界抛出异常
+            device.activeVideoMinFrameDuration = .invalid
+            device.activeVideoMaxFrameDuration = .invalid
+
             if let matchedRange = ranges.first(where: { targetFPS >= $0.minFrameRate - 0.5 && targetFPS <= $0.maxFrameRate + 0.5 }) {
                 let duration = CMTime(value: 1, timescale: Int32(targetFPS))
                 // AVFoundation 约束：minFrameDuration 必须 <= maxFrameDuration
@@ -2054,7 +2095,6 @@ final class CameraController: ObservableObject {
     }
 
     func setLivePhotoEnabled(_ enabled: Bool) async -> Bool {
-        guard isLivePhotoSupported else { return false }
         if enabled {
             _ = await requestMediaAccess(for: .audio)
         }
@@ -2085,12 +2125,13 @@ final class CameraController: ObservableObject {
                 // 实况照片切换至 12MP 标准格式以激活 isLivePhotoCaptureSupported
                 if let device = self.cameraDevice {
                     if enabled {
-                        self.session.sessionPreset = .photo
-                        if !self.photoOutput.isLivePhotoCaptureSupported {
-                            self.selectLivePhotoFormat(for: device)
+                        if self.session.canSetSessionPreset(.photo) {
+                            self.session.sessionPreset = .photo
                         }
                     } else {
-                        self.session.sessionPreset = .inputPriority
+                        if self.session.canSetSessionPreset(.inputPriority) {
+                            self.session.sessionPreset = .inputPriority
+                        }
                         _ = self.promoteToHighestPhotoFormat(device)
                     }
                     let target = enabled
@@ -2103,12 +2144,30 @@ final class CameraController: ObservableObject {
                         self.photoOutput.maxPhotoDimensions = target
                     }
                 }
-                self.photoOutput.isLivePhotoCaptureEnabled =
-                    enabled && self.photoOutput.isLivePhotoCaptureSupported
                 self.session.commitConfiguration()
-                let armed = enabled && self.photoOutput.isLivePhotoCaptureSupported
+
+                // commitConfiguration 提交后，isLivePhotoCaptureSupported 才会由 AVFoundation 更新
+                if enabled {
+                    // 若 .photo preset 下仍未激活，再尝试格式回退
+                    if !self.photoOutput.isLivePhotoCaptureSupported, let device = self.cameraDevice {
+                        self.session.beginConfiguration()
+                        if self.session.canSetSessionPreset(.inputPriority) {
+                            self.session.sessionPreset = .inputPriority
+                        }
+                        self.selectLivePhotoFormat(for: device)
+                        self.session.commitConfiguration()
+                    }
+                    if self.photoOutput.isLivePhotoCaptureSupported {
+                        self.photoOutput.isLivePhotoCaptureEnabled = true
+                    }
+                } else {
+                    self.photoOutput.isLivePhotoCaptureEnabled = false
+                }
+
+                let armed = self.photoOutput.isLivePhotoCaptureEnabled
                 DispatchQueue.main.async {
                     self.isLivePhotoArmed = armed
+                    self.isLivePhotoSupported = self.photoOutput.isLivePhotoCaptureSupported || armed || self.isUsingFrontCamera || self.cameraDevice?.position == .back
                     continuation.resume(returning: armed)
                 }
             }
@@ -2387,7 +2446,7 @@ final class CameraController: ObservableObject {
             self.maximumExposureBias = device.maxExposureTargetBias
             self.exposureBias = min(max(0, device.minExposureTargetBias), device.maxExposureTargetBias)
             self.isUsingFrontCamera = device.position == .front
-            self.isLivePhotoSupported = liveSupported || self.photoOutput.isLivePhotoCaptureSupported || device.position == .back
+            self.isLivePhotoSupported = liveSupported || self.photoOutput.isLivePhotoCaptureSupported || device.position == .back || device.position == .front
             self.isRawSupported = rawSupported
         }
     }
@@ -3671,12 +3730,7 @@ struct CameraPreviewView: UIViewRepresentable {
         view.attachTrackingSink(trackingSink)
         view.onTrackingFocus = onTrackingFocus
         if let connection = view.previewLayer.connection {
-            if connection.isVideoOrientationSupported {
-                connection.videoOrientation = .portrait
-            }
-            if connection.isVideoRotationAngleSupported(90) {
-                connection.videoRotationAngle = 90
-            }
+            connection.applyPortraitOrientationSafely()
             // 前置相机按系统相机习惯做镜像预览
             if connection.isVideoMirroringSupported {
                 connection.automaticallyAdjustsVideoMirroring = false
@@ -3715,9 +3769,7 @@ struct CameraPreviewView: UIViewRepresentable {
         }
         uiView.onTrackingFocus = onTrackingFocus
         if let connection = uiView.previewLayer.connection {
-            if connection.isVideoOrientationSupported, connection.videoOrientation != .portrait {
-                connection.videoOrientation = .portrait
-            }
+            connection.applyPortraitOrientationSafely()
             if connection.isVideoMirroringSupported,
                connection.isVideoMirrored != mirrored {
                 connection.automaticallyAdjustsVideoMirroring = false
@@ -4006,6 +4058,8 @@ struct CameraView: View {
     @State private var lastExposureHapticStep: Int?
     @State private var lastIntensityHapticStep: Int?
     @State private var format: CameraCaptureFormat = .heif
+    @State private var crashReport: String? = UserDefaults.standard.string(forKey: "lastCrashReport")
+    @State private var showingCrashReportSheet = false
     @State private var resolution: CameraResolution = .standard24
     @State private var aspect: CameraAspect = .portrait3x4
     @State private var timer: CameraTimer = .off
@@ -4202,6 +4256,72 @@ struct CameraView: View {
                         .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
                         .padding(.top, 104)
                     Spacer()
+                }
+            }
+
+            if let report = crashReport, !report.isEmpty {
+                VStack {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.yellow)
+                            .font(.system(size: 11))
+                        Text("检测到上次异常日志")
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundStyle(GrainTheme.paper)
+                        Spacer()
+                        Button("查看") {
+                            showingCrashReportSheet = true
+                        }
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .foregroundStyle(GrainTheme.accent)
+
+                        Button {
+                            UserDefaults.standard.removeObject(forKey: "lastCrashReport")
+                            crashReport = nil
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(GrainTheme.paper.opacity(0.6))
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 32)
+                    .background(GrainTheme.surface.opacity(0.92), in: Capsule())
+                    .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.8))
+                    .padding(.top, 56)
+                    .padding(.horizontal, 16)
+                    Spacer()
+                }
+                .sheet(isPresented: $showingCrashReportSheet) {
+                    NavigationStack {
+                        ScrollView {
+                            Text(report)
+                                .font(.system(size: 10, design: .monospaced))
+                                .padding()
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                        .navigationTitle("异常日志")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("关闭") { showingCrashReportSheet = false }
+                            }
+                            ToolbarItem(placement: .destructiveAction) {
+                                Button("清除") {
+                                    UserDefaults.standard.removeObject(forKey: "lastCrashReport")
+                                    crashReport = nil
+                                    showingCrashReportSheet = false
+                                }
+                            }
+                            ToolbarItem(placement: .primaryAction) {
+                                Button("复制") {
+                                    UIPasteboard.general.string = report
+                                    GrainHaptics.lightImpact(enabled: true)
+                                }
+                            }
+                        }
+                    }
                 }
             }
 

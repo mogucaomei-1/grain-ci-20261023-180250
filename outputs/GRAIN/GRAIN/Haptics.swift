@@ -55,7 +55,7 @@ enum GrainShutterSound {
     /// 由 AVCapturePhotoCaptureDelegate 的 willCapturePhotoFor 调用
     static func playForCapture() {
         guard isEnabled else { return }
-        AudioServicesPlaySystemSound(1108)
+        AudioServicesPlayAlertSound(1108)
     }
 }
 
@@ -135,6 +135,8 @@ final class GrainFocusSoundPlayer: NSObject, AVAudioPlayerDelegate {
         }
 
         do {
+            try AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default, options: [.mixWithOthers])
+            try AVAudioSession.sharedInstance().setActive(true)
             let p = try AVAudioPlayer(data: wav)
             p.prepareToPlay()
             self.player = p
