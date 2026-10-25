@@ -7,6 +7,12 @@ struct GRAINApp: App {
     @AppStorage("appearanceMode") private var appearanceMode = AppearanceMode.system
 
     init() {
+        NSSetUncaughtExceptionHandler { exception in
+            let report = "[\(Date())] \(exception.name.rawValue): \(exception.reason ?? "none")\n" + exception.callStackSymbols.joined(separator: "\n")
+            UserDefaults.standard.set(report, forKey: "lastCrashReport")
+            UserDefaults.standard.synchronize()
+        }
+
         // 「从文件导入」默认改为关闭：老版本已隐式启用过，这里只迁移一次，
         // 之后用户仍可在设置里手动打开。
         let defaults = UserDefaults.standard

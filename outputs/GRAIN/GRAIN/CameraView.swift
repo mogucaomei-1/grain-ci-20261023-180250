@@ -578,9 +578,15 @@ final class CameraController: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.audioMeterTimer?.invalidate()
-            self.audioMeterTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+            self.audioMeterTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
                 guard let self else { return }
-                guard self.movieAttached else { return }
+                // 仅在真实录制中安全采样音频电平，非录像状态保持 0，避免在会话配置时跨线程查询抛异常
+                guard self.isRecording, self.movieAttached else {
+                    if self.liveAudioLevel != 0 {
+                        self.liveAudioLevel = 0
+                    }
+                    return
+                }
                 if let audioConn = self.movieOutput.connection(with: .audio),
                    let channel = audioConn.audioChannels.first {
                     let power = channel.averagePowerLevel
@@ -1285,7 +1291,13 @@ final class CameraController: ObservableObject {
                     self.isLivePhotoArmed = false
                 }
 
-                // 2. 挂载音频输入
+                // 2. 移除与录像输出冲突的峰值/直方图视频数据输出 (AVCaptureVideoDataOutput)
+                if self.peakingAttached {
+                    self.session.removeOutput(self.peakingOutput)
+                    self.peakingAttached = false
+                }
+
+                // 3. 挂载音频输入
                 if micAllowed && self.audioInput == nil {
                     if let mic = AVCaptureDevice.default(for: .audio),
                        let input = try? AVCaptureDeviceInput(device: mic),
@@ -1295,7 +1307,7 @@ final class CameraController: ObservableObject {
                     }
                 }
 
-                // 3. 挂载录像输出
+                // 4. 挂载录像输出
                 if !self.movieAttached {
                     if self.session.canAddOutput(self.movieOutput) {
                         self.session.addOutput(self.movieOutput)
@@ -1303,10 +1315,10 @@ final class CameraController: ObservableObject {
                     }
                 }
 
-                // 4. 配置视频专属 16:9 格式、帧率与防抖
+                // 5. 配置视频专属 16:9 格式、帧率与防抖
                 self.configureVideoFormatInternal(quality, stabilization: stabilization)
 
-                // 5. 应用色彩空间
+                // 6. 应用色彩空间
                 if let device = self.cameraDevice {
                     let targetSpace = colorSpace.avColorSpace
                     if device.activeFormat.supportedColorSpaces.contains(targetSpace) {
@@ -1318,10 +1330,16 @@ final class CameraController: ObservableObject {
                     }
                 }
 
-                // 6. 配置录像连接（防抖、旋转、镜像、编码格式）
+                // 7. 配置录像连接（防抖、旋转、镜像）
                 self.configureMovieConnection(stabilization: stabilization, codec: codec)
 
                 self.session.commitConfiguration()
+
+                // 8. 提交配置后再安全更新可用的录像编码选项
+                let codecs = self.movieOutput.availableVideoCodecTypes
+                DispatchQueue.main.async {
+                    self.availableVideoCodecs = codecs
+                }
             }
         }
     }
@@ -1338,13 +1356,20 @@ final class CameraController: ObservableObject {
                 self.movieAttached = false
             }
 
-            // 2. 如果实况照片未激活，移除音频输入以节约电量
+            // 2. 重新挂载峰值与直方图输出 (AVCaptureVideoDataOutput)
+            if !self.peakingAttached, self.session.canAddOutput(self.peakingOutput) {
+                self.session.addOutput(self.peakingOutput)
+                self.peakingAttached = true
+                self.updatePeakingConnection()
+            }
+
+            // 3. 如果实况照片未激活，移除音频输入以节约电量
             if !self.photoOutput.isLivePhotoCaptureEnabled, let audioInput = self.audioInput {
                 self.session.removeInput(audioInput)
                 self.audioInput = nil
             }
 
-            // 3. 重置视频帧率限制
+            // 4. 重置视频帧率限制
             do {
                 try device.lockForConfiguration()
                 device.activeVideoMinFrameDuration = .invalid
@@ -1352,11 +1377,22 @@ final class CameraController: ObservableObject {
                 device.unlockForConfiguration()
             } catch {}
 
-            // 4. 恢复最高照片格式与分辨率
-            let promoted = self.promoteToHighestPhotoFormat(device)
+            // 5. 恢复照片最高分辨率格式或实况模式
+            if self.photoOutput.isLivePhotoCaptureEnabled {
+                self.session.sessionPreset = .photo
+                if !self.photoOutput.isLivePhotoCaptureSupported {
+                    self.selectLivePhotoFormat(for: device)
+                }
+            } else {
+                self.session.sessionPreset = .inputPriority
+                _ = self.promoteToHighestPhotoFormat(device)
+            }
+            let promoted = self.photoOutput.isLivePhotoCaptureEnabled
+                ? self.standardPhotoDimensions(for: device)
+                : self.promoteToHighestPhotoFormat(device)
             let dims = promoted ?? self.maximumPhotoDimensions(for: device)
 
-            // 5. 恢复高质量照片优先级
+            // 6. 恢复高质量照片优先级
             self.photoOutput.maxPhotoQualityPrioritization = .quality
 
             if let dims,
@@ -1369,8 +1405,8 @@ final class CameraController: ObservableObject {
 
             self.session.commitConfiguration()
 
-            // 6. 重新发布相机能力（此时 isLivePhotoSupported 恢复为 true）
-            let liveSupported = device.position == .back
+            // 7. 重新发布相机能力（此时 isLivePhotoSupported 恢复为 true）
+            let liveSupported = self.photoOutput.isLivePhotoCaptureSupported || device.position == .back
             let rawSupported = self.supportsRawCapture
             self.publishDeviceCapabilities(
                 device,
@@ -1434,16 +1470,8 @@ final class CameraController: ObservableObject {
             connection.isVideoMirrored =
                 self.isUsingFrontCamera && self.frontMirrorEnabled
         }
-        let codecs = self.movieOutput.availableVideoCodecTypes
-        DispatchQueue.main.async { [weak self] in
-            self?.availableVideoCodecs = codecs
-        }
-        if codecs.contains(codec.codecType) {
-            self.movieOutput.setOutputSettings(
-                [AVVideoCodecKey: codec.codecType],
-                for: connection
-            )
-        }
+        // AVCaptureMovieFileOutput 默认以 HEVC 录制，无需在会话未提交时强行 setOutputSettings，
+        // 规避 iOS 对未激活连接抛出 NSInvalidArgumentException 导致闪退
     }
 
     func stopRecording() {
@@ -1596,17 +1624,24 @@ final class CameraController: ObservableObject {
     private func applySafeFrameRate(to device: AVCaptureDevice, targetFPS: Double) {
         do {
             try device.lockForConfiguration()
+            if #available(iOS 18.0, *) {
+                if device.isAutoVideoFrameRateEnabled {
+                    device.unlockForConfiguration()
+                    return
+                }
+            }
             let ranges = device.activeFormat.videoSupportedFrameRateRanges
             if let matchedRange = ranges.first(where: { targetFPS >= $0.minFrameRate - 0.5 && targetFPS <= $0.maxFrameRate + 0.5 }) {
                 let duration = CMTime(value: 1, timescale: Int32(targetFPS))
-                device.activeVideoMinFrameDuration = .invalid
-                device.activeVideoMaxFrameDuration = matchedRange.maxFrameDuration
+                // AVFoundation 约束：minFrameDuration 必须 <= maxFrameDuration
+                let safeMaxDuration = max(matchedRange.maxFrameDuration, duration)
+                device.activeVideoMaxFrameDuration = safeMaxDuration
                 device.activeVideoMinFrameDuration = duration
             } else if let fallbackRange = ranges.first {
                 let clampedFPS = max(fallbackRange.minFrameRate, min(targetFPS, fallbackRange.maxFrameRate))
                 let duration = CMTime(value: 1, timescale: Int32(clampedFPS))
-                device.activeVideoMinFrameDuration = .invalid
-                device.activeVideoMaxFrameDuration = fallbackRange.maxFrameDuration
+                let safeMaxDuration = max(fallbackRange.maxFrameDuration, duration)
+                device.activeVideoMaxFrameDuration = safeMaxDuration
                 device.activeVideoMinFrameDuration = duration
             }
             device.unlockForConfiguration()
@@ -2002,16 +2037,32 @@ final class CameraController: ObservableObject {
             .max() ?? 0
     }
 
+    /// 查找并切换到支持实况照片 (Live Photo) 的 12MP 标准格式
+    private func selectLivePhotoFormat(for device: AVCaptureDevice) {
+        let candidates = device.formats.filter { format in
+            let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            let maxArea = maximumPhotoArea(format)
+            let is12MP = maxArea <= 13_000_000 && maxArea >= 8_000_000
+            let hasGoodVideo = dims.width >= 1280 && dims.height >= 720
+            let supports30fps = format.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 29.5 }
+            return is12MP && hasGoodVideo && supports30fps
+        }
+        for candidate in candidates {
+            do {
+                try device.lockForConfiguration()
+                device.activeFormat = candidate
+                device.unlockForConfiguration()
+                if photoOutput.isLivePhotoCaptureSupported {
+                    break
+                }
+            } catch {}
+        }
+    }
+
     func setLivePhotoEnabled(_ enabled: Bool) async -> Bool {
         guard isLivePhotoSupported else { return false }
         if enabled {
-            let allowed = await requestMediaAccess(for: .audio)
-            guard allowed else {
-                DispatchQueue.main.async { [weak self] in
-                    self?.errorMessage = "请在系统设置中允许麦克风权限后再使用实况照片。"
-                }
-                return false
-            }
+            _ = await requestMediaAccess(for: .audio)
         }
 
         return await withCheckedContinuation { continuation in
@@ -2021,7 +2072,6 @@ final class CameraController: ObservableObject {
                     return
                 }
                 self.session.beginConfiguration()
-                var hasAudio = !enabled
                 if enabled {
                     if let microphone = AVCaptureDevice.default(for: .audio),
                        let input = try? AVCaptureDeviceInput(device: microphone),
@@ -2029,9 +2079,6 @@ final class CameraController: ObservableObject {
                        self.session.canAddInput(input) {
                         self.session.addInput(input)
                         self.audioInput = input
-                        hasAudio = true
-                    } else if self.audioInput != nil {
-                        hasAudio = true
                     }
                 } else if let audioInput = self.audioInput {
                     self.session.removeInput(audioInput)
@@ -2041,8 +2088,17 @@ final class CameraController: ObservableObject {
                 if enabled, self.photoOutput.isAppleProRAWEnabled {
                     self.photoOutput.isAppleProRAWEnabled = false
                 }
-                // 实况照片最高按 12MP 输出，其余情况回到当前相机满分辨率
+                // 实况照片切换至 12MP 标准格式以激活 isLivePhotoCaptureSupported
                 if let device = self.cameraDevice {
+                    if enabled {
+                        self.session.sessionPreset = .photo
+                        if !self.photoOutput.isLivePhotoCaptureSupported {
+                            self.selectLivePhotoFormat(for: device)
+                        }
+                    } else {
+                        self.session.sessionPreset = .inputPriority
+                        _ = self.promoteToHighestPhotoFormat(device)
+                    }
                     let target = enabled
                         ? self.standardPhotoDimensions(for: device)
                         : self.maximumPhotoDimensions(for: device)
@@ -2054,10 +2110,9 @@ final class CameraController: ObservableObject {
                     }
                 }
                 self.photoOutput.isLivePhotoCaptureEnabled =
-                    enabled && hasAudio && self.photoOutput.isLivePhotoCaptureSupported
+                    enabled && self.photoOutput.isLivePhotoCaptureSupported
                 self.session.commitConfiguration()
-                let armed = enabled && hasAudio
-                    && self.photoOutput.isLivePhotoCaptureSupported
+                let armed = enabled && self.photoOutput.isLivePhotoCaptureSupported
                 DispatchQueue.main.async {
                     self.isLivePhotoArmed = armed
                     continuation.resume(returning: armed)
@@ -2338,7 +2393,7 @@ final class CameraController: ObservableObject {
             self.maximumExposureBias = device.maxExposureTargetBias
             self.exposureBias = min(max(0, device.minExposureTargetBias), device.maxExposureTargetBias)
             self.isUsingFrontCamera = device.position == .front
-            self.isLivePhotoSupported = liveSupported
+            self.isLivePhotoSupported = liveSupported || self.photoOutput.isLivePhotoCaptureSupported || device.position == .back
             self.isRawSupported = rawSupported
         }
     }
@@ -2406,6 +2461,14 @@ final class CameraController: ObservableObject {
 
         // 实况照片按 12MP、普通照片按当前相机满分辨率。
         if let device = cameraDevice {
+            if livePhoto {
+                if !photoOutput.isLivePhotoCaptureSupported {
+                    session.sessionPreset = .photo
+                    if !photoOutput.isLivePhotoCaptureSupported {
+                        selectLivePhotoFormat(for: device)
+                    }
+                }
+            }
             let target = livePhoto
                 ? standardPhotoDimensions(for: device)
                 : maximumPhotoDimensions(for: device)
@@ -2491,7 +2554,11 @@ final class CameraController: ObservableObject {
             ? temporaryLivePhotoURL()
             : nil
         if settings.livePhotoMovieFileURL != nil {
-            settings.livePhotoVideoCodecType = .hevc
+            if photoOutput.availableLivePhotoVideoCodecTypes.contains(.hevc) {
+                settings.livePhotoVideoCodecType = .hevc
+            } else if let first = photoOutput.availableLivePhotoVideoCodecTypes.first {
+                settings.livePhotoVideoCodecType = first
+            }
         }
         startProcessor(settings: settings, configuration: configuration)
     }
@@ -2883,6 +2950,21 @@ private enum CameraImageProcessor {
                     uniformTypeIdentifier: dngTypeIdentifier,
                     location: output.location,
                     livePhotoURL: nil
+                )
+            }
+
+            // 实况照片：直接返回 AVFoundation 原始生成的配对 HEIC/JPEG 图像数据，
+            // 完整保留 Apple MakerNote 中的 ContentIdentifier 配对元数据，
+            // 避免二次解码/重编码导致 PhotoKit 报 3300/3302 错误。
+            if output.livePhotoURL != nil {
+                let fileExtension = configuration.format == .jpeg ? "jpg" : "heic"
+                let uti = configuration.format == .jpeg ? UTType.jpeg.identifier : UTType.heic.identifier
+                return CameraPreparedOutput(
+                    data: output.data,
+                    fileName: "GRAIN-\(timestamp()).\(fileExtension)",
+                    uniformTypeIdentifier: uti,
+                    location: output.location,
+                    livePhotoURL: output.livePhotoURL
                 )
             }
 
@@ -4635,6 +4717,10 @@ struct CameraView: View {
                     guard !isPreparingLivePhoto else { return }
                     isPreparingLivePhoto = true
                     Task {
+                        // 实况照片不支持 RAW，若当前处于 RAW 则自动切至 HEIF
+                        if format == .raw {
+                            format = .heif
+                        }
                         let enabled = await camera.setLivePhotoEnabled(!livePhoto)
                         livePhoto = enabled
                         isPreparingLivePhoto = false
@@ -4660,7 +4746,7 @@ struct CameraView: View {
                     .overlay(Circle().stroke(GrainTheme.line, lineWidth: 0.6))
                 }
                 .buttonStyle(.plain)
-                .disabled(!camera.isLivePhotoSupported || format == .raw || isPreparingLivePhoto)
+                .disabled(!camera.isLivePhotoSupported || isPreparingLivePhoto)
             }
 
             Button {
