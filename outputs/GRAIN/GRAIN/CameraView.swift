@@ -486,6 +486,7 @@ final class CameraController: ObservableObject {
     private var activeProcessors: [Int64: CameraPhotoCaptureProcessor] = [:]
     private let processorLock = NSLock()
     private var captureGeneration = 0
+    private var lastCaptureTimestamp = Date.distantPast
 
     // 峰值对焦：按需挂一个视频数据输出，关闭时立刻移除，
     // 默认关闭，保证不开启时相机管线与之前完全一致。
@@ -1300,6 +1301,10 @@ final class CameraController: ObservableObject {
                     self.isRecording = true
                     self.recordingSeconds = 0
                     self.startRecordingTimer()
+                    if GrainFeedbackSound.isEnabled {
+                        AudioServicesPlaySystemSound(1117)
+                    }
+                    GrainHaptics.selection(enabled: true)
                 }
             }
         }
@@ -1545,6 +1550,10 @@ final class CameraController: ObservableObject {
 
     func stopRecording() {
         guard isRecording else { return }
+        if GrainFeedbackSound.isEnabled {
+            AudioServicesPlaySystemSound(1118)
+        }
+        GrainHaptics.selection(enabled: true)
         sessionQueue.async { [weak self] in
             self?.movieOutput.stopRecording()
         }
@@ -2231,6 +2240,9 @@ final class CameraController: ObservableObject {
 
     func capture(_ configuration: CameraCaptureConfiguration) {
         guard isReady, !isCapturing else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastCaptureTimestamp) >= 0.45 else { return }
+        lastCaptureTimestamp = now
         captureGeneration += 1
         let generation = captureGeneration
         isCapturing = true
@@ -3420,6 +3432,10 @@ private enum CameraError: LocalizedError {
 /// 从视频流抽帧做边缘检测，输出透明底 + 彩色描边的峰值图。
 /// 720p 分辨率 + 30fps 实时刷新，边缘清晰锐利且彻底消除拖影。
 final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    static var sharedFrameImage: CGImage? = nil
+    private static let frameLock = NSLock()
+    private var lastPreviewCacheTime: CFAbsoluteTime = 0
+
     var onMask: ((CGImage?) -> Void)?
     var onHistogram: ((RGBHistogram) -> Void)?
     /// 描边颜色；切换颜色只影响下一帧，不需要重建会话
@@ -3437,6 +3453,20 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
     ) {
         let now = CFAbsoluteTimeGetCurrent()
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        // 0. 缓存最新预览画面，消除拍照/录像切换时底层硬件重置造成的黑屏闪烁
+        if now - lastPreviewCacheTime >= 0.05 {
+            lastPreviewCacheTime = now
+            var snapSource = CIImage(cvPixelBuffer: pixelBuffer)
+            if snapSource.extent.width > snapSource.extent.height {
+                snapSource = snapSource.oriented(.right)
+            }
+            if let snapCG = self.context.createCGImage(snapSource, from: snapSource.extent) {
+                Self.frameLock.lock()
+                Self.sharedFrameImage = snapCG
+                Self.frameLock.unlock()
+            }
+        }
 
         // 1. 实时直方图计算（每秒约 10 次，低消耗）
         if onHistogram != nil && (now - lastHistogramTime >= 0.09) {
@@ -3926,20 +3956,11 @@ final class CameraPreviewUIView: UIView {
 
     func freezeCurrentPreview() {
         guard bounds.width > 2, bounds.height > 2 else { return }
-        previewSnapshotView?.removeFromSuperview()
-        if let snap = self.snapshotView(afterScreenUpdates: false) {
-            snap.frame = bounds
-            snap.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            addSubview(snap)
-            previewSnapshotView = snap
-        } else {
-            let renderer = UIGraphicsImageRenderer(bounds: bounds)
-            let img = renderer.image { _ in
-                drawHierarchy(in: bounds, afterScreenUpdates: false)
-            }
+        if let img = FocusPeakingProcessor.sharedFrameImage {
             CATransaction.begin()
             CATransaction.setDisableActions(true)
-            freezeLayer.contents = img.cgImage
+            freezeLayer.contents = img
+            freezeLayer.frame = bounds
             freezeLayer.opacity = 1.0
             freezeLayer.isHidden = false
             CATransaction.commit()
@@ -3947,22 +3968,10 @@ final class CameraPreviewUIView: UIView {
     }
 
     func unfreezePreview(animated: Bool = true) {
-        if let snap = previewSnapshotView {
-            previewSnapshotView = nil
-            if animated {
-                UIView.animate(withDuration: 0.28, delay: 0.05, options: [.curveEaseOut]) {
-                    snap.alpha = 0.0
-                } completion: { _ in
-                    snap.removeFromSuperview()
-                }
-            } else {
-                snap.removeFromSuperview()
-            }
-        }
         if !freezeLayer.isHidden {
             if animated {
                 CATransaction.begin()
-                CATransaction.setAnimationDuration(0.28)
+                CATransaction.setAnimationDuration(0.24)
                 CATransaction.setCompletionBlock { [weak self] in
                     self?.freezeLayer.isHidden = true
                     self?.freezeLayer.contents = nil
@@ -4468,6 +4477,7 @@ struct CameraView: View {
     @State private var activeSlider: ActiveSliderMode = .none
     @State private var storageWarningAlert = false
     @State private var isFreezingPreview = false
+    @State private var lastShutterTapTime = Date.distantPast
     @AppStorage("showHistogram") private var showHistogram = true
     @State private var lastExposureHapticStep: Int?
     @State private var lastIntensityHapticStep: Int?
@@ -4517,9 +4527,11 @@ struct CameraView: View {
     }
 
     init(
+        initialMode: CameraMode = .photo,
         onClose: (() -> Void)? = nil,
         onOpenCapture: ((String) -> Void)? = nil
     ) {
+        self._captureMode = State(initialValue: initialMode)
         self.onClose = onClose
         self.onOpenCapture = onOpenCapture
     }
@@ -5117,19 +5129,21 @@ struct CameraView: View {
             if captureMode == .video {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        // 1. 规格：分辨率与帧率（按规则显示：数字数字、4K大写、帧率如 60fps 小写）
+                        // 1. 规格：分辨率与帧率（按规则显示：数字数字、4K大写、帧率如 60fps 小写；固定宽度与去动画杜绝文字抽搐）
                         Menu {
                             ForEach(VideoQuality.allCases) { option in
                                 Button {
                                     videoQuality = option
                                     storedVideoQuality = option.rawValue
-                                    camera.prepareForVideoMode(
-                                        quality: option,
-                                        stabilization: stabilization,
-                                        codec: videoCodec,
-                                        colorSpace: videoColorSpace
-                                    )
                                     GrainHaptics.selection(enabled: true)
+                                    DispatchQueue.main.async {
+                                        camera.prepareForVideoMode(
+                                            quality: option,
+                                            stabilization: stabilization,
+                                            codec: videoCodec,
+                                            colorSpace: videoColorSpace
+                                        )
+                                    }
                                 } label: {
                                     HStack {
                                         Text(option.title)
@@ -5142,12 +5156,16 @@ struct CameraView: View {
                         } label: {
                             Text(videoQuality.title)
                                 .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                                .monospacedDigit()
                                 .foregroundStyle(GrainTheme.paper)
                                 .padding(.horizontal, 10)
                                 .frame(height: size)
+                                .frame(minWidth: 54)
                                 .background(GrainTheme.surface.opacity(0.85), in: Capsule())
                                 .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
                         }
+                        .transaction { $0.animation = nil }
+                        .animation(nil, value: videoQuality)
                         .disabled(camera.isRecording)
 
                         // 2. 画面比例 (4:3, 16:9, 2:1, 2.35:1) - 纯图标
@@ -5696,6 +5714,10 @@ struct CameraView: View {
 
     private var shutterButton: some View {
         Button {
+            let now = Date()
+            guard now.timeIntervalSince(lastShutterTapTime) >= 0.45 else { return }
+            lastShutterTapTime = now
+
             if captureMode == .video {
                 if camera.isRecording {
                     camera.stopRecording()
@@ -5714,6 +5736,7 @@ struct CameraView: View {
                     )
                 }
             } else {
+                guard !camera.isCapturing else { return }
                 camera.capture(
                     CameraCaptureConfiguration(
                         format: format,
@@ -5757,13 +5780,16 @@ struct CameraView: View {
         .disabled(!camera.isReady || (captureMode == .photo && camera.isCapturing))
     }
 
-    /// 快门右侧随行：拍照 / 录像互切
+    /// 快门右侧随行：拍照 / 录像互切（先捕获冻结当前画面，彻底根治底层重新握手导致的黑屏闪烁）
     private var captureModeButton: some View {
         Button {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                captureMode = captureMode == .photo ? .video : .photo
-            }
+            isFreezingPreview = true
             GrainHaptics.selection(enabled: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                    captureMode = captureMode == .photo ? .video : .photo
+                }
+            }
         } label: {
             Image(systemName: captureMode == .video ? "camera.fill" : "video.fill")
                 .font(.system(size: 15, weight: .semibold))

@@ -293,6 +293,7 @@ public struct VideoEditorView: View {
     @State private var isSharing = false
     @State private var lastParamHapticStep: Int = 0
     @State private var lastTrimHapticStep: Int = 0
+    @State private var lastSeekTime: CFAbsoluteTime = 0
 
     // 裁剪条手柄拖动防跳变缓存
     @State private var dragInitialTrimStart: Double? = nil
@@ -323,24 +324,26 @@ public struct VideoEditorView: View {
                     .padding(.horizontal, 16)
                     .frame(height: 48)
 
-                // 2. 视频参数与直方图信息条：独立放在最上方功能下面，彻底解决 16:9 等画幅被遮挡问题
-                videoSpecAndHistogramHeader
-                    .padding(.bottom, 2)
-
-                // 3. 视频主预览画布（纯净画面无遮挡、左右滑切片手势）
+                // 2. 视频主预览画布（纯净画面无遮挡、左右滑切片手势）
+                // 浮动展示顶部规格/直方图与底部对比/静音栏，竖屏视频按最大限度铺满上下空间
                 videoPreviewCanvas
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(alignment: .top) {
+                        videoSpecAndHistogramHeader
+                            .padding(.horizontal, 16)
+                            .padding(.top, 4)
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        comparisonActionBar
+                            .padding(.trailing, 16)
+                            .padding(.bottom, 6)
+                    }
 
-                // 4. 对比开关与静音开关放置在播放条的右上方
-                comparisonActionBar
-                    .padding(.top, 4)
-                    .padding(.bottom, 2)
-
-                // 5. 视频拖动进度条（带静音开关、时间回显、防拖拽误暂停机制）
+                // 3. 视频拖动进度条（带静音开关、时间回显、防拖拽误暂停机制）
                 videoScrubberBar
                     .padding(.bottom, 4)
 
-                // 6. 底部功能控制面板
+                // 4. 底部功能控制面板
                 bottomControlDeck
             }
 
@@ -1258,22 +1261,27 @@ public struct VideoEditorView: View {
                     .position(x: rightX + max(totalW - rightX, 0) / 2, y: 23)
                     .allowsHitTesting(false)
 
-                // 4. 黄色高亮裁剪选框（支持整体平移、左右把手独立拖拽，无论在左、中、右均精准响应）
+                // 4. 黄色高亮裁剪选框（纯净无重叠边框，上下边条 + 左右把手无缝拼接，手势分区互不干扰，手感轻盈丝滑）
                 ZStack {
-                    // 黄色边框
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(GrainTheme.accent, lineWidth: 2.5)
-
-                    // 短选区顶部居中微型抓手，方便拇指按住整框拖动
-                    if boxW < 46 {
-                        Capsule()
+                    // 上横轨
+                    VStack {
+                        Rectangle()
                             .fill(GrainTheme.accent)
-                            .frame(width: 14, height: 3.5)
-                            .offset(y: -23)
+                            .frame(height: 2.5)
+                        Spacer()
                     }
 
-                    // 中间选区平移响应层（覆盖整个选区矩形，带移动震动反馈与画面预览）
+                    // 下横轨
+                    VStack {
+                        Spacer()
+                        Rectangle()
+                            .fill(GrainTheme.accent)
+                            .frame(height: 2.5)
+                    }
+
+                    // 中间选区平移响应层（排除了左右把手区域，带移动震动反馈与画面预览，无卡顿轻盈滑动）
                     Color.white.opacity(0.001)
+                        .padding(.horizontal, handleW)
                         .contentShape(Rectangle())
                         .gesture(
                             DragGesture(minimumDistance: 1)
@@ -1299,8 +1307,12 @@ public struct VideoEditorView: View {
 
                                     recipe.trimStart = newStart
                                     recipe.trimEnd = newEnd
-                                    recipeHolder.recipe = recipe
-                                    seekFrame(to: newStart)
+
+                                    let now = CFAbsoluteTimeGetCurrent()
+                                    if now - lastSeekTime >= 0.035 {
+                                        lastSeekTime = now
+                                        seekFrame(to: newStart, exact: false)
+                                    }
 
                                     let step = Int(newStart * 6)
                                     if step != lastTrimHapticStep {
@@ -1312,10 +1324,12 @@ public struct VideoEditorView: View {
                                 .onEnded { _ in
                                     isTrimming = false
                                     dragInitialTrimRange = nil
+                                    recipeHolder.recipe = recipe
+                                    seekFrame(to: recipe.trimStart, exact: true)
                                 }
                         )
 
-                    // 左侧手柄（固定于选区最左端）
+                    // 左侧手柄（固定于选区最左端，带有微圆角与纯色把手，无重叠描边）
                     HStack(spacing: 0) {
                         HStack(spacing: 0) {
                             Image(systemName: "chevron.compact.left")
@@ -1337,8 +1351,13 @@ public struct VideoEditorView: View {
                                     let deltaSec = Double(val.translation.width / totalW) * totalDuration
                                     let newStart = min(max(start + deltaSec, 0), max(recipe.trimEnd - 0.5, 0))
                                     recipe.trimStart = newStart
-                                    recipeHolder.recipe = recipe
-                                    seekFrame(to: newStart)
+
+                                    let now = CFAbsoluteTimeGetCurrent()
+                                    if now - lastSeekTime >= 0.035 {
+                                        lastSeekTime = now
+                                        seekFrame(to: newStart, exact: false)
+                                    }
+
                                     let step = Int(newStart * 5)
                                     if step != lastTrimHapticStep {
                                         lastTrimHapticStep = step
@@ -1349,13 +1368,15 @@ public struct VideoEditorView: View {
                                 .onEnded { _ in
                                     isTrimming = false
                                     dragInitialTrimStart = nil
+                                    recipeHolder.recipe = recipe
+                                    seekFrame(to: recipe.trimStart, exact: true)
                                 }
                         )
 
                         Spacer(minLength: 0)
                     }
 
-                    // 右侧手柄（固定于选区最右端）
+                    // 右侧手柄（固定于选区最右端，带有微圆角与纯色把手，无重叠描边）
                     HStack(spacing: 0) {
                         Spacer(minLength: 0)
 
@@ -1379,8 +1400,13 @@ public struct VideoEditorView: View {
                                     let deltaSec = Double(val.translation.width / totalW) * totalDuration
                                     let newEnd = min(max(end + deltaSec, recipe.trimStart + 0.5), totalDuration)
                                     recipe.trimEnd = newEnd
-                                    recipeHolder.recipe = recipe
-                                    seekFrame(to: newEnd)
+
+                                    let now = CFAbsoluteTimeGetCurrent()
+                                    if now - lastSeekTime >= 0.035 {
+                                        lastSeekTime = now
+                                        seekFrame(to: newEnd, exact: false)
+                                    }
+
                                     let step = Int(newEnd * 5)
                                     if step != lastTrimHapticStep {
                                         lastTrimHapticStep = step
@@ -1391,6 +1417,8 @@ public struct VideoEditorView: View {
                                 .onEnded { _ in
                                     isTrimming = false
                                     dragInitialTrimEnd = nil
+                                    recipeHolder.recipe = recipe
+                                    seekFrame(to: recipe.trimEnd, exact: true)
                                 }
                         )
                     }
@@ -1524,11 +1552,16 @@ public struct VideoEditorView: View {
         player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
-    private func seekFrame(to seconds: Double) {
+    private func seekFrame(to seconds: Double, exact: Bool = false) {
         guard let player, seconds.isFinite, seconds >= 0 else { return }
         let target = CMTime(seconds: seconds, preferredTimescale: 600)
         guard target.isValid else { return }
-        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        if exact {
+            player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+        } else {
+            let tol = CMTime(seconds: 0.04, preferredTimescale: 600)
+            player.seek(to: target, toleranceBefore: tol, toleranceAfter: tol)
+        }
     }
 
     private func cleanupPlayer() {

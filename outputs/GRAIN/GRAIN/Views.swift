@@ -26,6 +26,7 @@ struct RootView: View {
     @State private var libraryImportTask: Task<Void, Never>?
     @State private var libraryImportGeneration = 0
     @State private var editingVideoAsset: PHAsset?
+    @State private var targetCameraMode: CameraMode = .photo
 
     private var isCameraActive: Bool {
         showCamera || launchCameraActive
@@ -110,6 +111,7 @@ struct RootView: View {
 
             if isCameraActive {
                 CameraView(
+                    initialMode: targetCameraMode,
                     onClose: {
                         withAnimation(.easeInOut(duration: 0.22)) {
                             showCamera = false
@@ -247,6 +249,27 @@ struct RootView: View {
                     await photoLibrary.refresh()
                 }
             }
+        }
+        .onOpenURL { url in
+            handleWidgetDeepLink(url)
+        }
+    }
+
+    /// 响应小组件与外部深度链接跳转（支持拍照模式、录像模式与暗房图库）
+    private func handleWidgetDeepLink(_ url: URL) {
+        guard url.scheme == "grain" else { return }
+        if url.host == "camera" {
+            let isVideo = url.query?.contains("mode=video") == true
+            targetCameraMode = isVideo ? .video : .photo
+            withAnimation(.easeInOut(duration: 0.22)) {
+                showCamera = true
+            }
+        } else if url.host == "library" {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                showCamera = false
+                launchCameraActive = false
+            }
+            editor.returnHome()
         }
     }
 

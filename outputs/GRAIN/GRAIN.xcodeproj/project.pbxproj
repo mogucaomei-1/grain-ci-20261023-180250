@@ -35,6 +35,7 @@
 		A10000000000000000000035 /* LivePhotoPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000035 /* LivePhotoPlayer.swift */; };
 		A10000000000000000000036 /* VideoEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000036 /* VideoEditorView.swift */; };
 		A10000000000000000000022 /* CaptureLocation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000022 /* CaptureLocation.swift */; };
+		A10000000000000000000037 /* GRAINWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000037 /* GRAINWidgets.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -66,6 +67,7 @@
 		B10000000000000000000035 /* LivePhotoPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LivePhotoPlayer.swift; sourceTree = "<group>"; };
 		B10000000000000000000036 /* VideoEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoEditorView.swift; sourceTree = "<group>"; };
 		B10000000000000000000022 /* CaptureLocation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureLocation.swift; sourceTree = "<group>"; };
+		B10000000000000000000037 /* GRAINWidgets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GRAINWidgets.swift; sourceTree = "<group>"; };
 		B1000000000000000000000A /* GRAIN.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GRAIN.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -118,6 +120,7 @@
 				B10000000000000000000035 /* LivePhotoPlayer.swift */,
 				B10000000000000000000036 /* VideoEditorView.swift */,
 				B10000000000000000000022 /* CaptureLocation.swift */,
+				B10000000000000000000037 /* GRAINWidgets.swift */,
 				B10000000000000000000009 /* Assets.xcassets */,
 			);
 			path = GRAIN;
@@ -227,6 +230,7 @@
 				A10000000000000000000035 /* LivePhotoPlayer.swift in Sources */,
 				A10000000000000000000036 /* VideoEditorView.swift in Sources */,
 				A10000000000000000000022 /* CaptureLocation.swift in Sources */,
+				A10000000000000000000037 /* GRAINWidgets.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -344,11 +348,12 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = GRAIN;
+				INFOPLIST_KEY_CFBundleURLTypes = "<array><dict><key>CFBundleURLName</key><string>studio.grain.rawfilm</string><key>CFBundleURLSchemes</key><array><string>grain</string></array></dict></array>";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
 				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄照片和实况照片。";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于为拍摄的照片记录位置信息。";
@@ -381,11 +386,12 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 105;
+				CURRENT_PROJECT_VERSION = 106;
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = GRAIN;
+				INFOPLIST_KEY_CFBundleURLTypes = "<array><dict><key>CFBundleURLName</key><string>studio.grain.rawfilm</string><key>CFBundleURLSchemes</key><array><string>grain</string></array></dict></array>";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
 				INFOPLIST_KEY_NSCameraUsageDescription = "用于拍摄照片和实况照片。";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于为拍摄的照片记录位置信息。";

@@ -55,14 +55,21 @@ enum GrainHaptics {
 /// AVFoundation 在拍照时会自动播放系统快门声（SystemSoundID 1108），
 /// 它不提供公开的静音接口；这里在 willCapturePhotoFor 中接管：
 /// 开启时播放同一段系统快门音文件（自己注册的 ID），关闭时释放 1108 让系统不发声。
-/// 真实快门声音：拍照时播放系统相机标准快门声
+/// 真实快门声音：拍照时播放系统相机标准快门声（带防抖去重机制，杜绝偶现双响/连拍杂音）
 enum GrainShutterSound {
     /// 默认开启（跟随设置中的「快门声音」开关）
     static var isEnabled: Bool { GrainFeedbackSound.isEnabled }
+    private static var lastShutterSoundTime = Date.distantPast
+    private static let soundLock = NSLock()
 
-    /// 由 AVCapturePhotoCaptureDelegate 的 willCapturePhotoFor 调用
+    /// 由 AVCapturePhotoCaptureDelegate 的 willCapturePhotoFor 调用（防重防抖 450ms）
     static func playForCapture() {
         guard isEnabled else { return }
+        soundLock.lock()
+        defer { soundLock.unlock() }
+        let now = Date()
+        guard now.timeIntervalSince(lastShutterSoundTime) >= 0.45 else { return }
+        lastShutterSoundTime = now
         AudioServicesPlayAlertSound(1108)
     }
 }

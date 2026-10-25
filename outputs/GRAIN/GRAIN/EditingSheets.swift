@@ -450,6 +450,7 @@ struct AppSettingsView: View {
     @AppStorage("cameraSharpening") private var cameraSharpening = 0
     /// 人脸追焦：关掉后只保留连续自动对焦，不做人脸检测
     @AppStorage("faceTrackingEnabled") private var faceTrackingEnabled = true
+    @State private var showWidgetShowcase = false
 
     private var sharpeningLabel: String {
         if cameraSharpening <= -5 {
@@ -643,6 +644,45 @@ struct AppSettingsView: View {
                     RoundedRectangle(cornerRadius: 17)
                         .stroke(GrainTheme.line, lineWidth: 0.8)
                 }
+
+                // 桌面与锁屏小组件（官方 HIG 规范第 1 版）
+                Button {
+                    showWidgetShowcase = true
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "square.dashed.inset.filled")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(GrainTheme.accent)
+                            .frame(width: 28)
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 6) {
+                                Text("桌面与锁屏小组件")
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(GrainTheme.paper)
+                                Text("官方规范")
+                                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(GrainTheme.accent)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(GrainTheme.accent.opacity(0.18), in: Capsule())
+                            }
+                            Text("Small 158pt · Medium 338pt · Lock Screen 锁屏圆标/长条预览")
+                                .font(.system(size: 9, design: .rounded))
+                                .foregroundStyle(GrainTheme.muted)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(GrainTheme.muted)
+                    }
+                    .padding(16)
+                    .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 17)
+                            .stroke(GrainTheme.line, lineWidth: 0.8)
+                    }
+                }
+                .buttonStyle(.plain)
 
                 HStack(spacing: 12) {
                     Image(systemName: "camera.fill")
@@ -920,6 +960,9 @@ struct AppSettingsView: View {
             .padding(20)
             }
             .scrollIndicators(.hidden)
+        }
+        .sheet(isPresented: $showWidgetShowcase) {
+            WidgetShowcaseView()
         }
     }
 }
