@@ -250,8 +250,8 @@ enum VideoColorSpacePreference: String, CaseIterable, Identifiable {
     var avColorSpace: AVCaptureColorSpace {
         switch self {
         case .rec709: return .sRGB
-        case .p3: return .p3_D65
-        case .hlgHDR: return .hlg_BT2020
+        case .p3: return .P3_D65
+        case .hlgHDR: return .HLG_BT2020
         }
     }
 }
@@ -1155,7 +1155,7 @@ final class CameraController: ObservableObject {
 
     /// 设置页切换「人脸追焦」时同步相机会话
     func setFaceTracking(_ enabled: Bool) {
-        faceTrackingEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "faceTrackingEnabled")
         if !enabled {
             trackingSink.submit(nil)
         }
@@ -5315,6 +5315,17 @@ private struct VideoViewfinderInfoOverlay: View {
     let audioLevel: Float
     let isRecording: Bool
 
+    private func barColor(index: Int, active: Bool) -> Color {
+        guard active else { return Color.white.opacity(0.2) }
+        if index >= 4 { return Color.red }
+        if index >= 3 { return Color.yellow }
+        return Color.green
+    }
+
+    private func barHeight(index: Int) -> CGFloat {
+        CGFloat(5 + index * 2)
+    }
+
     var body: some View {
         HStack(spacing: 5) {
             if isRecording {
@@ -5334,16 +5345,11 @@ private struct VideoViewfinderInfoOverlay: View {
 
             // 麦克风实时 VU 电平表 (5 级跳动条)
             HStack(spacing: 1.5) {
-                ForEach(0..<5) { barIndex in
-                    let threshold = Float(barIndex + 1) / 5.0
-                    let active = audioLevel >= threshold
+                ForEach(0..<5, id: \.self) { barIndex in
+                    let active = audioLevel >= (Float(barIndex + 1) / 5.0)
                     RoundedRectangle(cornerRadius: 0.8)
-                        .fill(
-                            active
-                                ? (barIndex >= 4 ? Color.red : (barIndex >= 3 ? Color.yellow : Color.green))
-                                : Color.white.opacity(0.2)
-                        )
-                        .frame(width: 2.2, height: CGFloat(5 + barIndex * 1.8))
+                        .fill(barColor(index: barIndex, active: active))
+                        .frame(width: 2.2, height: barHeight(index: barIndex))
                 }
             }
             .frame(height: 14, alignment: .bottom)
