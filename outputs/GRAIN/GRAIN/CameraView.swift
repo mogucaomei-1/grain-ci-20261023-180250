@@ -1624,12 +1624,6 @@ final class CameraController: ObservableObject {
     private func applySafeFrameRate(to device: AVCaptureDevice, targetFPS: Double) {
         do {
             try device.lockForConfiguration()
-            if #available(iOS 18.0, *) {
-                if device.isAutoVideoFrameRateEnabled {
-                    device.unlockForConfiguration()
-                    return
-                }
-            }
             let ranges = device.activeFormat.videoSupportedFrameRateRanges
             if let matchedRange = ranges.first(where: { targetFPS >= $0.minFrameRate - 0.5 && targetFPS <= $0.maxFrameRate + 0.5 }) {
                 let duration = CMTime(value: 1, timescale: Int32(targetFPS))
