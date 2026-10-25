@@ -100,14 +100,15 @@ enum CameraTimer: String, CaseIterable, Identifiable {
     }
 }
 
-/// 录像规格：分辨率 + 帧率，参考系统相机与专业相机 App 的常见档位
+/// 录像规格：分辨率 + 帧率（数字按数字，4K大写，帧率如 60fps 小写）
 enum VideoQuality: String, CaseIterable, Identifiable {
-    case hd1080p30
-    case hd1080p60
-    case uhd4k24
-    case uhd4k30
-    case uhd4k60
     case uhd4k120
+    case uhd4k60
+    case uhd4k30
+    case uhd4k24
+    case uhd4k20
+    case hd1080p60
+    case hd1080p30
 
     var id: String { rawValue }
 
@@ -115,14 +116,14 @@ enum VideoQuality: String, CaseIterable, Identifiable {
     var shortSide: Int {
         switch self {
         case .hd1080p30, .hd1080p60: 1080
-        case .uhd4k24, .uhd4k30, .uhd4k60, .uhd4k120: 2160
+        case .uhd4k20, .uhd4k24, .uhd4k30, .uhd4k60, .uhd4k120: 2160
         }
     }
 
     var longSide: Int {
         switch self {
         case .hd1080p30, .hd1080p60: 1920
-        case .uhd4k24, .uhd4k30, .uhd4k60, .uhd4k120: 3840
+        case .uhd4k20, .uhd4k24, .uhd4k30, .uhd4k60, .uhd4k120: 3840
         }
     }
 
@@ -130,6 +131,7 @@ enum VideoQuality: String, CaseIterable, Identifiable {
         switch self {
         case .hd1080p30, .uhd4k30: 30
         case .hd1080p60, .uhd4k60: 60
+        case .uhd4k20: 20
         case .uhd4k24: 24
         case .uhd4k120: 120
         }
@@ -137,12 +139,13 @@ enum VideoQuality: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .hd1080p30: "1080P 30"
-        case .hd1080p60: "1080P 60"
-        case .uhd4k24: "4K 24"
-        case .uhd4k30: "4K 30"
-        case .uhd4k60: "4K 60"
-        case .uhd4k120: "4K 120"
+        case .uhd4k120: "4K 120fps"
+        case .uhd4k60: "4K 60fps"
+        case .uhd4k30: "4K 30fps"
+        case .uhd4k24: "4K 24fps"
+        case .uhd4k20: "4K 20fps"
+        case .hd1080p60: "1080P 60fps"
+        case .hd1080p30: "1080P 30fps"
         }
     }
 }
@@ -572,7 +575,7 @@ final class CameraController: ObservableObject {
         switch quality {
         case .uhd4k120: bytesPerSecond = 18_000_000
         case .uhd4k60: bytesPerSecond = 10_000_000
-        case .uhd4k30, .uhd4k24: bytesPerSecond = 5_500_000
+        case .uhd4k30, .uhd4k24, .uhd4k20: bytesPerSecond = 5_000_000
         case .hd1080p60: bytesPerSecond = 3_200_000
         case .hd1080p30: bytesPerSecond = 2_000_000
         }
@@ -592,6 +595,7 @@ final class CameraController: ObservableObject {
     }
 
     func startAudioAndStorageMonitoring() {
+        try? AVAudioSession.sharedInstance().setAllowHapticsAndSystemSoundsDuringRecording(true)
         updateFreeStorage()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -1717,6 +1721,7 @@ final class CameraController: ObservableObject {
               let mic = AVCaptureDevice.default(for: .audio),
               let input = try? AVCaptureDeviceInput(device: mic)
         else { return }
+        try? AVAudioSession.sharedInstance().setAllowHapticsAndSystemSoundsDuringRecording(true)
         session.beginConfiguration()
         guard session.canAddInput(input) else {
             session.commitConfiguration()
@@ -3750,6 +3755,7 @@ struct CameraPreviewView: UIViewRepresentable {
     var trackingSink: FocusTrackingSink?
     /// 追焦把主体中心换算成设备坐标后回传给控制器设置对焦点
     var onTrackingFocus: ((CGPoint) -> Void)?
+    var isFreezing: Bool = false
     let onFocus: (_ devicePoint: CGPoint, _ lock: Bool) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -3810,6 +3816,11 @@ struct CameraPreviewView: UIViewRepresentable {
                 connection.isVideoMirrored = mirrored
             }
         }
+        if isFreezing {
+            uiView.freezeCurrentPreview()
+        } else {
+            uiView.unfreezePreview(animated: true)
+        }
     }
 
     final class Coordinator: NSObject {
@@ -3856,6 +3867,10 @@ final class CameraPreviewUIView: UIView {
 
     private var latestFocusLayer: CALayer?
 
+    /// 冻结图层：切换拍照与录像模式或重配格式时垫住最后一帧画面，消除底层相机重新握手导致的黑屏闪烁
+    private let freezeLayer = CALayer()
+    private var previewSnapshotView: UIView?
+
     /// 峰值描边图层：与预览层同 gravity，天然对齐，不会出现错位重影
     private let peakingLayer = CALayer()
     private(set) var attachedSink: PeakingOverlaySink?
@@ -3868,6 +3883,13 @@ final class CameraPreviewUIView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .black
+
+        freezeLayer.contentsGravity = .resizeAspectFill
+        freezeLayer.masksToBounds = true
+        freezeLayer.opacity = 1.0
+        freezeLayer.zPosition = 2
+        freezeLayer.isHidden = true
+        layer.addSublayer(freezeLayer)
 
         peakingLayer.contentsGravity = .resizeAspectFill
         peakingLayer.masksToBounds = true
@@ -3897,8 +3919,61 @@ final class CameraPreviewUIView: UIView {
         super.layoutSubviews()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        freezeLayer.frame = bounds
         peakingLayer.frame = bounds
         CATransaction.commit()
+    }
+
+    func freezeCurrentPreview() {
+        guard bounds.width > 2, bounds.height > 2 else { return }
+        previewSnapshotView?.removeFromSuperview()
+        if let snap = self.snapshotView(afterScreenUpdates: false) {
+            snap.frame = bounds
+            snap.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            addSubview(snap)
+            previewSnapshotView = snap
+        } else {
+            let renderer = UIGraphicsImageRenderer(bounds: bounds)
+            let img = renderer.image { _ in
+                drawHierarchy(in: bounds, afterScreenUpdates: false)
+            }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            freezeLayer.contents = img.cgImage
+            freezeLayer.opacity = 1.0
+            freezeLayer.isHidden = false
+            CATransaction.commit()
+        }
+    }
+
+    func unfreezePreview(animated: Bool = true) {
+        if let snap = previewSnapshotView {
+            previewSnapshotView = nil
+            if animated {
+                UIView.animate(withDuration: 0.28, delay: 0.05, options: [.curveEaseOut]) {
+                    snap.alpha = 0.0
+                } completion: { _ in
+                    snap.removeFromSuperview()
+                }
+            } else {
+                snap.removeFromSuperview()
+            }
+        }
+        if !freezeLayer.isHidden {
+            if animated {
+                CATransaction.begin()
+                CATransaction.setAnimationDuration(0.28)
+                CATransaction.setCompletionBlock { [weak self] in
+                    self?.freezeLayer.isHidden = true
+                    self?.freezeLayer.contents = nil
+                }
+                freezeLayer.opacity = 0.0
+                CATransaction.commit()
+            } else {
+                freezeLayer.isHidden = true
+                freezeLayer.contents = nil
+            }
+        }
     }
 
     func attachPeakingSink(_ sink: PeakingOverlaySink?) {
@@ -4099,7 +4174,8 @@ final class CameraLevelerMotion: ObservableObject {
             if level != self.isLevel {
                 self.isLevel = level
                 if level && !self.lastHapticLevel {
-                    GrainHaptics.lightImpact(enabled: true)
+                    GrainHaptics.mediumImpact(enabled: true)
+                    AudioServicesPlaySystemSound(1519)
                 }
                 self.lastHapticLevel = level
             }
@@ -4160,25 +4236,42 @@ enum ActiveSliderMode: Equatable {
     case whiteBalance
 }
 
-struct HorizontalOptionSlider<Item: Identifiable & Equatable>: View {
+struct CustomScrubSlider<Item: Identifiable & Equatable>: View {
     let title: String
     let items: [Item]
     @Binding var selected: Item
+    let defaultItem: Item
     let itemTitle: (Item) -> String
     var onClose: (() -> Void)? = nil
     let onSelect: (Item) -> Void
 
+    @State private var dragKnobX: CGFloat? = nil
+    @State private var lastHapticIndex: Int? = nil
+    @State private var lastTapTime: TimeInterval = 0
+    @State private var startLocation: CGPoint = .zero
+
+    private var currentIndex: Int {
+        items.firstIndex(of: selected) ?? 0
+    }
+
     var body: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 4) {
+        VStack(spacing: 5) {
+            // 顶部信息条：标题、当前数值回显、重置提示、关闭按钮
+            HStack(spacing: 6) {
                 Text(title)
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .foregroundStyle(GrainTheme.accent)
                 Text(itemTitle(selected))
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundStyle(GrainTheme.paper)
+
+                Spacer(minLength: 0)
+
+                Text("双击圆点重置自动")
+                    .font(.system(size: 8, design: .rounded))
+                    .foregroundStyle(GrainTheme.paper.opacity(0.45))
+
                 if let onClose {
-                    Spacer(minLength: 0)
                     Button {
                         onClose()
                     } label: {
@@ -4187,54 +4280,123 @@ struct HorizontalOptionSlider<Item: Identifiable & Equatable>: View {
                             .foregroundStyle(GrainTheme.paper.opacity(0.65))
                     }
                     .buttonStyle(.plain)
+                    .padding(.leading, 4)
                 }
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 2)
-            .background(GrainTheme.surface.opacity(0.9), in: Capsule())
+            .padding(.top, 4)
 
-            ScrollViewReader { proxy in
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(items) { item in
-                            let isSelected = item == selected
-                            Button {
-                                selected = item
-                                onSelect(item)
-                                GrainHaptics.selection(enabled: true)
-                            } label: {
-                                Text(itemTitle(item))
-                                    .font(.system(size: 11, weight: isSelected ? .bold : .medium, design: .monospaced))
-                                    .foregroundStyle(isSelected ? GrainTheme.black : GrainTheme.paper)
-                                    .padding(.horizontal, 12)
-                                    .frame(height: 28)
-                                    .background(
-                                        isSelected ? GrainTheme.accent : GrainTheme.surface.opacity(0.85),
-                                        in: Capsule()
-                                    )
-                                    .overlay(
-                                        Capsule().stroke(isSelected ? Color.clear : GrainTheme.line, lineWidth: 0.6)
-                                    )
+            // 可左右滑动的自定义滑动条
+            GeometryReader { proxy in
+                let width = max(proxy.size.width, 1)
+                let knobDiameter: CGFloat = 22
+                let inset: CGFloat = knobDiameter / 2
+                let usableWidth = max(width - inset * 2, 1)
+                let count = max(items.count - 1, 1)
+
+                let progress = CGFloat(currentIndex) / CGFloat(count)
+                let currentKnobX = inset + usableWidth * progress
+                let knobX = dragKnobX ?? currentKnobX
+
+                ZStack(alignment: .leading) {
+                    // 轨道槽底色
+                    Capsule()
+                        .fill(Color.white.opacity(0.18))
+                        .frame(height: 5)
+                        .padding(.horizontal, inset)
+
+                    // 进度高亮色
+                    Capsule()
+                        .fill(GrainTheme.accent)
+                        .frame(width: max(knobX - inset, 0), height: 5)
+                        .padding(.leading, inset)
+
+                    // 离散档位刻度点（最左侧为自动挡）
+                    HStack(spacing: 0) {
+                        ForEach(0..<items.count, id: \.self) { idx in
+                            let isAuto = (items[idx] == defaultItem)
+                            Circle()
+                                .fill(idx <= currentIndex ? GrainTheme.accent : Color.white.opacity(0.35))
+                                .frame(width: isAuto ? 4.5 : 2.5, height: isAuto ? 4.5 : 2.5)
+                            if idx < items.count - 1 {
+                                Spacer(minLength: 0)
                             }
-                            .buttonStyle(.plain)
-                            .id(item.id)
                         }
                     }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, inset)
+
+                    // 可拖动的圆形滑块（双击恢复默认自动设置）
+                    Circle()
+                        .fill(GrainTheme.paper)
+                        .frame(width: knobDiameter, height: knobDiameter)
+                        .shadow(color: .black.opacity(0.38), radius: 2.5, y: 1)
+                        .overlay {
+                            Circle()
+                                .stroke(GrainTheme.line, lineWidth: 0.6)
+                        }
+                        .overlay {
+                            Circle()
+                                .fill(selected == defaultItem ? GrainTheme.accent : Color.black.opacity(0.7))
+                                .frame(width: 6, height: 6)
+                        }
+                        .offset(x: knobX - inset)
+                        .onTapGesture(count: 2) {
+                            selected = defaultItem
+                            onSelect(defaultItem)
+                            dragKnobX = nil
+                            GrainHaptics.mediumImpact(enabled: true)
+                            AudioServicesPlaySystemSound(1519)
+                        }
                 }
-                .onAppear {
-                    proxy.scrollTo(selected.id, anchor: .center)
-                }
-                .onChange(of: selected) { _, newSel in
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        proxy.scrollTo(newSel.id, anchor: .center)
-                    }
-                }
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { val in
+                            if dragKnobX == nil {
+                                startLocation = val.startLocation
+                            }
+                            let clampedX = min(max(val.location.x, inset), width - inset)
+                            dragKnobX = clampedX
+                            let pct = (clampedX - inset) / usableWidth
+                            let idx = Int((pct * CGFloat(count)).rounded())
+                            let safeIdx = min(max(idx, 0), items.count - 1)
+                            if safeIdx != lastHapticIndex {
+                                lastHapticIndex = safeIdx
+                                GrainHaptics.selection(enabled: true)
+                            }
+                            let item = items[safeIdx]
+                            if item != selected {
+                                selected = item
+                                onSelect(item)
+                            }
+                        }
+                        .onEnded { val in
+                            dragKnobX = nil
+                            lastHapticIndex = nil
+                            let dist = hypot(val.location.x - startLocation.x, val.location.y - startLocation.y)
+                            if dist < 8 {
+                                let now = Date().timeIntervalSince1970
+                                if now - lastTapTime < 0.35 {
+                                    selected = defaultItem
+                                    onSelect(defaultItem)
+                                    GrainHaptics.mediumImpact(enabled: true)
+                                    AudioServicesPlaySystemSound(1519)
+                                    lastTapTime = 0
+                                } else {
+                                    lastTapTime = now
+                                }
+                            }
+                        }
+                )
             }
-            .frame(height: 34)
+            .frame(height: 26)
+            .padding(.horizontal, 6)
+            .padding(.bottom, 6)
         }
-        .padding(.vertical, 6)
-        .background(Color.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 14))
+        .padding(.vertical, 4)
+        .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(GrainTheme.line, lineWidth: 0.6))
         .padding(.horizontal, 4)
     }
 }
@@ -4294,6 +4456,7 @@ struct CameraView: View {
     @StateObject private var levelerMotion = CameraLevelerMotion()
     @State private var activeSlider: ActiveSliderMode = .none
     @State private var storageWarningAlert = false
+    @State private var isFreezingPreview = false
     @AppStorage("showHistogram") private var showHistogram = true
     @State private var lastExposureHapticStep: Int?
     @State private var lastIntensityHapticStep: Int?
@@ -4371,6 +4534,7 @@ struct CameraView: View {
                             onTrackingFocus: { devicePoint in
                                 camera.applyTrackingFocus(devicePoint)
                             },
+                            isFreezing: isFreezingPreview,
                             onFocus: { devicePoint, lock in
                                 camera.focus(at: devicePoint, lock: lock)
                                 GrainHaptics.mediumImpact(enabled: true)
@@ -4600,7 +4764,8 @@ struct CameraView: View {
                 .padding(28)
             }
         }
-        .statusBarHidden()
+        .statusBarHidden(false)
+        .preferredColorScheme(.dark)
         .task {
             await camera.start()
         }
@@ -4656,6 +4821,7 @@ struct CameraView: View {
             levelerMotion.stop()
         }
         .onChange(of: captureMode) { _, mode in
+            isFreezingPreview = true
             activeSlider = .none
             // 录像模式提前预热音视频输出与专属 16:9 格式，解决开录时屏幕闪烁两下的问题
             if mode == .video {
@@ -4676,6 +4842,9 @@ struct CameraView: View {
                 }
                 camera.stopAudioAndStorageMonitoring()
                 camera.restorePhotoFormat(resolution: resolution)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.40) {
+                isFreezingPreview = false
             }
         }
         .onChange(of: peakingColorRaw) { _, value in
@@ -4937,10 +5106,10 @@ struct CameraView: View {
             if captureMode == .video {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        // 1. 规格：分辨率与帧率 (4K 60, 1080P 60 等) - 纯图标
+                        // 1. 规格：分辨率与帧率（按规则显示：数字数字、4K大写、帧率如 60fps 小写）
                         Menu {
                             ForEach(VideoQuality.allCases) { option in
-                                Button(option.title) {
+                                Button {
                                     videoQuality = option
                                     storedVideoQuality = option.rawValue
                                     camera.prepareForVideoMode(
@@ -4949,10 +5118,28 @@ struct CameraView: View {
                                         codec: videoCodec,
                                         colorSpace: videoColorSpace
                                     )
+                                    GrainHaptics.selection(enabled: true)
+                                } label: {
+                                    HStack {
+                                        Text(option.title)
+                                        if videoQuality == option {
+                                            Image(systemName: "checkmark")
+                                        }
+                                    }
                                 }
                             }
                         } label: {
-                            TopBarIconButton(systemName: "video.fill", size: size)
+                            HStack(spacing: 4) {
+                                Image(systemName: "video.fill")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(videoQuality.title)
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            }
+                            .foregroundStyle(GrainTheme.paper)
+                            .padding(.horizontal, 9)
+                            .frame(height: size)
+                            .background(GrainTheme.surface.opacity(0.85), in: Capsule())
+                            .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
                         }
                         .disabled(camera.isRecording)
 
@@ -5227,10 +5414,11 @@ struct CameraView: View {
     private var sliderControlRow: some View {
         switch activeSlider {
         case .shutter:
-            HorizontalOptionSlider(
+            CustomScrubSlider(
                 title: "快门速度",
                 items: ManualShutterOption.allCases,
                 selected: $manualShutter,
+                defaultItem: .auto,
                 itemTitle: { $0.title },
                 onClose: {
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -5241,10 +5429,11 @@ struct CameraView: View {
                 camera.applyManualExposure(shutter: option, iso: manualISO)
             }
         case .iso:
-            HorizontalOptionSlider(
+            CustomScrubSlider(
                 title: "ISO 感光度",
                 items: ManualISOOption.allCases,
                 selected: $manualISO,
+                defaultItem: .auto,
                 itemTitle: { $0.title },
                 onClose: {
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -5255,10 +5444,11 @@ struct CameraView: View {
                 camera.applyManualExposure(shutter: manualShutter, iso: option)
             }
         case .whiteBalance:
-            HorizontalOptionSlider(
+            CustomScrubSlider(
                 title: "白平衡",
                 items: VideoWhiteBalanceMode.allCases,
                 selected: $videoWhiteBalance,
+                defaultItem: .auto,
                 itemTitle: { $0.title },
                 onClose: {
                     withAnimation(.easeInOut(duration: 0.2)) {

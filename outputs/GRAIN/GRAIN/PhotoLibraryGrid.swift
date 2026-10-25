@@ -68,7 +68,7 @@ final class PhotoLibraryViewModel: NSObject, ObservableObject, PHPhotoLibraryCha
         seeded.reserveCapacity(assets.count)
         var missing: [PHAsset] = []
         for asset in assets {
-            if let label = cached[asset.localIdentifier] {
+            if let label = cached[asset.localIdentifier], label != "VIDEO" {
                 seeded[asset.localIdentifier] = label
             } else {
                 missing.append(asset)
@@ -134,7 +134,7 @@ final class PhotoLibraryViewModel: NSObject, ObservableObject, PHPhotoLibraryCha
 
     nonisolated static func formatLabel(for asset: PHAsset) -> String {
         if asset.mediaType == .video {
-            return "VIDEO"
+            return videoFormatLabel(for: asset)
         }
         let resources = PHAssetResource.assetResources(for: asset)
         let candidate = resources.first(where: { $0.type == .fullSizePhoto })
@@ -154,6 +154,57 @@ final class PhotoLibraryViewModel: NSObject, ObservableObject, PHPhotoLibraryCha
         if identifier.contains("jpeg") || identifier.contains("jpg") { return "JPEG" }
         if identifier.contains("tiff") || identifier.contains("tif") { return "TIFF" }
         return "IMAGE"
+    }
+
+    nonisolated static func videoQuickResolutionLabel(for asset: PHAsset) -> String {
+        let maxDim = max(asset.pixelWidth, asset.pixelHeight)
+        let minDim = min(asset.pixelWidth, asset.pixelHeight)
+        if maxDim >= 3800 || minDim >= 2100 {
+            return "4K"
+        } else if maxDim >= 1900 || minDim >= 1050 {
+            return "1080P"
+        } else if maxDim >= 1200 || minDim >= 700 {
+            return "720P"
+        } else if minDim > 0 {
+            return "\(minDim)P"
+        } else {
+            return "VIDEO"
+        }
+    }
+
+    /// 提取视频的规格与帧率（如 4K 60fps, 1080P 30fps 等），避免只单一显示一个 VIDEO 单词
+    nonisolated static func videoFormatLabel(for asset: PHAsset) -> String {
+        let res = videoQuickResolutionLabel(for: asset)
+
+        let options = PHVideoRequestOptions()
+        options.version = .current
+        options.deliveryMode = .fastFormat
+        options.isNetworkAccessAllowed = false
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var resolvedFPS: Int? = nil
+
+        PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, _ in
+            if let avAsset {
+                if let track = avAsset.tracks(withMediaType: .video).first {
+                    let rate = track.nominalFrameRate
+                    if rate > 0 {
+                        resolvedFPS = Int(rate.rounded())
+                    } else if track.minFrameDuration.timescale > 0 {
+                        let fpsFromDur = Double(track.minFrameDuration.timescale) / Double(max(track.minFrameDuration.value, 1))
+                        resolvedFPS = Int(fpsFromDur.rounded())
+                    }
+                }
+            }
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 0.15)
+
+        if let fps = resolvedFPS, fps > 0 {
+            return "\(res) \(fps)fps"
+        } else {
+            return res
+        }
     }
 
     func originalFileURL(for asset: PHAsset) async throws -> URL {
@@ -296,10 +347,14 @@ enum LibraryFormatFilter: String, CaseIterable, Identifiable {
         }
     }
 
-    func matches(_ label: String?) -> Bool {
+    func matches(_ label: String?, mediaType: PHAssetMediaType? = nil) -> Bool {
         guard self != .all else { return true }
+        if self == .video {
+            if mediaType == .video { return true }
+            guard let label else { return false }
+            return label.contains("fps") || label.contains("4K") || label.contains("1080P") || label.contains("720P") || label.contains("P") || label == "VIDEO"
+        }
         guard let label else { return false }
-        if self == .video { return label == "VIDEO" }
         return label == title
     }
 }
@@ -604,7 +659,7 @@ struct PhotoLibraryHome: View {
 
     private var visibleAssets: [PHAsset] {
         let filtered = library.assets.filter {
-            formatFilter.matches(library.formatLabels[$0.localIdentifier])
+            formatFilter.matches(library.formatLabels[$0.localIdentifier], mediaType: $0.mediaType)
         }
         return sortAscending ? Array(filtered.reversed()) : filtered
     }
@@ -668,7 +723,17 @@ struct PhotoLibraryHome: View {
                 .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
                 .id(asset.localIdentifier)
 
-            AssetFormatBadge(label: library.formatLabels[asset.localIdentifier])
+            let badgeLabel: String? = {
+                if let lbl = library.formatLabels[asset.localIdentifier], lbl != "VIDEO" {
+                    return lbl
+                }
+                if asset.mediaType == .video {
+                    return PhotoLibraryViewModel.videoQuickResolutionLabel(for: asset)
+                }
+                return library.formatLabels[asset.localIdentifier]
+            }()
+
+            AssetFormatBadge(label: badgeLabel)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(5)
 

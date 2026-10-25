@@ -297,6 +297,7 @@ public struct VideoEditorView: View {
     // 裁剪条手柄拖动防跳变缓存
     @State private var dragInitialTrimStart: Double? = nil
     @State private var dragInitialTrimEnd: Double? = nil
+    @State private var dragInitialTrimRange: (start: Double, end: Double)? = nil
 
     private let recipeHolder: VideoRecipeHolder
 
@@ -1242,11 +1243,52 @@ public struct VideoEditorView: View {
                     .frame(width: max(totalW - rightX, 0), height: 42)
                     .offset(x: rightX)
 
-                // 黄色高亮裁剪选框
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(GrainTheme.accent, lineWidth: 2.5)
-                    .frame(width: max(rightX - leftX, 16), height: 46)
-                    .offset(x: leftX)
+                // 黄色高亮裁剪选框（支持整体左右拖动平移已裁剪时间区间，带震动反馈）
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(GrainTheme.accent, lineWidth: 2.5)
+                    Color.white.opacity(0.001)
+                }
+                .frame(width: max(rightX - leftX, 16), height: 46)
+                .offset(x: leftX)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 1)
+                        .onChanged { val in
+                            pause()
+                            if dragInitialTrimRange == nil {
+                                dragInitialTrimRange = (start: recipe.trimStart, end: recipe.trimEnd)
+                            }
+                            guard let range = dragInitialTrimRange else { return }
+                            let rangeDuration = max(range.end - range.start, 0.5)
+                            let deltaSec = Double(val.translation.width / totalW) * totalDuration
+                            var newStart = range.start + deltaSec
+                            var newEnd = range.end + deltaSec
+
+                            if newStart < 0 {
+                                newStart = 0
+                                newEnd = min(rangeDuration, totalDuration)
+                            } else if newEnd > totalDuration {
+                                newEnd = totalDuration
+                                newStart = max(totalDuration - rangeDuration, 0)
+                            }
+
+                            recipe.trimStart = newStart
+                            recipe.trimEnd = newEnd
+                            recipeHolder.recipe = recipe
+                            seek(to: newStart)
+
+                            let step = Int(newStart * 6)
+                            if step != lastTrimHapticStep {
+                                lastTrimHapticStep = step
+                                GrainHaptics.selection()
+                                AudioServicesPlaySystemSound(1519)
+                            }
+                        }
+                        .onEnded { _ in
+                            dragInitialTrimRange = nil
+                        }
+                )
 
                 // 左手柄（基于 translation 稳定拖拽，绝不跳零）
                 HStack(spacing: 0) {
@@ -2320,20 +2362,28 @@ private struct VideoCropSelectionOverlay: View {
                     .allowsHitTesting(false)
             }
 
-            // 左右侧边微调把手（方便拇指按住左右横移构图）
-            Capsule()
-                .fill(GrainTheme.paper)
-                .frame(width: 4.5, height: 26)
-                .shadow(color: .black.opacity(0.4), radius: 2)
-                .position(x: rect.minX, y: rect.midY)
-                .allowsHitTesting(false)
+            // 左右侧边微调把手（方便拇指按住左右横移构图，触摸区扩大并附带移动震动反馈）
+            HStack(spacing: 0) {
+                Capsule()
+                    .fill(GrainTheme.paper)
+                    .frame(width: 5, height: 32)
+                    .shadow(color: .black.opacity(0.4), radius: 2)
+            }
+            .frame(width: 44, height: 50)
+            .contentShape(Rectangle())
+            .position(x: rect.minX, y: rect.midY)
+            .gesture(moveGesture(rect: rect))
 
-            Capsule()
-                .fill(GrainTheme.paper)
-                .frame(width: 4.5, height: 26)
-                .shadow(color: .black.opacity(0.4), radius: 2)
-                .position(x: rect.maxX, y: rect.midY)
-                .allowsHitTesting(false)
+            HStack(spacing: 0) {
+                Capsule()
+                    .fill(GrainTheme.paper)
+                    .frame(width: 5, height: 32)
+                    .shadow(color: .black.opacity(0.4), radius: 2)
+            }
+            .frame(width: 44, height: 50)
+            .contentShape(Rectangle())
+            .position(x: rect.maxX, y: rect.midY)
+            .gesture(moveGesture(rect: rect))
 
             // 四角缩放圆形手柄
             ForEach(Corner.allCases, id: \.self) { corner in
@@ -2380,6 +2430,7 @@ private struct VideoCropSelectionOverlay: View {
                 if step != lastHapticStep {
                     lastHapticStep = step
                     GrainHaptics.selection()
+                    AudioServicesPlaySystemSound(1519)
                 }
                 cropRect = CGRect(x: newX, y: newY, width: origin.width, height: origin.height)
             }

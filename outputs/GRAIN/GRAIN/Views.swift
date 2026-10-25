@@ -2284,7 +2284,7 @@ private struct AdjustPanel: View {
     }
 }
 
-/// 可双击白色旋钮恢复默认值的滑杆（编辑页与设置页共用）
+/// 可双击白色旋钮恢复默认值的滑杆（编辑页与设置页共用，经极致优化，杜绝卡顿掉帧）
 struct ResetValueSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
@@ -2293,6 +2293,8 @@ struct ResetValueSlider: View {
     @State private var isEditing = false
     @State private var lastHapticStep: Int = 0
     @State private var dragKnobX: CGFloat? = nil
+    @State private var lastTapTime: TimeInterval = 0
+    @State private var startLocation: CGPoint = .zero
 
     var body: some View {
         GeometryReader { proxy in
@@ -2324,14 +2326,15 @@ struct ResetValueSlider: View {
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
                     .onChanged { gesture in
-                        let position = min(max(gesture.location.x - inset, 0), usableWidth)
-                        dragKnobX = inset + position
                         if !isEditing {
                             isEditing = true
+                            startLocation = gesture.startLocation
                             GrainHaptics.prepare()
                             onEditStart()
                             lastHapticStep = Int(((value - range.lowerBound) / span * 50).rounded())
                         }
+                        let position = min(max(gesture.location.x - inset, 0), usableWidth)
+                        dragKnobX = inset + position
                         let newValue = range.lowerBound + Double(position / usableWidth) * span
                         let newStep = Int(((newValue - range.lowerBound) / span * 50).rounded())
                         if newStep != lastHapticStep {
@@ -2344,18 +2347,20 @@ struct ResetValueSlider: View {
                         }
                         value = newValue
                     }
-                    .onEnded { _ in
+                    .onEnded { gesture in
                         isEditing = false
                         dragKnobX = nil
-                    }
-            )
-            .simultaneousGesture(
-                SpatialTapGesture(count: 2, coordinateSpace: .local)
-                    .onEnded { gesture in
-                        if abs(gesture.location.x - activeKnobX) <= 24 {
-                            GrainHaptics.mediumImpact()
-                            dragKnobX = nil
-                            onReset()
+                        let dist = hypot(gesture.location.x - startLocation.x, gesture.location.y - startLocation.y)
+                        if dist < 6 {
+                            let now = Date().timeIntervalSince1970
+                            if now - lastTapTime < 0.35 {
+                                GrainHaptics.mediumImpact()
+                                AudioServicesPlaySystemSound(1519)
+                                onReset()
+                                lastTapTime = 0
+                            } else {
+                                lastTapTime = now
+                            }
                         }
                     }
             )

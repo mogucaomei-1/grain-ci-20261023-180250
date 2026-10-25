@@ -524,6 +524,11 @@ final class EditorViewModel: ObservableObject {
                     }
                     break
                 }
+
+                // 持续滑动过程中适度让步（约 30fps 实时预览），让主线程与 GPU 毫无卡顿掉帧
+                if self.previewNeedsUpdate {
+                    try? await Task.sleep(for: .milliseconds(32))
+                }
             }
 
             if self.previewGeneration == generation {
