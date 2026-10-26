@@ -544,7 +544,7 @@ struct WidgetShowcaseView: View {
                             VStack(spacing: 8) {
                                 Button {
                                     WidgetCenter.shared.reloadAllTimelines()
-                                    GrainHaptics.notification(type: .success)
+                                    GrainHaptics.mediumImpact()
                                 } label: {
                                     HStack(spacing: 8) {
                                         Image(systemName: "arrow.clockwise.circle.fill")

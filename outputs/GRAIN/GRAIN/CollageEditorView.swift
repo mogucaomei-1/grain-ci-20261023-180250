@@ -1908,7 +1908,7 @@ struct CollageEditorView: View {
             path.addPath(innerPath.cgPath)
             context.addPath(path)
             context.setFillColor(UIColor.white.cgColor)
-            context.drawPath(using: .evenOdd)
+            context.drawPath(using: .eoFill)
 
             let dateText = NSString(string: exifInfo.dateString)
             let dateAttrs: [NSAttributedString.Key: Any] = [
@@ -1939,7 +1939,7 @@ struct CollageEditorView: View {
             path.addPath(innerPath.cgPath)
             context.addPath(path)
             context.setFillColor(UIColor(red: 0.08, green: 0.08, blue: 0.09, alpha: 1.0).cgColor)
-            context.drawPath(using: .evenOdd)
+            context.drawPath(using: .eoFill)
 
             let dateText = NSString(string: exifInfo.dateString)
             let dateAttrs: [NSAttributedString.Key: Any] = [
@@ -1979,7 +1979,7 @@ struct CollageEditorView: View {
             path.addPath(innerPath.cgPath)
             context.addPath(path)
             context.setFillColor(UIColor.black.cgColor)
-            context.drawPath(using: .evenOdd)
+            context.drawPath(using: .eoFill)
 
             let txtAttrs: [NSAttributedString.Key: Any] = [
                 .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.016, weight: .heavy),
@@ -2001,7 +2001,7 @@ struct CollageEditorView: View {
             path.addPath(innerPath.cgPath)
             context.addPath(path)
             context.setFillColor(UIColor(red: 0.12, green: 0.12, blue: 0.13, alpha: 1.0).cgColor)
-            context.drawPath(using: .evenOdd)
+            context.drawPath(using: .eoFill)
 
             let txtAttrs: [NSAttributedString.Key: Any] = [
                 .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.015, weight: .bold),
@@ -2023,7 +2023,7 @@ struct CollageEditorView: View {
             path.addPath(innerPath.cgPath)
             context.addPath(path)
             context.setFillColor(UIColor(red: 0.05, green: 0.05, blue: 0.05, alpha: 1.0).cgColor)
-            context.drawPath(using: .evenOdd)
+            context.drawPath(using: .eoFill)
 
             let txtAttrs: [NSAttributedString.Key: Any] = [
                 .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.016, weight: .black),
