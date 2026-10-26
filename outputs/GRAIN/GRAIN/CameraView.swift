@@ -3187,7 +3187,7 @@ private enum CameraImageProcessor {
             // 拍摄 HDR / 原生比例且无额外锐化调整时：直接返回 AVFoundation 原始生成的 10-bit HDR / HEIF 文件数据，
             // 100% 完整保留 Apple Smart HDR Gain Map 高动态范围增益图与 Deep Fusion 深度融合元数据！
             let sharpening = UserDefaults.standard.object(forKey: "cameraSharpening") as? Int ?? 0
-            if configuration.hdr && configuration.aspect == .ratio4_3 && sharpening == 0 {
+            if configuration.hdr && configuration.aspect == .portrait3x4 && sharpening == 0 {
                 let fileExtension = configuration.format == .jpeg ? "jpg" : "heic"
                 let uti = configuration.format == .jpeg ? UTType.jpeg.identifier : UTType.heic.identifier
                 return CameraPreparedOutput(
