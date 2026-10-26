@@ -2,11 +2,10 @@ import SwiftUI
 import WidgetKit
 import AppIntents
 
-// MARK: - iOS 17+ 官方 AppIntent 快捷启动意图与交互规范
-struct OpenGRAINCameraIntent: AppIntent {
-    static var title: LocalizedStringResource = "打开 GRAIN 胶片相机"
+// MARK: - iOS 17+ 官方 WidgetConfigurationIntent 小组件配置与启动意图规范
+struct OpenGRAINCameraIntent: WidgetConfigurationIntent {
+    static var title: LocalizedStringResource = "GRAIN 胶片快拍"
     static var description = IntentDescription("一键极速启动 GRAIN 复古微单相机")
-    static var openAppWhenRun: Bool = true
 
     @Parameter(title: "拍摄模式", default: "photo")
     var mode: String
@@ -17,10 +16,6 @@ struct OpenGRAINCameraIntent: AppIntent {
 
     init(mode: String) {
         self.mode = mode
-    }
-
-    func perform() async throws -> some IntentResult {
-        return .result()
     }
 }
 
