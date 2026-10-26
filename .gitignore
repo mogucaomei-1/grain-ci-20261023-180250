@@ -15,5 +15,7 @@ xcuserdata/
 *.mobileprovision
 *.key
 *.ipa
+*.ip
+*.i
 *.xcarchive
 

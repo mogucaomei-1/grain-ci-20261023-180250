@@ -373,6 +373,7 @@ struct PhotoLibraryHome: View {
     @State private var isPreparingShare = false
     @State private var shareURLs: [URL] = []
     @State private var showShareSheet = false
+    @State private var showCollageEditor = false
     @State private var shareError: String?
     @State private var deleteError: String?
     @State private var tileFrames: [String: CGRect] = [:]
@@ -482,6 +483,9 @@ struct PhotoLibraryHome: View {
         .sheet(isPresented: $showShareSheet, onDismiss: clearShareFiles) {
             GrainShareSheet(items: shareURLs)
                 .ignoresSafeArea()
+        }
+        .fullScreenCover(isPresented: $showCollageEditor) {
+            CollageEditorView(assets: selectedAssets)
         }
         .sheet(isPresented: $showBatchProgress, onDismiss: {
             if batch.isRunning {
@@ -615,6 +619,27 @@ struct PhotoLibraryHome: View {
                 .background(GrainTheme.raised, in: Capsule())
             }
             .disabled(selectedIdentifiers.isEmpty || isDeleting || batch.isRunning)
+
+            Button {
+                showCollageEditor = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "slider.horizontal.2.square.on.square")
+                    Text("编辑")
+                }
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(
+                    !selectedAssets.isEmpty && selectedAssets.count <= 10
+                        ? GrainTheme.accent
+                        : GrainTheme.muted
+                )
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(GrainTheme.raised, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(selectedAssets.isEmpty || selectedAssets.count > 10)
+            .accessibilityLabel("在编辑工作台中编辑所选照片")
 
             Button {
                 shareSelectedAssets()

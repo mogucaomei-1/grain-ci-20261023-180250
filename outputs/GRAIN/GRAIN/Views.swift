@@ -398,7 +398,7 @@ private enum HomeTool: String, CaseIterable, Identifiable {
         switch self {
         case .camera: "camera.fill"
         case .files: "folder"
-        case .collage: "puzzlepiece.extension.fill"
+        case .collage: "slider.horizontal.2.square.on.square"
         }
     }
 
@@ -406,7 +406,7 @@ private enum HomeTool: String, CaseIterable, Identifiable {
         switch self {
         case .camera: "打开相机"
         case .files: "从文件导入"
-        case .collage: "打开拼图"
+        case .collage: "编辑工作台"
         }
     }
 }
@@ -497,14 +497,14 @@ private struct MinimalTopBar: View {
 
                 if let onCollage {
                     Button(action: onCollage) {
-                        Image(systemName: "puzzlepiece.extension.fill")
+                        Image(systemName: "slider.horizontal.2.square.on.square")
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(GrainTheme.paper)
                             .frame(width: 38, height: 38)
                             .background(GrainTheme.raised, in: Circle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("打开拼图")
+                    .accessibilityLabel("编辑工作台")
                 }
             }
 

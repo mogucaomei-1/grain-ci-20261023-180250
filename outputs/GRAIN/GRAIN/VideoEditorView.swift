@@ -340,9 +340,11 @@ public struct VideoEditorView: View {
                             .padding(.bottom, 6)
                     }
 
-                // 3. 视频拖动进度条（带静音开关、时间回显、防拖拽误暂停机制）
-                videoScrubberBar
-                    .padding(.bottom, 4)
+                // 3. 视频拖动进度条（仅在非裁剪面板时显示，裁剪时统一使用专属时间轨底栏，绝无双重进度条冲突）
+                if activeTab != .trim {
+                    videoScrubberBar
+                        .padding(.bottom, 4)
+                }
 
                 // 4. 底部功能控制面板
                 bottomControlDeck
@@ -1341,107 +1343,83 @@ public struct VideoEditorView: View {
                 .position(x: boxCenterX, y: 24)
                 .allowsHitTesting(false)
 
-                // 6. 交互手势分区：独立轻盈响应，无交叉冲突
-                // 6.1 左把手手势
+                // 6. 统一全轨智能手势响应层（彻底消除手柄与选区重叠、拖拽费劲与死区 Bug）
                 Color.clear
-                    .frame(width: 38, height: 48)
+                    .frame(width: totalW + 24, height: 56)
                     .contentShape(Rectangle())
-                    .position(x: leftX + handleWidth / 2, y: 24)
+                    .position(x: totalW / 2, y: 24)
                     .gesture(
                         DragGesture(minimumDistance: 1)
                             .onChanged { val in
                                 if !isTrimming {
                                     pause()
                                     isTrimming = true
-                                    activeTrimHandle = "start"
-                                    dragInitialTrimStart = recipe.trimStart
-                                }
-                                let start = dragInitialTrimStart ?? recipe.trimStart
-                                let deltaSec = Double(val.translation.width / totalW) * totalDuration
-                                let newStart = min(max(start + deltaSec, 0), max(recipe.trimEnd - 0.5, 0))
-                                recipe.trimStart = newStart
+                                    let startTouchX = val.startLocation.x - 12
+                                    let distToStart = abs(startTouchX - leftX)
+                                    let distToEnd = abs(startTouchX - rightX)
 
-                                let now = CFAbsoluteTimeGetCurrent()
-                                if now - lastSeekTime >= 0.035 {
-                                    lastSeekTime = now
-                                    seekFrame(to: newStart, exact: false)
-                                }
-
-                                let step = Int(newStart * 5)
-                                if step != lastTrimHapticStep {
-                                    lastTrimHapticStep = step
-                                    GrainHaptics.selection()
-                                    AudioServicesPlaySystemSound(1519)
-                                }
-                            }
-                            .onEnded { _ in
-                                isTrimming = false
-                                activeTrimHandle = nil
-                                dragInitialTrimStart = nil
-                                recipeHolder.recipe = recipe
-                                seekFrame(to: recipe.trimStart, exact: true)
-                            }
-                    )
-
-                // 6.2 右把手手势
-                Color.clear
-                    .frame(width: 38, height: 48)
-                    .contentShape(Rectangle())
-                    .position(x: rightX - handleWidth / 2, y: 24)
-                    .gesture(
-                        DragGesture(minimumDistance: 1)
-                            .onChanged { val in
-                                if !isTrimming {
-                                    pause()
-                                    isTrimming = true
-                                    activeTrimHandle = "end"
-                                    dragInitialTrimEnd = recipe.trimEnd
-                                }
-                                let end = dragInitialTrimEnd ?? recipe.trimEnd
-                                let deltaSec = Double(val.translation.width / totalW) * totalDuration
-                                let newEnd = min(max(end + deltaSec, recipe.trimStart + 0.5), totalDuration)
-                                recipe.trimEnd = newEnd
-
-                                let now = CFAbsoluteTimeGetCurrent()
-                                if now - lastSeekTime >= 0.035 {
-                                    lastSeekTime = now
-                                    seekFrame(to: newEnd, exact: false)
-                                }
-
-                                let step = Int(newEnd * 5)
-                                if step != lastTrimHapticStep {
-                                    lastTrimHapticStep = step
-                                    GrainHaptics.selection()
-                                    AudioServicesPlaySystemSound(1519)
-                                }
-                            }
-                            .onEnded { _ in
-                                isTrimming = false
-                                activeTrimHandle = nil
-                                dragInitialTrimEnd = nil
-                                recipeHolder.recipe = recipe
-                                seekFrame(to: recipe.trimEnd, exact: true)
-                            }
-                    )
-
-                // 6.3 选区平移手势 (整个窗口左右拖拽)
-                if boxW > 36 {
-                    Color.clear
-                        .frame(width: max(boxW - 36, 10), height: 48)
-                        .contentShape(Rectangle())
-                        .position(x: boxCenterX, y: 24)
-                        .gesture(
-                            DragGesture(minimumDistance: 1)
-                                .onChanged { val in
-                                    if !isTrimming {
-                                        pause()
-                                        isTrimming = true
+                                    // 智能决策被捕获的部分：
+                                    if distToStart <= 24 && distToStart <= distToEnd {
+                                        activeTrimHandle = "start"
+                                        dragInitialTrimStart = recipe.trimStart
+                                    } else if distToEnd <= 24 {
+                                        activeTrimHandle = "end"
+                                        dragInitialTrimEnd = recipe.trimEnd
+                                    } else if startTouchX >= leftX && startTouchX <= rightX {
                                         activeTrimHandle = "range"
                                         dragInitialTrimRange = (start: recipe.trimStart, end: recipe.trimEnd)
+                                    } else {
+                                        // 触碰在外侧空白处：吸附到较近的手柄
+                                        if startTouchX < leftX {
+                                            activeTrimHandle = "start"
+                                            dragInitialTrimStart = recipe.trimStart
+                                        } else {
+                                            activeTrimHandle = "end"
+                                            dragInitialTrimEnd = recipe.trimEnd
+                                        }
                                     }
+                                }
+
+                                let deltaSec = Double(val.translation.width / totalW) * totalDuration
+
+                                switch activeTrimHandle {
+                                case "start":
+                                    let start = dragInitialTrimStart ?? recipe.trimStart
+                                    let newStart = min(max(start + deltaSec, 0), max(recipe.trimEnd - 0.5, 0))
+                                    recipe.trimStart = newStart
+
+                                    let now = CFAbsoluteTimeGetCurrent()
+                                    if now - lastSeekTime >= 0.035 {
+                                        lastSeekTime = now
+                                        seekFrame(to: newStart, exact: false)
+                                    }
+                                    let step = Int(newStart * 5)
+                                    if step != lastTrimHapticStep {
+                                        lastTrimHapticStep = step
+                                        GrainHaptics.selection()
+                                        AudioServicesPlaySystemSound(1519)
+                                    }
+
+                                case "end":
+                                    let end = dragInitialTrimEnd ?? recipe.trimEnd
+                                    let newEnd = min(max(end + deltaSec, recipe.trimStart + 0.5), totalDuration)
+                                    recipe.trimEnd = newEnd
+
+                                    let now = CFAbsoluteTimeGetCurrent()
+                                    if now - lastSeekTime >= 0.035 {
+                                        lastSeekTime = now
+                                        seekFrame(to: newEnd, exact: false)
+                                    }
+                                    let step = Int(newEnd * 5)
+                                    if step != lastTrimHapticStep {
+                                        lastTrimHapticStep = step
+                                        GrainHaptics.selection()
+                                        AudioServicesPlaySystemSound(1519)
+                                    }
+
+                                case "range":
                                     guard let range = dragInitialTrimRange else { return }
                                     let rangeDuration = max(range.end - range.start, 0.5)
-                                    let deltaSec = Double(val.translation.width / totalW) * totalDuration
                                     var newStart = range.start + deltaSec
                                     var newEnd = range.end + deltaSec
 
@@ -1461,23 +1439,27 @@ public struct VideoEditorView: View {
                                         lastSeekTime = now
                                         seekFrame(to: newStart, exact: false)
                                     }
-
                                     let step = Int(newStart * 6)
                                     if step != lastTrimHapticStep {
                                         lastTrimHapticStep = step
                                         GrainHaptics.selection()
                                         AudioServicesPlaySystemSound(1519)
                                     }
+
+                                default:
+                                    break
                                 }
-                                .onEnded { _ in
-                                    isTrimming = false
-                                    activeTrimHandle = nil
-                                    dragInitialTrimRange = nil
-                                    recipeHolder.recipe = recipe
-                                    seekFrame(to: recipe.trimStart, exact: true)
-                                }
-                        )
-                }
+                            }
+                            .onEnded { _ in
+                                isTrimming = false
+                                activeTrimHandle = nil
+                                dragInitialTrimStart = nil
+                                dragInitialTrimEnd = nil
+                                dragInitialTrimRange = nil
+                                recipeHolder.recipe = recipe
+                                seekFrame(to: recipe.trimStart, exact: true)
+                            }
+                    )
 
                 // 7. 悬浮时间刻度气泡 (实时反馈当前修剪点时间戳或选区时长)
                 if let handle = activeTrimHandle {

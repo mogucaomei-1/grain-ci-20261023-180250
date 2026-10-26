@@ -1434,11 +1434,13 @@ final class CameraController: ObservableObject {
                 self.audioInput = nil
             }
 
-            // 5. 重置视频帧率限制
+            // 5. 恢复默认视频帧率限制（取当前格式支持的默认范围）
             do {
                 try device.lockForConfiguration()
-                device.activeVideoMinFrameDuration = .invalid
-                device.activeVideoMaxFrameDuration = .invalid
+                if let range = device.activeFormat.videoSupportedFrameRateRanges.first {
+                    device.activeVideoMinFrameDuration = range.minFrameDuration
+                    device.activeVideoMaxFrameDuration = range.maxFrameDuration
+                }
                 device.unlockForConfiguration()
             } catch {}
 
@@ -1745,22 +1747,22 @@ final class CameraController: ObservableObject {
         do {
             try device.lockForConfiguration()
             let ranges = device.activeFormat.videoSupportedFrameRateRanges
-            // 先将 min 与 max 置为 .invalid，避免先后赋值因互相比较越界抛出异常
-            device.activeVideoMinFrameDuration = .invalid
-            device.activeVideoMaxFrameDuration = .invalid
 
-            if let _ = ranges.first(where: { targetFPS >= $0.minFrameRate - 0.5 && targetFPS <= $0.maxFrameRate + 0.5 }) {
-                let duration = CMTime(value: 1, timescale: Int32(targetFPS))
-                // 彻底锁定恒定帧率 (CFR)：
-                // 严禁使用 matchedRange.maxFrameDuration（如 1/24s 或 1/30s，会导致弱光/动态曝光下自动降频至 44/53 帧）。
-                // 将 minFrameDuration 与 maxFrameDuration 强制设为相同的值，硬件级锁定绝对恒定目标帧率！
-                device.activeVideoMinFrameDuration = duration
-                device.activeVideoMaxFrameDuration = duration
-            } else if let fallbackRange = ranges.first {
-                let clampedFPS = max(fallbackRange.minFrameRate, min(targetFPS, fallbackRange.maxFrameRate))
+            let targetRange = ranges.first(where: { targetFPS >= $0.minFrameRate - 0.5 && targetFPS <= $0.maxFrameRate + 0.5 })
+                ?? ranges.first
+
+            if let range = targetRange {
+                let clampedFPS = max(range.minFrameRate, min(targetFPS, range.maxFrameRate))
                 let duration = CMTime(value: 1, timescale: Int32(clampedFPS))
-                device.activeVideoMinFrameDuration = duration
-                device.activeVideoMaxFrameDuration = duration
+                // 彻底锁定恒定帧率 (CFR)：严禁使用动态慢门，将 min 与 max 锁死为同一数值。
+                // 必须根据与当前持续时间的相对大小按安全顺序赋值，避免瞬时 min > max 抛出异常：
+                if duration > device.activeVideoMaxFrameDuration {
+                    device.activeVideoMaxFrameDuration = duration
+                    device.activeVideoMinFrameDuration = duration
+                } else {
+                    device.activeVideoMinFrameDuration = duration
+                    device.activeVideoMaxFrameDuration = duration
+                }
             }
             device.unlockForConfiguration()
         } catch {}
@@ -4670,34 +4672,8 @@ struct CameraView: View {
                         .frame(width: rect.width, height: rect.height)
                         .position(x: rect.midX, y: rect.midY)
 
-                        VStack(spacing: 8) {
+                        VStack(spacing: 0) {
                             Spacer(minLength: 0)
-                            if camera.isRecording {
-                                HStack(spacing: 6) {
-                                    Circle()
-                                        .fill(Color.red)
-                                        .frame(width: 8, height: 8)
-                                    Text(recordingTimeText)
-                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                        .foregroundStyle(GrainTheme.paper)
-                                    Text(videoQuality.title)
-                                        .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                                        .foregroundStyle(GrainTheme.paper.opacity(0.72))
-                                    if videoHDREnabled {
-                                        Text("HDR")
-                                            .font(.system(size: 8, weight: .heavy, design: .rounded))
-                                            .foregroundStyle(GrainTheme.accent)
-                                            .padding(.horizontal, 4)
-                                            .padding(.vertical, 1.5)
-                                            .background(GrainTheme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 3))
-                                    }
-                                }
-                                .padding(.horizontal, 11)
-                                .frame(height: 30)
-                                .background(GrainTheme.surface.opacity(0.85), in: Capsule())
-                                .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
-                                .padding(.bottom, 2)
-                            }
                             zoomBar
                         }
                         .frame(width: rect.width, height: rect.height)
@@ -5175,134 +5151,163 @@ struct CameraView: View {
             .buttonStyle(.plain)
 
             if captureMode == .video {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        // 1. 规格：分辨率与帧率（按规则显示：数字数字、4K大写、帧率如 60fps 小写；固定宽度与去动画杜绝文字抽搐）
-                        Menu {
-                            ForEach(VideoQuality.allCases) { option in
-                                Button {
-                                    videoQuality = option
-                                    storedVideoQuality = option.rawValue
-                                    GrainHaptics.selection(enabled: true)
-                                    DispatchQueue.main.async {
-                                        camera.prepareForVideoMode(
-                                            quality: option,
-                                            stabilization: stabilization,
-                                            codec: videoCodec,
-                                            colorSpace: videoColorSpace
-                                        )
-                                    }
-                                } label: {
-                                    HStack {
-                                        Text(option.title)
-                                        if videoQuality == option {
-                                            Image(systemName: "checkmark")
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            Text(videoQuality.title)
-                                .font(.system(size: 10.5, weight: .bold, design: .rounded))
-                                .monospacedDigit()
-                                .foregroundStyle(GrainTheme.paper)
-                                .padding(.horizontal, 10)
-                                .frame(height: size)
-                                .frame(minWidth: 54)
-                                .background(GrainTheme.surface.opacity(0.85), in: Capsule())
-                                .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
+                if camera.isRecording {
+                    Spacer(minLength: 0)
+                    // 录制中：顶栏正中高亮呈现录制时长、规格与 HDR 状态，位置自然且绝不遮挡取景框右上角与底部变焦
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 8, height: 8)
+                        Text(recordingTimeText)
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .foregroundStyle(GrainTheme.paper)
+                        Text(videoQuality.title)
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .foregroundStyle(GrainTheme.paper.opacity(0.75))
+                        if videoHDREnabled {
+                            Text("HDR")
+                                .font(.system(size: 8.5, weight: .heavy, design: .rounded))
+                                .foregroundStyle(GrainTheme.accent)
+                                .padding(.horizontal, 4.5)
+                                .padding(.vertical, 1.5)
+                                .background(GrainTheme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 3))
                         }
-                        .transaction { $0.animation = nil }
-                        .animation(nil, value: videoQuality)
-                        .disabled(camera.isRecording)
-
-                        // 2. 画面比例 (4:3, 16:9, 2:1, 2.35:1) - 纯图标
-                        Menu {
-                            ForEach(VideoAspect.allCases) { aspect in
-                                Button {
-                                    videoAspect = aspect
-                                    storedVideoAspect = aspect.rawValue
-                                    GrainHaptics.selection(enabled: true)
-                                } label: {
-                                    HStack {
-                                        Text(aspect.title)
-                                        if videoAspect == aspect {
-                                            Image(systemName: "checkmark")
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            TopBarIconButton(systemName: "aspectratio", size: size)
-                        }
-                        .disabled(camera.isRecording)
-
-                        // 3. 色彩空间 (Rec.709, Display P3, Apple Log / HDR) - 纯图标
-                        Menu {
-                            ForEach(VideoColorSpacePreference.allCases) { pref in
-                                Button {
-                                    videoColorSpace = pref
-                                    storedVideoColorSpace = pref.rawValue
-                                    camera.applyColorSpace(pref)
-                                    GrainHaptics.selection(enabled: true)
-                                } label: {
-                                    HStack {
-                                        Text(pref.title)
-                                        if videoColorSpace == pref {
-                                            Image(systemName: "checkmark")
-                                        }
-                                    }
-                                }
-                            }
-                        } label: {
-                            TopBarIconButton(systemName: "paintpalette.fill", size: size)
-                        }
-                        .disabled(camera.isRecording)
-
-                        // 4. 编码格式 (HEVC / H.264) - 纯图标，已移除封装格式选项
-                        Menu {
-                            ForEach(availableVideoCodecOptions) { codec in
-                                Button {
-                                    videoCodec = codec
-                                    storedVideoCodec = codec.rawValue
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: size)
+                    .background(GrainTheme.surface.opacity(0.92), in: Capsule())
+                    .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
+                    Spacer(minLength: 0)
+                } else {
+                    // 1. 规格：分辨率与帧率（按规则显示：数字数字、4K大写、帧率如 60fps 小写；固定宽度与去动画杜绝文字抽搐）
+                    Menu {
+                        ForEach(VideoQuality.allCases) { option in
+                            Button {
+                                videoQuality = option
+                                storedVideoQuality = option.rawValue
+                                GrainHaptics.selection(enabled: true)
+                                DispatchQueue.main.async {
                                     camera.prepareForVideoMode(
-                                        quality: videoQuality,
+                                        quality: option,
                                         stabilization: stabilization,
-                                        codec: codec,
+                                        codec: videoCodec,
                                         colorSpace: videoColorSpace
                                     )
-                                } label: {
-                                    HStack {
-                                        Text(codec.title == "HEVC" ? "HEVC (高效)" : "H.264 (兼容)")
-                                        if videoCodec == codec {
-                                            Image(systemName: "checkmark")
-                                        }
+                                }
+                            } label: {
+                                HStack {
+                                    Text(option.title)
+                                    if videoQuality == option {
+                                        Image(systemName: "checkmark")
                                     }
                                 }
                             }
-                        } label: {
-                            TopBarIconButton(systemName: "film.fill", size: size)
                         }
-                        .disabled(camera.isRecording)
+                    } label: {
+                        Text(videoQuality.title)
+                            .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(GrainTheme.paper)
+                            .padding(.horizontal, 10)
+                            .frame(height: size)
+                            .frame(minWidth: 54)
+                            .background(GrainTheme.surface.opacity(0.85), in: Capsule())
+                            .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
+                    }
+                    .transaction { $0.animation = nil }
+                    .animation(nil, value: videoQuality)
+                    .disabled(camera.isRecording)
 
-                        // 5. 视频 10-bit HDR 开关 (Dolby Vision / HLG)
-                        Button {
-                            videoHDREnabled.toggle()
-                            GrainHaptics.selection(enabled: true)
-                            camera.setVideoHDR(videoHDREnabled, quality: videoQuality, stabilization: stabilization)
-                        } label: {
-                            Text("HDR")
-                                .font(.system(size: 10.5, weight: .heavy, design: .rounded))
-                                .foregroundStyle(videoHDREnabled ? GrainTheme.black : GrainTheme.paper)
-                                .padding(.horizontal, 9)
-                                .frame(height: size)
-                                .background(
-                                    videoHDREnabled ? GrainTheme.accent : GrainTheme.surface.opacity(0.85),
-                                    in: Capsule()
-                                )
-                                .overlay(Capsule().stroke(videoHDREnabled ? GrainTheme.accent : GrainTheme.line, lineWidth: 0.6))
+                    // 2. 视频 10-bit HDR 开关（紧邻规格并排常驻，无需滚动即可一键开关！）
+                    Button {
+                        videoHDREnabled.toggle()
+                        GrainHaptics.selection(enabled: true)
+                        camera.setVideoHDR(videoHDREnabled, quality: videoQuality, stabilization: stabilization)
+                    } label: {
+                        Text("HDR")
+                            .font(.system(size: 10.5, weight: .heavy, design: .rounded))
+                            .foregroundStyle(videoHDREnabled ? GrainTheme.black : GrainTheme.paper)
+                            .padding(.horizontal, 9)
+                            .frame(height: size)
+                            .background(
+                                videoHDREnabled ? GrainTheme.accent : GrainTheme.surface.opacity(0.85),
+                                in: Capsule()
+                            )
+                            .overlay(Capsule().stroke(videoHDREnabled ? GrainTheme.accent : GrainTheme.line, lineWidth: 0.6))
+                    }
+                    .disabled(camera.isRecording)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            // 3. 画面比例 (4:3, 16:9, 2:1, 2.35:1) - 纯图标
+                            Menu {
+                                ForEach(VideoAspect.allCases) { aspect in
+                                    Button {
+                                        videoAspect = aspect
+                                        storedVideoAspect = aspect.rawValue
+                                        GrainHaptics.selection(enabled: true)
+                                    } label: {
+                                        HStack {
+                                            Text(aspect.title)
+                                            if videoAspect == aspect {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            } label: {
+                                TopBarIconButton(systemName: "aspectratio", size: size)
+                            }
+                            .disabled(camera.isRecording)
+
+                            // 4. 色彩空间 (Rec.709, Display P3, Apple Log / HDR) - 纯图标
+                            Menu {
+                                ForEach(VideoColorSpacePreference.allCases) { pref in
+                                    Button {
+                                        videoColorSpace = pref
+                                        storedVideoColorSpace = pref.rawValue
+                                        camera.applyColorSpace(pref)
+                                        GrainHaptics.selection(enabled: true)
+                                    } label: {
+                                        HStack {
+                                            Text(pref.title)
+                                            if videoColorSpace == pref {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            } label: {
+                                TopBarIconButton(systemName: "paintpalette.fill", size: size)
+                            }
+                            .disabled(camera.isRecording)
+
+                            // 5. 编码格式 (HEVC / H.264) - 纯图标，已移除封装格式选项
+                            Menu {
+                                ForEach(availableVideoCodecOptions) { codec in
+                                    Button {
+                                        videoCodec = codec
+                                        storedVideoCodec = codec.rawValue
+                                        camera.prepareForVideoMode(
+                                            quality: videoQuality,
+                                            stabilization: stabilization,
+                                            codec: codec,
+                                            colorSpace: videoColorSpace
+                                        )
+                                    } label: {
+                                        HStack {
+                                            Text(codec.title == "HEVC" ? "HEVC (高效)" : "H.264 (兼容)")
+                                            if videoCodec == codec {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        }
+                                    }
+                                }
+                            } label: {
+                                TopBarIconButton(systemName: "film.fill", size: size)
+                            }
+                            .disabled(camera.isRecording)
                         }
-                        .disabled(camera.isRecording)
                     }
                 }
             } else {

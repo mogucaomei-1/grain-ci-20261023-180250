@@ -63,7 +63,11 @@ jobs:
             -o "$EXTENSION_DIR/GRAINWidgetsExtension"
 
           cp outputs/GRAIN/GRAINWidgetsExtension/Info.plist "$EXTENSION_DIR/Info.plist"
+          plutil -convert binary1 "$EXTENSION_DIR/Info.plist"
           printf 'XPC!????' > "$EXTENSION_DIR/PkgInfo"
+
+          # 对 App Extension 进行标准签名以生成 _CodeSignature/CodeResources（满足 TrollStore、AltStore 与 iOS 官方 PluginKit 扩展注册要求）
+          codesign -s - --force "$EXTENSION_DIR"
 
           # 内嵌至主 App 的 PlugIns 目录
           mkdir -p "$APP_PATH/PlugIns"

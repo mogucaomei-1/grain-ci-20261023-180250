@@ -738,9 +738,9 @@ struct AppSettingsView: View {
                         .foregroundStyle(GrainTheme.accent)
                         .frame(width: 28)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("主页拼图入口")
+                        Text("主页编辑工作台入口")
                             .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        Text("控制主页右上角的拼图创建入口")
+                        Text("控制主页右上角的多功能编辑工作台入口")
                             .font(.system(size: 9, design: .rounded))
                             .foregroundStyle(GrainTheme.muted)
                     }
