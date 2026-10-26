@@ -427,30 +427,9 @@ struct GRAINWidget: Widget {
     }
 }
 
-struct GRAINAppIntentWidget: Widget {
-    let kind: String = "studio.grain.rawfilm.appintentwidget"
-
-    var body: some WidgetConfiguration {
-        AppIntentConfiguration(kind: kind, intent: OpenGRAINCameraIntent.self, provider: GRAINAppIntentProvider()) { entry in
-            GRAINWidgetEntryView(entry: entry)
-        }
-        .configurationDisplayName("GRAIN 胶片快拍")
-        .description("一键从桌面或锁屏极速开机拍摄，即刻呈现胶片质感。")
-        .supportedFamilies([
-            .systemSmall,
-            .systemMedium,
-            .accessoryCircular,
-            .accessoryRectangular,
-            .accessoryInline
-        ])
-        .contentMarginsDisabled()
-    }
-}
-
 @main
 struct GRAINWidgetsBundle: WidgetBundle {
     var body: some Widget {
         GRAINWidget()
-        GRAINAppIntentWidget()
     }
 }

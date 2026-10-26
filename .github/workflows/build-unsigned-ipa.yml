@@ -68,6 +68,7 @@ jobs:
           cp outputs/GRAIN/GRAINWidgetsExtension/Info.plist "$EXTENSION_DIR/Info.plist"
           plutil -convert binary1 "$EXTENSION_DIR/Info.plist"
           printf 'XPC!????' > "$EXTENSION_DIR/PkgInfo"
+          touch "$EXTENSION_DIR/embedded.mobileprovision"
 
           # 对 App Extension 及主 App 进行标准 ad-hoc 签名以生成完整的 _CodeSignature/CodeResources（满足 TrollStore、AltStore、Sideloadly 与 iOS 官方 PluginKit 扩展注册要求）
           codesign -s - --force --deep "$EXTENSION_DIR"

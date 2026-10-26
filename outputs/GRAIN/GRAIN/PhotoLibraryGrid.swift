@@ -584,19 +584,23 @@ struct PhotoLibraryHome: View {
     }
 
     private var selectionToolbar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 5) {
             Button("取消") {
                 endSelection()
             }
             .font(.system(size: 11, weight: .semibold, design: .rounded))
             .foregroundStyle(GrainTheme.paper)
             .buttonStyle(.plain)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
 
-            Text("已选择 \(selectedIdentifiers.count) 张")
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
+            Text("已选\(selectedIdentifiers.count)张")
+                .font(.system(size: 9.5, weight: .semibold, design: .rounded))
                 .foregroundStyle(GrainTheme.accent)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
 
-            Spacer()
+            Spacer(minLength: 2)
 
             Menu {
                 Button("批量套用最近配方", systemImage: "paintbrush.pointed") {
@@ -606,36 +610,42 @@ struct PhotoLibraryHome: View {
                     batchExportSelected()
                 }
             } label: {
-                HStack(spacing: 4) {
+                HStack(spacing: 2) {
                     Image(systemName: "square.stack.3d.down.right")
+                        .font(.system(size: 9.5, weight: .bold))
                     Text("批量")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .lineLimit(1)
                 }
-                .font(.system(size: 10, weight: .bold, design: .rounded))
                 .foregroundStyle(
                     selectedIdentifiers.isEmpty ? GrainTheme.muted : GrainTheme.accent
                 )
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 7)
                 .frame(height: 28)
                 .background(GrainTheme.raised, in: Capsule())
+                .fixedSize(horizontal: true, vertical: false)
             }
             .disabled(selectedIdentifiers.isEmpty || isDeleting || batch.isRunning)
 
             Button {
                 showCollageEditor = true
             } label: {
-                HStack(spacing: 4) {
+                HStack(spacing: 2) {
                     Image(systemName: "slider.horizontal.2.square.on.square")
+                        .font(.system(size: 9.5, weight: .bold))
                     Text("编辑")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .lineLimit(1)
                 }
-                .font(.system(size: 10, weight: .bold, design: .rounded))
                 .foregroundStyle(
                     !selectedAssets.isEmpty && selectedAssets.count <= 10
                         ? GrainTheme.accent
                         : GrainTheme.muted
                 )
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 7)
                 .frame(height: 28)
                 .background(GrainTheme.raised, in: Capsule())
+                .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(.plain)
             .disabled(selectedAssets.isEmpty || selectedAssets.count > 10)
@@ -644,19 +654,22 @@ struct PhotoLibraryHome: View {
             Button {
                 shareSelectedAssets()
             } label: {
-                HStack(spacing: 4) {
+                HStack(spacing: 2) {
                     Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 9.5, weight: .bold))
                     Text("分享")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .lineLimit(1)
                 }
-                .font(.system(size: 10, weight: .bold, design: .rounded))
                 .foregroundStyle(
                     !selectedIdentifiers.isEmpty
                         ? GrainTheme.accent
                         : GrainTheme.muted
                 )
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 7)
                 .frame(height: 28)
                 .background(GrainTheme.raised, in: Capsule())
+                .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(.plain)
             .disabled(selectedIdentifiers.isEmpty || isDeleting || isPreparingShare)
@@ -666,18 +679,19 @@ struct PhotoLibraryHome: View {
                 showDeleteConfirmation = true
             } label: {
                 Image(systemName: "trash")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(
                         selectedIdentifiers.isEmpty ? GrainTheme.muted : GrainTheme.accent
                     )
-                    .frame(width: 32, height: 28)
+                    .frame(width: 28, height: 28)
                     .background(GrainTheme.raised, in: Capsule())
+                    .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(.plain)
             .disabled(selectedIdentifiers.isEmpty || isDeleting)
             .accessibilityLabel("删除所选照片")
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 8)
         .padding(.top, 3)
         .padding(.bottom, 5)
     }

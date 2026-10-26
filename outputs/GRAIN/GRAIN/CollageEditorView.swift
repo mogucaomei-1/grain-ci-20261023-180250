@@ -3,6 +3,13 @@ import PhotosUI
 import SwiftUI
 import UIKit
 import ImageIO
+import CoreLocation
+
+// MARK: - 照片单元格手势变换数据模型
+struct PhotoCellTransform: Equatable {
+    var scale: CGFloat = 1.0
+    var normalizedOffset: CGSize = .zero
+}
 
 // MARK: - 版式
 
@@ -106,7 +113,7 @@ enum EditorDeckTab: String, CaseIterable, Identifiable {
     case layout = "排版边距"
     case filmFrame = "胶片相框"
     case watermark = "水印数据"
-    case stickers = "贴纸表情"
+    case addText = "添加文字"
 
     var id: String { rawValue }
 
@@ -115,7 +122,7 @@ enum EditorDeckTab: String, CaseIterable, Identifiable {
         case .layout: return "square.grid.2x2"
         case .filmFrame: return "film"
         case .watermark: return "character.cursor.ibeam"
-        case .stickers: return "face.smiling"
+        case .addText: return "textformat"
         }
     }
 }
@@ -187,6 +194,41 @@ struct PhotoEXIFInfo: Equatable {
     var dateString: String = "2026.10.25"
     var locationString: String = "TOKYO, JAPAN"
 
+    static func formatCity(from place: CLPlacemark) -> String {
+        let admin = place.administrativeArea
+        let locality = place.locality
+        let sub = place.subLocality
+
+        // 中文地址：省/直辖市 + 城市（如 河南省登封市，或 郑州市，或 北京市）
+        if place.isoCountryCode == "CN" || (admin?.contains("省") == true || admin?.contains("市") == true) {
+            if let admin = admin {
+                if let sub = sub, sub.hasSuffix("市") {
+                    return "\(admin)\(sub)"
+                } else if let loc = locality {
+                    if admin == loc {
+                        return loc
+                    } else {
+                        return "\(admin)\(loc)"
+                    }
+                } else if let sub = sub {
+                    return "\(admin)\(sub)"
+                } else {
+                    return admin
+                }
+            } else if let loc = locality {
+                return loc
+            } else if let sub = sub {
+                return sub
+            }
+        } else {
+            let parts = [locality ?? admin, place.country].compactMap { $0 }
+            if !parts.isEmpty {
+                return parts.joined(separator: ", ")
+            }
+        }
+        return ""
+    }
+
     static func extract(from asset: PHAsset) async -> PhotoEXIFInfo {
         var info = PhotoEXIFInfo()
         let date = asset.creationDate ?? Date()
@@ -200,6 +242,15 @@ struct PhotoEXIFInfo: Equatable {
             let latDir = loc.coordinate.latitude >= 0 ? "N" : "S"
             let lonDir = loc.coordinate.longitude >= 0 ? "E" : "W"
             info.locationString = String(format: "%.2f°%@ %.2f°%@", lat, latDir, lon, lonDir)
+
+            let geocoder = CLGeocoder()
+            if let placemarks = try? await geocoder.reverseGeocodeLocation(loc),
+               let place = placemarks.first {
+                let city = formatCity(from: place)
+                if !city.isEmpty {
+                    info.locationString = city
+                }
+            }
         }
 
         let options = PHImageRequestOptions()
@@ -400,6 +451,19 @@ struct CollageEditorView: View {
     @State private var showEXIFBar: Bool = false
     @State private var stickers: [EditorSticker] = []
     @State private var exifInfo: PhotoEXIFInfo = PhotoEXIFInfo()
+
+    // 水印自由拖拽位置（归一化坐标 0...1）
+    @State private var exifBarPosition: CGPoint = CGPoint(x: 0.5, y: 0.92)
+    @State private var dateStampPosition: CGPoint = CGPoint(x: 0.82, y: 0.92)
+    @State private var locationStampPosition: CGPoint = CGPoint(x: 0.22, y: 0.92)
+
+    // 照片单元格双指缩放与拖拽平移状态
+    @State private var cellTransforms: [String: PhotoCellTransform] = [:]
+    @State private var gestureScale: [String: CGFloat] = [:]
+    @State private var gestureOffset: [String: CGSize] = [:]
+
+    // 自定义添加文字输入
+    @State private var customTextInput: String = ""
 
     init(assets: [PHAsset]) {
         _selectedAssets = State(initialValue: Array(assets.prefix(10)))
@@ -687,13 +751,22 @@ struct CollageEditorView: View {
     private func collageCell(asset: PHAsset, rect: CGRect, canvasSize: CGSize) -> some View {
         let maxRadius = min(rect.width, rect.height) / 2
         let calculatedRadius = min(CGFloat(corner) / 100.0 * maxRadius, maxRadius)
+        let id = asset.localIdentifier
+        let baseTransform = cellTransforms[id] ?? PhotoCellTransform()
+        let activeScale = (gestureScale[id] ?? 1.0) * baseTransform.scale
+        let activeOffset = CGSize(
+            width: baseTransform.normalizedOffset.width * rect.width + (gestureOffset[id]?.width ?? 0),
+            height: baseTransform.normalizedOffset.height * rect.height + (gestureOffset[id]?.height ?? 0)
+        )
 
         return ZStack {
             background.color
-            if let image = previewImages[asset.localIdentifier] {
+            if let image = previewImages[id] {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+                    .scaleEffect(activeScale)
+                    .offset(activeOffset)
                     .frame(width: rect.width, height: rect.height)
                     .clipped()
             } else {
@@ -707,6 +780,38 @@ struct CollageEditorView: View {
             RoundedRectangle(
                 cornerRadius: calculatedRadius,
                 style: .continuous
+            )
+        )
+        .contentShape(Rectangle())
+        .gesture(
+            SimultaneousGesture(
+                MagnificationGesture()
+                    .onChanged { val in
+                        gestureScale[id] = val
+                    }
+                    .onEnded { val in
+                        let current = cellTransforms[id] ?? PhotoCellTransform()
+                        let newScale = min(max(current.scale * val, 0.5), 5.0)
+                        cellTransforms[id] = PhotoCellTransform(
+                            scale: newScale,
+                            normalizedOffset: current.normalizedOffset
+                        )
+                        gestureScale[id] = 1.0
+                    },
+                DragGesture()
+                    .onChanged { val in
+                        gestureOffset[id] = val.translation
+                    }
+                    .onEnded { val in
+                        let current = cellTransforms[id] ?? PhotoCellTransform()
+                        let newNormW = current.normalizedOffset.width + val.translation.width / max(rect.width, 1)
+                        let newNormH = current.normalizedOffset.height + val.translation.height / max(rect.height, 1)
+                        cellTransforms[id] = PhotoCellTransform(
+                            scale: current.scale,
+                            normalizedOffset: CGSize(width: newNormW, height: newNormH)
+                        )
+                        gestureOffset[id] = .zero
+                    }
             )
         )
         .position(x: rect.midX, y: rect.midY)
@@ -934,83 +1039,88 @@ struct CollageEditorView: View {
     }
 
     private func exifBarOverlay(size: CGSize) -> some View {
-        VStack {
-            Spacer()
-            HStack(spacing: 5) {
-                Image(systemName: "camera.aperture")
-                    .font(.system(size: 8.5, weight: .bold))
-                Text(exifParamText)
-                    .font(.system(size: 8.5, weight: .bold, design: .monospaced))
-            }
-            .foregroundStyle(Color.white)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 4.5)
-            .background(Color.black.opacity(0.72), in: Capsule())
-            .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 0.6))
-            .padding(.bottom, 8)
+        HStack(spacing: 5) {
+            Image(systemName: "camera.aperture")
+                .font(.system(size: 8.5, weight: .bold))
+            Text(exifParamText)
+                .font(.system(size: 8.5, weight: .bold, design: .monospaced))
         }
-        .frame(width: size.width, height: size.height)
-        .allowsHitTesting(false)
+        .foregroundStyle(Color.white)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4.5)
+        .background(Color.black.opacity(0.72), in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 0.6))
+        .shadow(color: Color.black.opacity(0.4), radius: 3, y: 1)
+        .position(x: exifBarPosition.x * size.width, y: exifBarPosition.y * size.height)
+        .gesture(
+            DragGesture()
+                .onChanged { val in
+                    let newX = min(max(val.location.x / size.width, 0.05), 0.95)
+                    let newY = min(max(val.location.y / size.height, 0.05), 0.95)
+                    exifBarPosition = CGPoint(x: newX, y: newY)
+                }
+        )
     }
 
-    // MARK: - 日期水印印记 (经典石英橙色点阵)
+    // MARK: - 日期水印印记 (经典石英橙色点阵，支持自由拖动)
 
     private func dateStampOverlay(size: CGSize) -> some View {
-        VStack {
-            Spacer()
-            HStack {
-                Spacer()
-                let displayDate: String = {
-                    switch dateStampStyle {
-                    case 0:
-                        // 经典 90 年代胶片橙色缩写: '26 10 25
-                        let parts = exifInfo.dateString.split(separator: ".")
-                        if parts.count == 3 {
-                            let yy = String(parts[0].suffix(2))
-                            return "'\(yy) \(parts[1]) \(parts[2])"
-                        }
-                        return "'26 10 25"
-                    case 1:
-                        return exifInfo.dateString
-                    default:
-                        return "OCT 25 '26"
-                    }
-                }()
-
-                Text(displayDate)
-                    .font(.system(size: 11.5, weight: .heavy, design: .monospaced))
-                    .foregroundStyle(Color(red: 1.0, green: 0.48, blue: 0.08))
-                    .shadow(color: Color(red: 1.0, green: 0.40, blue: 0.0).opacity(0.85), radius: 3, y: 1)
-                    .padding(8)
+        let displayDate: String = {
+            switch dateStampStyle {
+            case 0:
+                // 经典 90 年代胶片橙色缩写: '26 10 25
+                let parts = exifInfo.dateString.split(separator: ".")
+                if parts.count == 3 {
+                    let yy = String(parts[0].suffix(2))
+                    return "'\(yy) \(parts[1]) \(parts[2])"
+                }
+                return "'26 10 25"
+            case 1:
+                return exifInfo.dateString
+            default:
+                return "OCT 25 '26"
             }
-        }
-        .frame(width: size.width, height: size.height)
-        .allowsHitTesting(false)
+        }()
+
+        return Text(displayDate)
+            .font(.system(size: 11.5, weight: .heavy, design: .monospaced))
+            .foregroundStyle(Color(red: 1.0, green: 0.48, blue: 0.08))
+            .shadow(color: Color(red: 1.0, green: 0.40, blue: 0.0).opacity(0.85), radius: 3, y: 1)
+            .padding(6)
+            .position(x: dateStampPosition.x * size.width, y: dateStampPosition.y * size.height)
+            .gesture(
+                DragGesture()
+                    .onChanged { val in
+                        let newX = min(max(val.location.x / size.width, 0.05), 0.95)
+                        let newY = min(max(val.location.y / size.height, 0.05), 0.95)
+                        dateStampPosition = CGPoint(x: newX, y: newY)
+                    }
+            )
     }
 
-    // MARK: - 地址水印
+    // MARK: - 地址水印 (支持自由拖动)
 
     private func locationStampOverlay(size: CGSize) -> some View {
-        VStack {
-            Spacer()
-            HStack {
-                HStack(spacing: 4) {
-                    Image(systemName: "mappin.and.ellipse")
-                        .font(.system(size: 8, weight: .bold))
-                    Text(locationText.isEmpty ? exifInfo.locationString : locationText)
-                        .font(.system(size: 8.5, weight: .bold, design: .rounded))
-                }
-                .foregroundStyle(Color.white.opacity(0.92))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3.5)
-                .background(Color.black.opacity(0.65), in: Capsule())
-                .padding(8)
-
-                Spacer()
-            }
+        HStack(spacing: 4) {
+            Image(systemName: "mappin.and.ellipse")
+                .font(.system(size: 8, weight: .bold))
+            Text(locationText.isEmpty ? exifInfo.locationString : locationText)
+                .font(.system(size: 8.5, weight: .bold, design: .rounded))
         }
-        .frame(width: size.width, height: size.height)
-        .allowsHitTesting(false)
+        .foregroundStyle(Color.white.opacity(0.92))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3.5)
+        .background(Color.black.opacity(0.65), in: Capsule())
+        .shadow(color: Color.black.opacity(0.4), radius: 3, y: 1)
+        .position(x: locationStampPosition.x * size.width, y: locationStampPosition.y * size.height)
+        .gesture(
+            DragGesture()
+                .onChanged { val in
+                    let newX = min(max(val.location.x / size.width, 0.05), 0.95)
+                    let newY = min(max(val.location.y / size.height, 0.05), 0.95)
+                    locationStampPosition = CGPoint(x: newX, y: newY)
+                }
+        )
     }
 
     // MARK: - 贴纸交互视图 (支持拖动排版与轻触移除)
@@ -1161,8 +1271,8 @@ struct CollageEditorView: View {
                 filmFrameControls
             case .watermark:
                 watermarkControls
-            case .stickers:
-                stickersControls
+            case .addText:
+                addTextControls
             }
 
             actionRow
@@ -1360,25 +1470,44 @@ struct CollageEditorView: View {
         }
     }
 
-    // 4. 贴纸与表情包面板
-    private var stickersControls: some View {
-        VStack(spacing: 7) {
+    // 4. 添加文字面板（全面支持自定义输入、预设词条与表情，并保留照片编辑里的文字）
+    private var addTextControls: some View {
+        VStack(spacing: 8) {
+            // 自定义文字输入与添加按钮
+            HStack(spacing: 8) {
+                TextField("输入照片上的文字...", text: $customTextInput)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(GrainTheme.paper)
+                    .padding(.horizontal, 12)
+                    .frame(height: 32)
+                    .background(GrainTheme.surface, in: Capsule())
+                    .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
+
+                Button {
+                    let trimmed = customTextInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { return }
+                    addSticker(trimmed)
+                    customTextInput = ""
+                    GrainHaptics.selection(enabled: true)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                        Text("添加文字")
+                    }
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(GrainTheme.black)
+                    .padding(.horizontal, 12)
+                    .frame(height: 32)
+                    .background(customTextInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? GrainTheme.muted : GrainTheme.accent, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(customTextInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(.horizontal, 18)
+
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    let emojiStickers = ["🎞️", "📷", "📸", "⚡️", "☀️", "🌙", "📼", "🌈", "☕️", "🖤", "✨", "🎬"]
-                    ForEach(emojiStickers, id: \.self) { emoji in
-                        Button {
-                            addSticker(emoji)
-                        } label: {
-                            Text(emoji)
-                                .font(.system(size: 19))
-                                .frame(width: 36, height: 36)
-                                .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 6))
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    let labelStickers = ["FILM", "RAW", "35MM", "PORTRA", "GRAIN", "EXPOSED"]
+                    let labelStickers = ["FILM", "RAW", "35MM", "PORTRA", "FUJIFILM", "CINEMA", "MEMORY", "SUMMER", "VINTAGE", "GRAIN"]
                     ForEach(labelStickers, id: \.self) { badge in
                         Button {
                             addSticker(badge)
@@ -1386,8 +1515,21 @@ struct CollageEditorView: View {
                             Text(badge)
                                 .font(.system(size: 9.5, weight: .black, design: .monospaced))
                                 .foregroundStyle(GrainTheme.paper)
-                                .padding(.horizontal, 7)
-                                .frame(height: 36)
+                                .padding(.horizontal, 8)
+                                .frame(height: 30)
+                                .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    let emojiStickers = ["🎞️", "📷", "📸", "⚡️", "☀️", "🌙", "📼", "🌈", "☕️", "🖤", "✨", "🎬"]
+                    ForEach(emojiStickers, id: \.self) { emoji in
+                        Button {
+                            addSticker(emoji)
+                        } label: {
+                            Text(emoji)
+                                .font(.system(size: 16))
+                                .frame(width: 30, height: 30)
                                 .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 6))
                         }
                         .buttonStyle(.plain)
@@ -1395,15 +1537,15 @@ struct CollageEditorView: View {
                 }
                 .padding(.horizontal, 18)
             }
-            .frame(height: 40)
+            .frame(height: 32)
 
             HStack {
-                Text("轻按贴纸添加到照片上，按住可任意拖拽排版")
+                Text("轻按添加文字，在照片上可任意拖拽排版")
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(GrainTheme.muted)
                 Spacer()
                 if !stickers.isEmpty {
-                    Button("清空贴纸") {
+                    Button("清空文字") {
                         withAnimation { stickers.removeAll() }
                     }
                     .font(.system(size: 9, weight: .bold))
@@ -1754,6 +1896,10 @@ struct CollageEditorView: View {
         let showEXIFBarValue = showEXIFBar
         let stickersValue = stickers
         let exifInfoValue = exifInfo
+        let exifBarPositionValue = exifBarPosition
+        let dateStampPositionValue = dateStampPosition
+        let locationStampPositionValue = locationStampPosition
+        let cellTransformsValue = cellTransforms
 
         guard !assets.isEmpty, assets.count <= 10 else {
             throw CollageError.invalidPhotoCount
@@ -1824,30 +1970,31 @@ struct CollageEditorView: View {
                 let rect = rects[index]
                 let maxRadius = min(rect.width, rect.height) / 2
                 let radius = min(CGFloat(cornerValue) / 100.0 * maxRadius, maxRadius)
+                let transform = cellTransformsValue[assets[index].localIdentifier] ?? PhotoCellTransform()
                 cg.saveGState()
                 let path = UIBezierPath(roundedRect: rect, cornerRadius: radius)
                 cg.addPath(path.cgPath)
                 cg.clip()
-                drawAspectFill(image, in: rect, context: cg)
+                drawAspectFill(image, in: rect, context: cg, transform: transform)
                 cg.restoreGState()
             }
 
             // 1. 胶片模拟相框
             drawFilmFrame(filmFrameValue, in: canvasSize, context: cg, exifInfo: exifInfoValue)
 
-            // 2. EXIF 拍摄参数横幅
+            // 2. EXIF 拍摄参数横幅（使用用户拖拽的位置）
             if showEXIFBarValue {
-                drawEXIFBar(exifInfoValue, in: canvasSize, context: cg)
+                drawEXIFBar(exifInfoValue, in: canvasSize, context: cg, position: exifBarPositionValue)
             }
 
-            // 3. 日期印记
+            // 3. 日期印记（使用用户拖拽的位置）
             if showDateStampValue {
-                drawDateStamp(exifInfoValue.dateString, in: canvasSize, context: cg, style: dateStampStyleValue)
+                drawDateStamp(exifInfoValue.dateString, in: canvasSize, context: cg, style: dateStampStyleValue, position: dateStampPositionValue)
             }
 
-            // 4. 地址水印
+            // 4. 地址水印（使用用户拖拽的位置）
             if showLocationStampValue {
-                drawLocationStamp(locationTextValue.isEmpty ? exifInfoValue.locationString : locationTextValue, in: canvasSize, context: cg)
+                drawLocationStamp(locationTextValue.isEmpty ? exifInfoValue.locationString : locationTextValue, in: canvasSize, context: cg, position: locationStampPositionValue)
             }
 
             // 5. 贴纸与表情包
@@ -1867,19 +2014,22 @@ struct CollageEditorView: View {
     private func drawAspectFill(
         _ image: UIImage,
         in rect: CGRect,
-        context: CGContext
+        context: CGContext,
+        transform: PhotoCellTransform = PhotoCellTransform()
     ) {
-        let scale = max(
+        let baseScale = max(
             rect.width / max(image.size.width, 1),
             rect.height / max(image.size.height, 1)
-        )
+        ) * max(transform.scale, 0.2)
         let drawSize = CGSize(
-            width: image.size.width * scale,
-            height: image.size.height * scale
+            width: image.size.width * baseScale,
+            height: image.size.height * baseScale
         )
+        let offsetX = transform.normalizedOffset.width * rect.width
+        let offsetY = transform.normalizedOffset.height * rect.height
         let drawRect = CGRect(
-            x: rect.midX - drawSize.width / 2,
-            y: rect.midY - drawSize.height / 2,
+            x: rect.midX - drawSize.width / 2 + offsetX,
+            y: rect.midY - drawSize.height / 2 + offsetY,
             width: drawSize.width,
             height: drawSize.height
         )
@@ -2074,7 +2224,7 @@ struct CollageEditorView: View {
         context.restoreGState()
     }
 
-    private func drawEXIFBar(_ info: PhotoEXIFInfo, in size: CGSize, context: CGContext) {
+    private func drawEXIFBar(_ info: PhotoEXIFInfo, in size: CGSize, context: CGContext, position: CGPoint = CGPoint(x: 0.5, y: 0.92)) {
         let text = NSString(string: "\(info.cameraModel) · \(info.focalLength) · \(info.aperture) · \(info.shutterSpeed) · \(info.iso)")
         let attrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.021, weight: .bold),
@@ -2082,8 +2232,8 @@ struct CollageEditorView: View {
         ]
         let textSize = text.size(withAttributes: attrs)
         let pillRect = CGRect(
-            x: (size.width - textSize.width) / 2 - 20,
-            y: size.height - textSize.height - 40,
+            x: position.x * size.width - (textSize.width + 40) / 2,
+            y: position.y * size.height - (textSize.height + 16) / 2,
             width: textSize.width + 40,
             height: textSize.height + 16
         )
@@ -2094,11 +2244,11 @@ struct CollageEditorView: View {
         context.addPath(path.cgPath)
         context.fillPath()
 
-        text.draw(at: CGPoint(x: (size.width - textSize.width) / 2, y: pillRect.minY + 8), withAttributes: attrs)
+        text.draw(at: CGPoint(x: pillRect.minX + 20, y: pillRect.minY + 8), withAttributes: attrs)
         context.restoreGState()
     }
 
-    private func drawDateStamp(_ dateString: String, in size: CGSize, context: CGContext, style: Int) {
+    private func drawDateStamp(_ dateString: String, in size: CGSize, context: CGContext, style: Int, position: CGPoint = CGPoint(x: 0.82, y: 0.92)) {
         let display: String = {
             switch style {
             case 0:
@@ -2121,7 +2271,10 @@ struct CollageEditorView: View {
             .foregroundColor: UIColor(red: 1.0, green: 0.48, blue: 0.08, alpha: 1.0)
         ]
         let textSize = text.size(withAttributes: attrs)
-        let pt = CGPoint(x: size.width - textSize.width - 36, y: size.height - textSize.height - 36)
+        let pt = CGPoint(
+            x: position.x * size.width - textSize.width / 2,
+            y: position.y * size.height - textSize.height / 2
+        )
 
         context.saveGState()
         context.setShadow(offset: CGSize(width: 0, height: 2), blur: 6, color: UIColor(red: 1.0, green: 0.4, blue: 0.0, alpha: 0.85).cgColor)
@@ -2129,7 +2282,7 @@ struct CollageEditorView: View {
         context.restoreGState()
     }
 
-    private func drawLocationStamp(_ location: String, in size: CGSize, context: CGContext) {
+    private func drawLocationStamp(_ location: String, in size: CGSize, context: CGContext, position: CGPoint = CGPoint(x: 0.22, y: 0.92)) {
         guard !location.isEmpty else { return }
         let text = NSString(string: "📍 " + location)
         let attrs: [NSAttributedString.Key: Any] = [
@@ -2137,7 +2290,12 @@ struct CollageEditorView: View {
             .foregroundColor: UIColor.white
         ]
         let textSize = text.size(withAttributes: attrs)
-        let pillRect = CGRect(x: 36, y: size.height - textSize.height - 44, width: textSize.width + 24, height: textSize.height + 14)
+        let pillRect = CGRect(
+            x: position.x * size.width - (textSize.width + 24) / 2,
+            y: position.y * size.height - (textSize.height + 14) / 2,
+            width: textSize.width + 24,
+            height: textSize.height + 14
+        )
 
         context.saveGState()
         context.setFillColor(UIColor.black.withAlphaComponent(0.68).cgColor)
@@ -2145,7 +2303,7 @@ struct CollageEditorView: View {
         context.addPath(path.cgPath)
         context.fillPath()
 
-        text.draw(at: CGPoint(x: 48, y: pillRect.minY + 7), withAttributes: attrs)
+        text.draw(at: CGPoint(x: pillRect.minX + 12, y: pillRect.minY + 7), withAttributes: attrs)
         context.restoreGState()
     }
 

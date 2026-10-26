@@ -466,6 +466,25 @@ struct CameraCaptureConfiguration {
     let timer: CameraTimer
     let flash: CameraFlashSetting
     let livePhoto: Bool
+    let hdr: Bool
+
+    init(
+        format: CameraCaptureFormat,
+        resolution: CameraResolution,
+        aspect: CameraAspect,
+        timer: CameraTimer,
+        flash: CameraFlashSetting,
+        livePhoto: Bool,
+        hdr: Bool = true
+    ) {
+        self.format = format
+        self.resolution = resolution
+        self.aspect = aspect
+        self.timer = timer
+        self.flash = flash
+        self.livePhoto = livePhoto
+        self.hdr = hdr
+    }
 }
 
 final class CameraController: ObservableObject {
@@ -474,6 +493,8 @@ final class CameraController: ObservableObject {
     private let photoOutput = AVCapturePhotoOutput()
     private let sessionQueue = DispatchQueue(label: "studio.grain.camera.session")
     private var cameraDevice: AVCaptureDevice?
+    /// 拍照 10-bit HDR / Smart HDR 开关
+    @Published var isPhotoHDREnabled: Bool = true
     /// 长焦相对主摄的光学倍率（iPhone 17 Pro 为 4×）
     private var teleReach: CGFloat = 4
     private var videoInput: AVCaptureDeviceInput?
@@ -1558,6 +1579,13 @@ final class CameraController: ObservableObject {
                 self.isUsingFrontCamera && self.frontMirrorEnabled
         }
 
+        // 确保 HEVC 编码器开启，因为 10-bit HDR / HLG 必须使用 HEVC 编码！
+        if self.movieOutput.availableVideoCodecTypes.contains(.hevc) {
+            let selectedCodec: AVVideoCodecType = (self.isVideoHDREnabled || codec == .hevc) ? .hevc : .h264
+            if self.movieOutput.availableVideoCodecTypes.contains(selectedCodec) {
+                self.movieOutput.setOutputSettings([AVVideoCodecKey: selectedCodec], for: connection)
+            }
+        }
     }
 
     func stopRecording() {
@@ -1640,6 +1668,18 @@ final class CameraController: ObservableObject {
         }
     }
 
+    func setPhotoHDR(_ enabled: Bool) {
+        isPhotoHDREnabled = enabled
+        sessionQueue.async { [weak self] in
+            guard let self, let device = self.cameraDevice else { return }
+            do {
+                try device.lockForConfiguration()
+                self.applySafeVideoHDR(to: device, enabled: enabled)
+                device.unlockForConfiguration()
+            } catch {}
+        }
+    }
+
     private func configureVideoFormatInternal(
         _ quality: VideoQuality,
         stabilization: VideoStabilization = .cinematicExtended
@@ -1650,7 +1690,7 @@ final class CameraController: ObservableObject {
         let targetFPS = Double(quality.fps)
         let desiredMode = stabilization.mode
 
-        // 检查当前格式是否已经是尺寸匹配、支持帧率、HDR 与防抖的 16:9 视频格式
+        // 检查当前格式是否已经是尺寸匹配、支持帧率、HDR 与色彩空间匹配以及防抖的 16:9 视频格式
         let currentDims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
         let curShort = Int(min(currentDims.width, currentDims.height))
         let curLong = Int(max(currentDims.width, currentDims.height))
@@ -1659,7 +1699,9 @@ final class CameraController: ObservableObject {
             $0.maxFrameRate >= targetFPS - 0.5
         }
         let curSupportsStab = desiredMode == .off || device.activeFormat.isVideoStabilizationModeSupported(desiredMode)
-        let curHDRMatches = !isVideoHDREnabled || device.activeFormat.isVideoHDRSupported
+        let curHDRMatches = isVideoHDREnabled
+            ? (device.activeFormat.isVideoHDRSupported && device.activeColorSpace == .HLG_BT2020)
+            : (!device.isVideoHDREnabled)
 
         if curShort == targetShort && curLong == targetLong && is16by9 && curSupportsFPS && curSupportsStab && curHDRMatches {
             do {
@@ -1699,11 +1741,16 @@ final class CameraController: ObservableObject {
             }
         }
 
-        // 若开启视频 HDR，优先锁定支持 10-bit HDR 的硬件格式
+        // 若开启视频 HDR，优先锁定同时支持 10-bit HLG_BT2020 色彩空间与 HDR 的硬件格式
         if isVideoHDREnabled {
-            let hdrCandidates = candidates.filter { $0.isVideoHDRSupported }
-            if !hdrCandidates.isEmpty {
-                candidates = hdrCandidates
+            let hlgCandidates = candidates.filter { $0.isVideoHDRSupported && $0.supportedColorSpaces.contains(.HLG_BT2020) }
+            if !hlgCandidates.isEmpty {
+                candidates = hlgCandidates
+            } else {
+                let hdrCandidates = candidates.filter { $0.isVideoHDRSupported }
+                if !hdrCandidates.isEmpty {
+                    candidates = hdrCandidates
+                }
             }
         }
 
@@ -3137,6 +3184,21 @@ private enum CameraImageProcessor {
                 )
             }
 
+            // 拍摄 HDR / 原生比例且无额外锐化调整时：直接返回 AVFoundation 原始生成的 10-bit HDR / HEIF 文件数据，
+            // 100% 完整保留 Apple Smart HDR Gain Map 高动态范围增益图与 Deep Fusion 深度融合元数据！
+            let sharpening = UserDefaults.standard.object(forKey: "cameraSharpening") as? Int ?? 0
+            if configuration.hdr && configuration.aspect == .ratio4_3 && sharpening == 0 {
+                let fileExtension = configuration.format == .jpeg ? "jpg" : "heic"
+                let uti = configuration.format == .jpeg ? UTType.jpeg.identifier : UTType.heic.identifier
+                return CameraPreparedOutput(
+                    data: output.data,
+                    fileName: "GRAIN-\(timestamp()).\(fileExtension)",
+                    uniformTypeIdentifier: uti,
+                    location: output.location,
+                    livePhotoURL: nil
+                )
+            }
+
             guard let source = CGImageSourceCreateWithData(
                 output.data as CFData,
                 nil
@@ -3503,8 +3565,8 @@ private enum CameraError: LocalizedError {
 /// 720p 分辨率 + 30fps 实时刷新，边缘清晰锐利且彻底消除拖影。
 final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     static var sharedFrameImage: CGImage? = nil
+    static var requestSnapshot: Bool = false
     private static let frameLock = NSLock()
-    private var lastPreviewCacheTime: CFAbsoluteTime = 0
 
     var onMask: ((CGImage?) -> Void)?
     var onHistogram: ((RGBHistogram) -> Void)?
@@ -3512,7 +3574,7 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
     var tintColor = CIColor(red: 1.0, green: 0.35, blue: 0.24)
 
     private let context = CIContext(options: [.cacheIntermediates: false, .useSoftwareRenderer: false])
-    private let analysisSize: CGFloat = 720
+    private let analysisSize: CGFloat = 480
     private var lastTime: CFAbsoluteTime = 0
     private var lastHistogramTime: CFAbsoluteTime = 0
 
@@ -3524,14 +3586,16 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
         let now = CFAbsoluteTimeGetCurrent()
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
-        // 0. 缓存最新预览画面，消除拍照/录像切换时底层硬件重置造成的黑屏闪烁
-        if now - lastPreviewCacheTime >= 0.05 {
-            lastPreviewCacheTime = now
+        // 0. 按需快照缓存（仅在模式切换时触发单次生成，彻底移除每秒20次全尺寸 4K GPU 阻塞，保证峰值描边 0 延迟）
+        if Self.requestSnapshot {
+            Self.requestSnapshot = false
             var snapSource = CIImage(cvPixelBuffer: pixelBuffer)
             if snapSource.extent.width > snapSource.extent.height {
                 snapSource = snapSource.oriented(.right)
             }
-            if let snapCG = self.context.createCGImage(snapSource, from: snapSource.extent) {
+            let snapScale = 540.0 / max(snapSource.extent.width, snapSource.extent.height)
+            let downscaled = snapSource.transformed(by: CGAffineTransform(scaleX: snapScale, y: snapScale))
+            if let snapCG = self.context.createCGImage(downscaled, from: downscaled.extent) {
                 Self.frameLock.lock()
                 Self.sharedFrameImage = snapCG
                 Self.frameLock.unlock()
@@ -3548,8 +3612,8 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
 
         guard onMask != nil else { return }
 
-        // 2. 峰值描边（约 30fps，即 0.030s）：高帧率消除描边拖影
-        guard now - lastTime >= 0.030 else { return }
+        // 2. 峰值描边（480p 轻量极速渲染，约 40~60fps 实时刷新，彻底消除边缘延迟与拖影）
+        guard now - lastTime >= 0.022 else { return }
         lastTime = now
 
         var source = CIImage(cvPixelBuffer: pixelBuffer)
@@ -3576,14 +3640,14 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
 
         let mono = resized.applyingFilter("CIColorControls", parameters: [
             kCIInputSaturationKey: 0.0,
-            kCIInputContrastKey: 1.5
+            kCIInputContrastKey: 1.6
         ])
         let edges = mono.applyingFilter("CIEdges", parameters: [
-            kCIInputIntensityKey: 2.8
+            kCIInputIntensityKey: 3.2
         ]).cropped(to: outputExtent)
         let punched = edges.applyingFilter("CIColorControls", parameters: [
-            kCIInputContrastKey: 3.0,
-            kCIInputBrightnessKey: -0.12
+            kCIInputContrastKey: 3.2,
+            kCIInputBrightnessKey: -0.15
         ]).cropped(to: outputExtent)
 
         let clear = CIImage(
@@ -4574,6 +4638,7 @@ struct CameraView: View {
     @State private var videoQuality: VideoQuality = .uhd4k30
     @AppStorage("cameraVideoQuality") private var storedVideoQuality = VideoQuality.uhd4k30.rawValue
     @AppStorage("cameraVideoHDREnabled") private var videoHDREnabled = false
+    @AppStorage("cameraPhotoHDREnabled") private var photoHDREnabled = true
     @State private var stabilization: VideoStabilization = .standard
     @AppStorage("cameraVideoStabilization") private var storedStabilization = VideoStabilization.standard.rawValue
     @State private var videoCodec: VideoCodecPreference = .hevc
@@ -4873,6 +4938,7 @@ struct CameraView: View {
             levelerMotion.start()
             camera.setPeakingColor(FocusPeakingColor.resolved(peakingColorRaw))
             camera.setFaceTracking(faceTrackingEnabled)
+            camera.setPhotoHDR(photoHDREnabled)
             videoQuality = VideoQuality(rawValue: storedVideoQuality) ?? .uhd4k30
             stabilization = VideoStabilization(rawValue: storedStabilization) ?? .standard
             videoCodec = VideoCodecPreference(rawValue: storedVideoCodec) ?? .hevc
@@ -5414,6 +5480,27 @@ struct CameraView: View {
                 .disabled(!camera.isLivePhotoSupported || isPreparingLivePhoto)
             }
 
+            if captureMode == .photo {
+                Button {
+                    photoHDREnabled.toggle()
+                    camera.setPhotoHDR(photoHDREnabled)
+                    GrainHaptics.selection(enabled: true)
+                } label: {
+                    Text("HDR")
+                        .font(.system(size: 10, weight: .heavy, design: .rounded))
+                        .foregroundStyle(photoHDREnabled ? GrainTheme.black : GrainTheme.paper)
+                        .padding(.horizontal, 7)
+                        .frame(height: size)
+                        .background(
+                            photoHDREnabled ? GrainTheme.accent : GrainTheme.surface.opacity(0.85),
+                            in: Capsule()
+                        )
+                        .overlay(Capsule().stroke(photoHDREnabled ? GrainTheme.accent : GrainTheme.line, lineWidth: 0.6))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(photoHDREnabled ? "关闭拍照HDR" : "开启拍照HDR")
+            }
+
             Button {
                 showGrid.toggle()
                 GrainHaptics.selection(enabled: true)
@@ -5843,7 +5930,8 @@ struct CameraView: View {
                         aspect: aspect,
                         timer: timer,
                         flash: flash,
-                        livePhoto: livePhoto
+                        livePhoto: livePhoto,
+                        hdr: photoHDREnabled
                     )
                 )
             }
@@ -5882,6 +5970,7 @@ struct CameraView: View {
     /// 快门右侧随行：拍照 / 录像互切（先捕获冻结当前画面，彻底根治底层重新握手导致的黑屏闪烁）
     private var captureModeButton: some View {
         Button {
+            FocusPeakingProcessor.requestSnapshot = true
             isFreezingPreview = true
             GrainHaptics.selection(enabled: true)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
@@ -5916,7 +6005,8 @@ struct CameraView: View {
                     aspect: .portrait16x9,
                     timer: .off,
                     flash: flash,
-                    livePhoto: false
+                    livePhoto: false,
+                    hdr: photoHDREnabled
                 )
             )
         } label: {
