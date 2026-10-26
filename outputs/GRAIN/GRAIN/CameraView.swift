@@ -1438,9 +1438,12 @@ final class CameraController: ObservableObject {
                 self.audioInput = nil
             }
 
-            // 5. 恢复默认视频帧率限制（取当前格式支持的默认范围）
+            // 5. 恢复默认视频帧率限制与自动 HDR
             do {
                 try device.lockForConfiguration()
+                if device.activeFormat.isVideoHDRSupported {
+                    device.automaticallyAdjustsVideoHDREnabled = true
+                }
                 if let range = device.activeFormat.videoSupportedFrameRateRanges.first {
                     // 先放大 maxFrameDuration，再缩回 minFrameDuration，彻底杜绝 min > max 瞬时越界引发 NSInvalidArgumentException
                     device.activeVideoMaxFrameDuration = range.maxFrameDuration
@@ -1661,9 +1664,7 @@ final class CameraController: ObservableObject {
         if curShort == targetShort && curLong == targetLong && is16by9 && curSupportsFPS && curSupportsStab && curHDRMatches {
             do {
                 try device.lockForConfiguration()
-                if device.activeFormat.isVideoHDRSupported {
-                    device.isVideoHDREnabled = isVideoHDREnabled
-                }
+                applySafeVideoHDR(to: device, enabled: isVideoHDREnabled)
                 if isVideoHDREnabled && device.activeFormat.supportedColorSpaces.contains(.HLG_BT2020) {
                     device.activeColorSpace = .HLG_BT2020
                 }
@@ -1731,9 +1732,7 @@ final class CameraController: ObservableObject {
         do {
             try device.lockForConfiguration()
             device.activeFormat = format
-            if format.isVideoHDRSupported {
-                device.isVideoHDREnabled = isVideoHDREnabled
-            }
+            applySafeVideoHDR(to: device, enabled: isVideoHDREnabled)
             if isVideoHDREnabled && format.supportedColorSpaces.contains(.HLG_BT2020) {
                 device.activeColorSpace = .HLG_BT2020
             }
@@ -1749,6 +1748,17 @@ final class CameraController: ObservableObject {
 
         // 3. 应用安全恒定帧率 (锁定 60.00 CFR)
         applySafeFrameRate(to: device, targetFPS: targetFPS)
+    }
+
+    /// 安全配置视频 HDR：
+    /// AVFoundation 铁律：在设置 isVideoHDREnabled 之前，必须先将 automaticallyAdjustsVideoHDREnabled 置为 false，
+    /// 否则底层会抛出 NSGenericException (May not be called while automaticallyAdjustsVideoHDREnabled is YES) 导致瞬间闪退！
+    private func applySafeVideoHDR(to device: AVCaptureDevice, enabled: Bool) {
+        guard device.activeFormat.isVideoHDRSupported else { return }
+        if device.automaticallyAdjustsVideoHDREnabled {
+            device.automaticallyAdjustsVideoHDREnabled = false
+        }
+        device.isVideoHDREnabled = enabled
     }
 
     private func applySafeFrameRate(to device: AVCaptureDevice, targetFPS: Double) {

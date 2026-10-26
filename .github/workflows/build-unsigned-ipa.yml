@@ -57,6 +57,7 @@ jobs:
             -application-extension \
             -framework SwiftUI \
             -framework WidgetKit \
+            -framework AppIntents \
             -framework Foundation \
             -Xlinker -application_extension \
             -Xlinker -rpath -Xlinker @executable_path/Frameworks \

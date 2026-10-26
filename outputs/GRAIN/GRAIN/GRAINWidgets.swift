@@ -340,26 +340,31 @@ struct GRAINLockScreenInlineView: View {
     }
 }
 
-// MARK: - 统一分发视图 (Widget Entry View)
+// MARK: - 统一分发视图 (Widget Entry View - iOS 17+ 适配)
 
 struct GRAINWidgetEntryView: View {
     @Environment(\.widgetFamily) var family
     let entry: GRAINWidgetEntry
 
     var body: some View {
-        switch family {
-        case .systemSmall:
-            GRAINSmallWidgetView(entry: entry)
-        case .systemMedium:
-            GRAINMediumWidgetView(entry: entry)
-        case .accessoryCircular:
-            GRAINLockScreenCircularView()
-        case .accessoryRectangular:
-            GRAINLockScreenRectangularView(entry: entry)
-        case .accessoryInline:
-            GRAINLockScreenInlineView(entry: entry)
-        default:
-            GRAINSmallWidgetView(entry: entry)
+        Group {
+            switch family {
+            case .systemSmall:
+                GRAINSmallWidgetView(entry: entry)
+            case .systemMedium:
+                GRAINMediumWidgetView(entry: entry)
+            case .accessoryCircular:
+                GRAINLockScreenCircularView()
+            case .accessoryRectangular:
+                GRAINLockScreenRectangularView(entry: entry)
+            case .accessoryInline:
+                GRAINLockScreenInlineView(entry: entry)
+            default:
+                GRAINSmallWidgetView(entry: entry)
+            }
+        }
+        .containerBackground(for: .widget) {
+            Color(red: 0.08, green: 0.08, blue: 0.09)
         }
     }
 }
@@ -382,6 +387,7 @@ struct GRAINWidget: Widget {
             .accessoryRectangular,
             .accessoryInline
         ])
+        .contentMarginsDisabled()
     }
 }
 

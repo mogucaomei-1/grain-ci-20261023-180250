@@ -1,5 +1,53 @@
 import SwiftUI
 import WidgetKit
+import AppIntents
+
+// MARK: - iOS 17+ 官方 AppIntent 快捷启动意图与交互规范
+struct OpenGRAINCameraIntent: AppIntent {
+    static var title: LocalizedStringResource = "打开 GRAIN 胶片相机"
+    static var description = IntentDescription("一键极速启动 GRAIN 复古微单相机")
+    static var openAppWhenRun: Bool = true
+
+    @Parameter(title: "拍摄模式", default: "photo")
+    var mode: String
+
+    init() {
+        self.mode = "photo"
+    }
+
+    init(mode: String) {
+        self.mode = mode
+    }
+
+    func perform() async throws -> some IntentResult {
+        return .result()
+    }
+}
+
+// MARK: - iOS 17+ AppIntent Timeline Provider
+struct GRAINAppIntentProvider: AppIntentTimelineProvider {
+    typealias Entry = GRAINWidgetEntry
+    typealias Intent = OpenGRAINCameraIntent
+
+    func placeholder(in context: Context) -> GRAINWidgetEntry {
+        .preview
+    }
+
+    func snapshot(for configuration: OpenGRAINCameraIntent, in context: Context) async -> GRAINWidgetEntry {
+        .preview
+    }
+
+    func timeline(for configuration: OpenGRAINCameraIntent, in context: Context) async -> Timeline<GRAINWidgetEntry> {
+        let entry = GRAINWidgetEntry(
+            date: Date(),
+            filmName: "PORTRA 400",
+            filmSubtitle: "自然温润 · 经典人像",
+            formatBadge: "RAW · 48MP",
+            isVideoCapable: true
+        )
+        return Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(1800)))
+    }
+}
 
 // MARK: - 官方 WidgetKit 规范与数据模型 (Apple HIG Specifications)
 
@@ -333,31 +381,36 @@ struct GRAINLockScreenInlineView: View {
     }
 }
 
-// MARK: - 统一分发视图 (Widget Entry View)
+// MARK: - 统一分发视图 (Widget Entry View - iOS 17+ 适配)
 
 struct GRAINWidgetEntryView: View {
     @Environment(\.widgetFamily) var family
     let entry: GRAINWidgetEntry
 
     var body: some View {
-        switch family {
-        case .systemSmall:
-            GRAINSmallWidgetView(entry: entry)
-        case .systemMedium:
-            GRAINMediumWidgetView(entry: entry)
-        case .accessoryCircular:
-            GRAINLockScreenCircularView()
-        case .accessoryRectangular:
-            GRAINLockScreenRectangularView(entry: entry)
-        case .accessoryInline:
-            GRAINLockScreenInlineView(entry: entry)
-        default:
-            GRAINSmallWidgetView(entry: entry)
+        Group {
+            switch family {
+            case .systemSmall:
+                GRAINSmallWidgetView(entry: entry)
+            case .systemMedium:
+                GRAINMediumWidgetView(entry: entry)
+            case .accessoryCircular:
+                GRAINLockScreenCircularView()
+            case .accessoryRectangular:
+                GRAINLockScreenRectangularView(entry: entry)
+            case .accessoryInline:
+                GRAINLockScreenInlineView(entry: entry)
+            default:
+                GRAINSmallWidgetView(entry: entry)
+            }
+        }
+        .containerBackground(for: .widget) {
+            Color(red: 0.08, green: 0.08, blue: 0.09)
         }
     }
 }
 
-// MARK: - 官方 Widget 定义与 Bundle 入口
+// MARK: - 官方 Widget 定义与 Bundle 入口 (支持 StaticConfiguration 与 iOS 17+ AppIntentConfiguration)
 
 struct GRAINWidget: Widget {
     let kind: String = "studio.grain.rawfilm.widget"
@@ -375,6 +428,27 @@ struct GRAINWidget: Widget {
             .accessoryRectangular,
             .accessoryInline
         ])
+        .contentMarginsDisabled()
+    }
+}
+
+struct GRAINAppIntentWidget: Widget {
+    let kind: String = "studio.grain.rawfilm.appintentwidget"
+
+    var body: some WidgetConfiguration {
+        AppIntentConfiguration(kind: kind, intent: OpenGRAINCameraIntent.self, provider: GRAINAppIntentProvider()) { entry in
+            GRAINWidgetEntryView(entry: entry)
+        }
+        .configurationDisplayName("GRAIN 胶片快拍")
+        .description("一键从桌面或锁屏极速开机拍摄，即刻呈现胶片质感。")
+        .supportedFamilies([
+            .systemSmall,
+            .systemMedium,
+            .accessoryCircular,
+            .accessoryRectangular,
+            .accessoryInline
+        ])
+        .contentMarginsDisabled()
     }
 }
 
@@ -382,5 +456,6 @@ struct GRAINWidget: Widget {
 struct GRAINWidgetsBundle: WidgetBundle {
     var body: some Widget {
         GRAINWidget()
+        GRAINAppIntentWidget()
     }
 }
