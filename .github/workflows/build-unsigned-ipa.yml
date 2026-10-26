@@ -54,9 +54,11 @@ jobs:
             -sdk "$IPHONEOS_SDK" \
             -O \
             -parse-as-library \
+            -application-extension \
             -framework SwiftUI \
             -framework WidgetKit \
             -framework Foundation \
+            -Xlinker -application_extension \
             -Xlinker -rpath -Xlinker @executable_path/Frameworks \
             -Xlinker -rpath -Xlinker @executable_path/../../Frameworks \
             outputs/GRAIN/GRAINWidgetsExtension/GRAINWidgetsBundle.swift \
@@ -66,14 +68,17 @@ jobs:
           plutil -convert binary1 "$EXTENSION_DIR/Info.plist"
           printf 'XPC!????' > "$EXTENSION_DIR/PkgInfo"
 
-          # 对 App Extension 进行标准签名以生成 _CodeSignature/CodeResources（满足 TrollStore、AltStore 与 iOS 官方 PluginKit 扩展注册要求）
-          codesign -s - --force "$EXTENSION_DIR"
+          # 对 App Extension 及主 App 进行标准 ad-hoc 签名以生成完整的 _CodeSignature/CodeResources（满足 TrollStore、AltStore、Sideloadly 与 iOS 官方 PluginKit 扩展注册要求）
+          codesign -s - --force --deep "$EXTENSION_DIR"
 
           # 内嵌至主 App 的 PlugIns 目录
           mkdir -p "$APP_PATH/PlugIns"
           cp -R "$EXTENSION_DIR" "$APP_PATH/PlugIns/"
           echo "=== PlugIns embedded successfully ==="
           ls -la "$APP_PATH/PlugIns/GRAINWidgetsExtension.appex"
+
+          # 主 App 统一签名生成完整匹配的代码签名树
+          codesign -s - --force --deep "$APP_PATH"
 
           mkdir -p ci/unsigned/Payload
           cp -R "$APP_PATH" ci/unsigned/Payload/

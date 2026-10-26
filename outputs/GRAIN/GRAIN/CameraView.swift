@@ -1315,15 +1315,19 @@ final class CameraController: ObservableObject {
         quality: VideoQuality,
         stabilization: VideoStabilization,
         codec: VideoCodecPreference,
-        colorSpace: VideoColorSpacePreference = .rec709
+        colorSpace: VideoColorSpacePreference = .rec709,
+        hdr: Bool? = nil
     ) {
+        if let hdr {
+            isVideoHDREnabled = hdr
+        }
         Task {
             let micAllowed = await requestMediaAccess(for: .audio)
             sessionQueue.async { [weak self] in
                 guard let self else { return }
                 self.session.beginConfiguration()
 
-                // 1. 设置 sessionPreset 为 .inputPriority（严禁在 .photo preset 下挂载 movieOutput，否则 commitConfiguration 必闪退）
+                // 1. 设置 sessionPreset 为 .inputPriority（严禁在 .photo preset 下挂载 movieOutput 或更改 activeFormat，否则 commitConfiguration 必闪退）
                 if self.session.canSetSessionPreset(.inputPriority) {
                     self.session.sessionPreset = .inputPriority
                 }
@@ -1438,8 +1442,9 @@ final class CameraController: ObservableObject {
             do {
                 try device.lockForConfiguration()
                 if let range = device.activeFormat.videoSupportedFrameRateRanges.first {
-                    device.activeVideoMinFrameDuration = range.minFrameDuration
+                    // 先放大 maxFrameDuration，再缩回 minFrameDuration，彻底杜绝 min > max 瞬时越界引发 NSInvalidArgumentException
                     device.activeVideoMaxFrameDuration = range.maxFrameDuration
+                    device.activeVideoMinFrameDuration = range.minFrameDuration
                 }
                 device.unlockForConfiguration()
             } catch {}
@@ -1611,6 +1616,9 @@ final class CameraController: ObservableObject {
         stabilization: VideoStabilization = .cinematicExtended
     ) {
         session.beginConfiguration()
+        if session.canSetSessionPreset(.inputPriority) {
+            session.sessionPreset = .inputPriority
+        }
         configureVideoFormatInternal(quality, stabilization: stabilization)
         session.commitConfiguration()
     }
@@ -1747,23 +1755,32 @@ final class CameraController: ObservableObject {
         do {
             try device.lockForConfiguration()
             let ranges = device.activeFormat.videoSupportedFrameRateRanges
-
-            let targetRange = ranges.first(where: { targetFPS >= $0.minFrameRate - 0.5 && targetFPS <= $0.maxFrameRate + 0.5 })
-                ?? ranges.first
-
-            if let range = targetRange {
-                let clampedFPS = max(range.minFrameRate, min(targetFPS, range.maxFrameRate))
-                let duration = CMTime(value: 1, timescale: Int32(clampedFPS))
-                // 彻底锁定恒定帧率 (CFR)：严禁使用动态慢门，将 min 与 max 锁死为同一数值。
-                // 必须根据与当前持续时间的相对大小按安全顺序赋值，避免瞬时 min > max 抛出异常：
-                if duration > device.activeVideoMaxFrameDuration {
-                    device.activeVideoMaxFrameDuration = duration
-                    device.activeVideoMinFrameDuration = duration
-                } else {
-                    device.activeVideoMinFrameDuration = duration
-                    device.activeVideoMaxFrameDuration = duration
-                }
+            guard !ranges.isEmpty else {
+                device.unlockForConfiguration()
+                return
             }
+
+            let matchedRange = ranges.first(where: { targetFPS >= $0.minFrameRate - 0.5 && targetFPS <= $0.maxFrameRate + 0.5 })
+                ?? ranges.first!
+
+            let clampedFPS = max(matchedRange.minFrameRate, min(targetFPS, matchedRange.maxFrameRate))
+            var duration = CMTime(value: 1, timescale: Int32(clampedFPS))
+
+            // 严格约束在当前格式支持的物理范围内部，防止微秒级浮点差异导致越界闪退
+            if CMTimeCompare(duration, matchedRange.minFrameDuration) < 0 {
+                duration = matchedRange.minFrameDuration
+            }
+            if CMTimeCompare(duration, matchedRange.maxFrameDuration) > 0 {
+                duration = matchedRange.maxFrameDuration
+            }
+
+            // 恒定帧率 (CFR) 锁定：
+            // 遵循 AVFoundation 铁律：minFrameDuration 必须 <= maxFrameDuration。
+            // 先将 maxFrameDuration 放宽到该格式允许的最大值，再设置 minFrameDuration，最后将 max 收紧到相同数值。
+            device.activeVideoMaxFrameDuration = matchedRange.maxFrameDuration
+            device.activeVideoMinFrameDuration = duration
+            device.activeVideoMaxFrameDuration = duration
+
             device.unlockForConfiguration()
         } catch {}
     }
@@ -4853,12 +4870,12 @@ struct CameraView: View {
             videoAspect = VideoAspect(rawValue: storedVideoAspect) ?? .sixteenByNine
             videoColorSpace = VideoColorSpacePreference(rawValue: storedVideoColorSpace) ?? .rec709
             if captureMode == .video {
-                camera.setVideoHDR(videoHDREnabled, quality: videoQuality, stabilization: stabilization)
                 camera.prepareForVideoMode(
                     quality: videoQuality,
                     stabilization: stabilization,
                     codec: videoCodec,
-                    colorSpace: videoColorSpace
+                    colorSpace: videoColorSpace,
+                    hdr: videoHDREnabled
                 )
                 camera.startAudioAndStorageMonitoring()
             }
@@ -4869,17 +4886,17 @@ struct CameraView: View {
         .onChange(of: captureMode) { _, mode in
             isFreezingPreview = true
             activeSlider = .none
-            // 录像模式提前预热音视频输出与专属 16:9 格式，解决开录时屏幕闪烁两下的问题
+            // 录像模式提前原子配置音视频输出与专属 16:9 格式，杜绝并发调用与瞬时异常
             if mode == .video {
                 if livePhoto {
                     livePhoto = false
                 }
-                camera.setVideoHDR(videoHDREnabled, quality: videoQuality, stabilization: stabilization)
                 camera.prepareForVideoMode(
                     quality: videoQuality,
                     stabilization: stabilization,
                     codec: videoCodec,
-                    colorSpace: videoColorSpace
+                    colorSpace: videoColorSpace,
+                    hdr: videoHDREnabled
                 )
                 camera.startAudioAndStorageMonitoring()
             } else {

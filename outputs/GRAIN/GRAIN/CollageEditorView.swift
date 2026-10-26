@@ -123,9 +123,13 @@ enum EditorDeckTab: String, CaseIterable, Identifiable {
 enum FilmFrameStyle: String, CaseIterable, Identifiable {
     case none = "无边框"
     case polaroid = "拍立得"
+    case blackPolaroid = "黑卡拍立得"
     case sprocket35mm = "35mm齿孔"
+    case kodakGold = "柯达Gold200"
+    case fujiSuperia = "富士Superia"
     case mediumFormat = "哈苏中画幅"
     case disposable = "一次性相机"
+    case ilfordHP5 = "伊尔福黑白"
 
     var id: String { rawValue }
 
@@ -133,10 +137,30 @@ enum FilmFrameStyle: String, CaseIterable, Identifiable {
         switch self {
         case .none: return "slash.circle"
         case .polaroid: return "rectangle.portrait"
+        case .blackPolaroid: return "rectangle.portrait.fill"
         case .sprocket35mm: return "film"
+        case .kodakGold: return "film.stack"
+        case .fujiSuperia: return "sparkles.tv"
         case .mediumFormat: return "viewfinder"
         case .disposable: return "camera.metering.matrix"
+        case .ilfordHP5: return "circle.lefthalf.filled"
         }
+    }
+}
+
+/// 胶片相框内挖空蒙版形状（确保哈苏中画幅与一次性相机等相框内孔具有平滑连续内圆角，与外边框及照片圆角浑然一体，绝无生硬直角）
+struct FilmCutoutFrame: Shape {
+    var borderWidth: CGFloat
+    var innerCornerRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.addRect(rect)
+        let innerRect = rect.insetBy(dx: borderWidth, dy: borderWidth)
+        if innerRect.width > 0 && innerRect.height > 0 {
+            path.addPath(Path(roundedRect: innerRect, cornerRadius: innerCornerRadius, style: .continuous))
+        }
+        return path
     }
 }
 
@@ -699,9 +723,10 @@ struct CollageEditorView: View {
             // 拍立得经典白底边框与宽下巴
             let borderT = size.width * 0.05
             let borderB = size.height * 0.16
+            let innerRadius: CGFloat = 6.0
             ZStack(alignment: .bottom) {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.white, lineWidth: borderT)
+                FilmCutoutFrame(borderWidth: borderT, innerCornerRadius: innerRadius)
+                    .fill(Color.white, style: FillStyle(eoFill: true))
                 Rectangle()
                     .fill(Color.white)
                     .frame(height: borderB)
@@ -713,6 +738,32 @@ struct CollageEditorView: View {
                     Text("POLAROID · GRAIN")
                         .font(.system(size: 8, weight: .heavy, design: .rounded))
                         .foregroundStyle(Color.black.opacity(0.40))
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, borderB * 0.28)
+            }
+            .frame(width: size.width, height: size.height)
+            .allowsHitTesting(false)
+
+        case .blackPolaroid:
+            // 复古黑卡拍立得（黑色边框、宽下巴、金色石英日期印记）
+            let borderT = size.width * 0.05
+            let borderB = size.height * 0.16
+            let innerRadius: CGFloat = 6.0
+            ZStack(alignment: .bottom) {
+                FilmCutoutFrame(borderWidth: borderT, innerCornerRadius: innerRadius)
+                    .fill(Color(red: 0.08, green: 0.08, blue: 0.09), style: FillStyle(eoFill: true))
+                Rectangle()
+                    .fill(Color(red: 0.08, green: 0.08, blue: 0.09))
+                    .frame(height: borderB)
+                HStack {
+                    Text(exifInfo.dateString)
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color(red: 0.95, green: 0.78, blue: 0.35))
+                    Spacer()
+                    Text("BLACK POLAROID · GRAIN")
+                        .font(.system(size: 8, weight: .heavy, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(0.48))
                 }
                 .padding(.horizontal, 12)
                 .padding(.bottom, borderB * 0.28)
@@ -733,18 +784,51 @@ struct CollageEditorView: View {
             .frame(width: size.width, height: size.height)
             .allowsHitTesting(false)
 
+        case .kodakGold:
+            // 柯达经典 Gold 200 金黄齿孔带与暗房打标
+            let barH = size.height * 0.09
+            VStack(spacing: 0) {
+                sprocketBar(width: size.width, height: barH, text: "KODAK GOLD 200 · 24 EXP", textColor: Color(red: 1.0, green: 0.78, blue: 0.12))
+                Spacer()
+                sprocketBar(width: size.width, height: barH, text: "SAFETY FILM · 24A · DX 200", textColor: Color(red: 1.0, green: 0.78, blue: 0.12))
+            }
+            .frame(width: size.width, height: size.height)
+            .allowsHitTesting(false)
+
+        case .fujiSuperia:
+            // 富士 Superia 400 翡翠绿经典齿孔底片
+            let barH = size.height * 0.09
+            VStack(spacing: 0) {
+                sprocketBar(width: size.width, height: barH, text: "FUJIFILM SUPERIA X-TRA 400", textColor: Color(red: 0.25, green: 0.88, blue: 0.45))
+                Spacer()
+                sprocketBar(width: size.width, height: barH, text: "SUPERIA 400 · CN-16 · 36A", textColor: Color(red: 0.25, green: 0.88, blue: 0.45))
+            }
+            .frame(width: size.width, height: size.height)
+            .allowsHitTesting(false)
+
         case .mediumFormat:
-            // 哈苏 6x6 暗房边缘暗角与 V 型暗卡槽
+            // 哈苏 6x6 中画幅遮光框（内圆弧平滑过渡，与外边框及照片圆角浑然一致，告别生硬直角）
+            let border = size.width * 0.045
+            let innerRadius: CGFloat = 16.0
             ZStack {
-                Rectangle()
-                    .stroke(Color.black, lineWidth: size.width * 0.04)
+                FilmCutoutFrame(borderWidth: border, innerCornerRadius: innerRadius)
+                    .fill(Color.black, style: FillStyle(eoFill: true))
+                RoundedRectangle(cornerRadius: innerRadius, style: .continuous)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 0.8)
+                    .padding(border)
                 VStack {
                     HStack {
                         Text("HASSELBLAD 6X6")
                             .font(.system(size: 7.5, weight: .heavy, design: .monospaced))
-                            .foregroundStyle(Color.white.opacity(0.5))
-                            .padding(6)
+                            .foregroundStyle(Color.white.opacity(0.65))
+                            .padding(.horizontal, border + 4)
+                            .padding(.top, 4)
                         Spacer()
+                        Text("120 FILM")
+                            .font(.system(size: 7, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color.white.opacity(0.40))
+                            .padding(.horizontal, border + 4)
+                            .padding(.top, 4)
                     }
                     Spacer()
                 }
@@ -753,18 +837,67 @@ struct CollageEditorView: View {
             .allowsHitTesting(false)
 
         case .disposable:
-            // 一次性相机复古纸质框标
+            // 一次性相机纸质取景框（内孔平滑圆角，与边缘圆圈保持一致）
+            let border = size.width * 0.040
+            let innerRadius: CGFloat = 14.0
             ZStack {
-                Rectangle()
-                    .stroke(Color.black.opacity(0.85), lineWidth: size.width * 0.035)
+                FilmCutoutFrame(borderWidth: border, innerCornerRadius: innerRadius)
+                    .fill(Color(red: 0.12, green: 0.12, blue: 0.13), style: FillStyle(eoFill: true))
+                RoundedRectangle(cornerRadius: innerRadius, style: .continuous)
+                    .stroke(GrainTheme.accent.opacity(0.35), lineWidth: 0.6)
+                    .padding(border)
                 VStack {
                     Spacer()
                     HStack {
+                        Text("QUICKSNAP 400")
+                            .font(.system(size: 7, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color.white.opacity(0.55))
+                            .padding(.horizontal, border + 4)
+                            .padding(.bottom, 3)
                         Spacer()
-                        Text("DISPOSABLE 400")
-                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        Text("DISPOSABLE")
+                            .font(.system(size: 7.5, weight: .black, design: .monospaced))
                             .foregroundStyle(GrainTheme.accent)
-                            .padding(6)
+                            .padding(.horizontal, border + 4)
+                            .padding(.bottom, 3)
+                    }
+                }
+            }
+            .frame(width: size.width, height: size.height)
+            .allowsHitTesting(false)
+
+        case .ilfordHP5:
+            // 伊尔福 HP5 Plus 经典黑白印相底片框（内圆弧平滑过渡）
+            let border = size.width * 0.042
+            let innerRadius: CGFloat = 14.0
+            ZStack {
+                FilmCutoutFrame(borderWidth: border, innerCornerRadius: innerRadius)
+                    .fill(Color(red: 0.05, green: 0.05, blue: 0.05), style: FillStyle(eoFill: true))
+                RoundedRectangle(cornerRadius: innerRadius, style: .continuous)
+                    .stroke(Color.white.opacity(0.22), lineWidth: 0.6)
+                    .padding(border)
+                VStack {
+                    HStack {
+                        Text("ILFORD HP5 PLUS")
+                            .font(.system(size: 7.5, weight: .black, design: .monospaced))
+                            .foregroundStyle(Color.white)
+                            .padding(.horizontal, border + 4)
+                            .padding(.top, 4)
+                        Spacer()
+                        Text("ISO 400")
+                            .font(.system(size: 7, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color.white.opacity(0.65))
+                            .padding(.horizontal, border + 4)
+                            .padding(.top, 4)
+                    }
+                    Spacer()
+                    HStack {
+                        Text("B&W DARKROOM PRINT")
+                            .font(.system(size: 6.5, weight: .heavy, design: .monospaced))
+                            .foregroundStyle(Color.white.opacity(0.40))
+                            .padding(.horizontal, border + 4)
+                            .padding(.bottom, 3)
+                        Spacer()
                     }
                 }
             }
@@ -773,7 +906,7 @@ struct CollageEditorView: View {
         }
     }
 
-    private func sprocketBar(width: CGFloat, height: CGFloat, text: String) -> some View {
+    private func sprocketBar(width: CGFloat, height: CGFloat, text: String, textColor: Color = Color(red: 1.0, green: 0.72, blue: 0.15)) -> some View {
         ZStack {
             Color.black
             HStack(spacing: 7) {
@@ -786,7 +919,7 @@ struct CollageEditorView: View {
             HStack {
                 Text(text)
                     .font(.system(size: 7, weight: .bold, design: .monospaced))
-                    .foregroundStyle(Color(red: 1.0, green: 0.72, blue: 0.15))
+                    .foregroundStyle(textColor)
                     .padding(.horizontal, 8)
                 Spacer()
             }
@@ -1765,12 +1898,17 @@ struct CollageEditorView: View {
         case .polaroid:
             let borderT = size.width * 0.05
             let borderB = size.height * 0.16
+            let innerRadius = borderT * 0.8
             context.saveGState()
+
+            let path = CGMutablePath()
+            path.addRect(CGRect(origin: .zero, size: size))
+            let innerRect = CGRect(x: borderT, y: borderT, width: size.width - borderT * 2, height: size.height - borderT - borderB)
+            let innerPath = UIBezierPath(roundedRect: innerRect, cornerRadius: innerRadius)
+            path.addPath(innerPath.cgPath)
+            context.addPath(path)
             context.setFillColor(UIColor.white.cgColor)
-            context.fill(CGRect(x: 0, y: 0, width: size.width, height: borderT))
-            context.fill(CGRect(x: 0, y: 0, width: borderT, height: size.height))
-            context.fill(CGRect(x: size.width - borderT, y: 0, width: borderT, height: size.height))
-            context.fill(CGRect(x: 0, y: size.height - borderB, width: size.width, height: borderB))
+            context.drawPath(using: .evenOdd)
 
             let dateText = NSString(string: exifInfo.dateString)
             let dateAttrs: [NSAttributedString.Key: Any] = [
@@ -1788,68 +1926,152 @@ struct CollageEditorView: View {
             brandText.draw(at: CGPoint(x: size.width - borderT * 1.5 - brandSize.width, y: size.height - borderB * 0.55), withAttributes: brandAttrs)
             context.restoreGState()
 
-        case .sprocket35mm:
-            let barH = size.height * 0.09
+        case .blackPolaroid:
+            let borderT = size.width * 0.05
+            let borderB = size.height * 0.16
+            let innerRadius = borderT * 0.8
             context.saveGState()
-            context.setFillColor(UIColor.black.cgColor)
-            context.fill(CGRect(x: 0, y: 0, width: size.width, height: barH))
-            context.fill(CGRect(x: 0, y: size.height - barH, width: size.width, height: barH))
 
-            // 齿孔
-            let holeW = size.width * 0.024
-            let holeH = barH * 0.52
-            let count = Int(size.width / (holeW * 1.8))
-            let step = size.width / CGFloat(max(count, 1))
+            let path = CGMutablePath()
+            path.addRect(CGRect(origin: .zero, size: size))
+            let innerRect = CGRect(x: borderT, y: borderT, width: size.width - borderT * 2, height: size.height - borderT - borderB)
+            let innerPath = UIBezierPath(roundedRect: innerRect, cornerRadius: innerRadius)
+            path.addPath(innerPath.cgPath)
+            context.addPath(path)
+            context.setFillColor(UIColor(red: 0.08, green: 0.08, blue: 0.09, alpha: 1.0).cgColor)
+            context.drawPath(using: .evenOdd)
 
-            context.setFillColor(UIColor.white.withAlphaComponent(0.24).cgColor)
-            for i in 0..<count {
-                let x = CGFloat(i) * step + step * 0.2
-                let topHole = CGRect(x: x, y: barH * 0.24, width: holeW, height: holeH)
-                let btmHole = CGRect(x: x, y: size.height - barH + barH * 0.24, width: holeW, height: holeH)
-                let p1 = UIBezierPath(roundedRect: topHole, cornerRadius: 3)
-                context.addPath(p1.cgPath)
-                context.fillPath()
-                let p2 = UIBezierPath(roundedRect: btmHole, cornerRadius: 3)
-                context.addPath(p2.cgPath)
-                context.fillPath()
-            }
-
-            // 胶片黄色字符
-            let filmOrange = UIColor(red: 1.0, green: 0.72, blue: 0.15, alpha: 1.0)
-            let txtAttrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.018, weight: .bold),
-                .foregroundColor: filmOrange
+            let dateText = NSString(string: exifInfo.dateString)
+            let dateAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.024, weight: .bold),
+                .foregroundColor: UIColor(red: 0.95, green: 0.78, blue: 0.35, alpha: 1.0)
             ]
-            NSString(string: "KODAK PORTRA 400 · 36").draw(at: CGPoint(x: 24, y: barH * 0.62), withAttributes: txtAttrs)
-            NSString(string: "FILM 135 · 36A · DX 400").draw(at: CGPoint(x: 24, y: size.height - barH * 0.38), withAttributes: txtAttrs)
+            dateText.draw(at: CGPoint(x: borderT * 1.5, y: size.height - borderB * 0.55), withAttributes: dateAttrs)
+
+            let brandText = NSString(string: "BLACK POLAROID · GRAIN")
+            let brandAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: size.width * 0.020, weight: .heavy),
+                .foregroundColor: UIColor.white.withAlphaComponent(0.48)
+            ]
+            let brandSize = brandText.size(withAttributes: brandAttrs)
+            brandText.draw(at: CGPoint(x: size.width - borderT * 1.5 - brandSize.width, y: size.height - borderB * 0.55), withAttributes: brandAttrs)
             context.restoreGState()
 
+        case .sprocket35mm:
+            drawSprocketFrame(in: size, context: context, topText: "KODAK PORTRA 400 · 36", bottomText: "FILM 135 · 36A · DX 400", textColor: UIColor(red: 1.0, green: 0.72, blue: 0.15, alpha: 1.0))
+
+        case .kodakGold:
+            drawSprocketFrame(in: size, context: context, topText: "KODAK GOLD 200 · 24 EXP", bottomText: "SAFETY FILM · 24A · DX 200", textColor: UIColor(red: 1.0, green: 0.78, blue: 0.12, alpha: 1.0))
+
+        case .fujiSuperia:
+            drawSprocketFrame(in: size, context: context, topText: "FUJIFILM SUPERIA X-TRA 400", bottomText: "SUPERIA 400 · CN-16 · 36A", textColor: UIColor(red: 0.25, green: 0.88, blue: 0.45, alpha: 1.0))
+
         case .mediumFormat:
-            let border = size.width * 0.04
+            // 哈苏 6x6 中画幅（内圆弧平滑过渡，告别生硬直角）
+            let border = size.width * 0.045
+            let innerRadius = border * 1.25
             context.saveGState()
+
+            let path = CGMutablePath()
+            path.addRect(CGRect(origin: .zero, size: size))
+            let innerRect = CGRect(x: border, y: border, width: size.width - border * 2, height: size.height - border * 2)
+            let innerPath = UIBezierPath(roundedRect: innerRect, cornerRadius: innerRadius)
+            path.addPath(innerPath.cgPath)
+            context.addPath(path)
             context.setFillColor(UIColor.black.cgColor)
-            context.fill(CGRect(x: 0, y: 0, width: size.width, height: border))
-            context.fill(CGRect(x: 0, y: 0, width: border, height: size.height))
-            context.fill(CGRect(x: size.width - border, y: 0, width: border, height: size.height))
-            context.fill(CGRect(x: 0, y: size.height - border, width: size.width, height: border))
+            context.drawPath(using: .evenOdd)
 
             let txtAttrs: [NSAttributedString.Key: Any] = [
                 .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.016, weight: .heavy),
-                .foregroundColor: UIColor.white.withAlphaComponent(0.5)
+                .foregroundColor: UIColor.white.withAlphaComponent(0.65)
             ]
-            NSString(string: "HASSELBLAD 6X6 - 120 FILM").draw(at: CGPoint(x: border * 1.5, y: border * 0.2), withAttributes: txtAttrs)
+            NSString(string: "HASSELBLAD 6X6 - 120 FILM").draw(at: CGPoint(x: border * 1.5, y: border * 0.25), withAttributes: txtAttrs)
             context.restoreGState()
 
         case .disposable:
-            let border = size.width * 0.035
+            // 一次性相机纸质取景框（内孔平滑圆角）
+            let border = size.width * 0.040
+            let innerRadius = border * 1.15
             context.saveGState()
-            context.setFillColor(UIColor.black.withAlphaComponent(0.85).cgColor)
-            context.fill(CGRect(x: 0, y: 0, width: size.width, height: border))
-            context.fill(CGRect(x: 0, y: 0, width: border, height: size.height))
-            context.fill(CGRect(x: size.width - border, y: 0, width: border, height: size.height))
-            context.fill(CGRect(x: 0, y: size.height - border, width: size.width, height: border))
+
+            let path = CGMutablePath()
+            path.addRect(CGRect(origin: .zero, size: size))
+            let innerRect = CGRect(x: border, y: border, width: size.width - border * 2, height: size.height - border * 2)
+            let innerPath = UIBezierPath(roundedRect: innerRect, cornerRadius: innerRadius)
+            path.addPath(innerPath.cgPath)
+            context.addPath(path)
+            context.setFillColor(UIColor(red: 0.12, green: 0.12, blue: 0.13, alpha: 1.0).cgColor)
+            context.drawPath(using: .evenOdd)
+
+            let txtAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.015, weight: .bold),
+                .foregroundColor: UIColor(red: 0.98, green: 0.42, blue: 0.18, alpha: 1.0)
+            ]
+            NSString(string: "QUICKSNAP 400 · DISPOSABLE").draw(at: CGPoint(x: border * 1.5, y: size.height - border * 0.8), withAttributes: txtAttrs)
+            context.restoreGState()
+
+        case .ilfordHP5:
+            // 伊尔福 HP5 Plus 经典黑白印相底片框
+            let border = size.width * 0.042
+            let innerRadius = border * 1.2
+            context.saveGState()
+
+            let path = CGMutablePath()
+            path.addRect(CGRect(origin: .zero, size: size))
+            let innerRect = CGRect(x: border, y: border, width: size.width - border * 2, height: size.height - border * 2)
+            let innerPath = UIBezierPath(roundedRect: innerRect, cornerRadius: innerRadius)
+            path.addPath(innerPath.cgPath)
+            context.addPath(path)
+            context.setFillColor(UIColor(red: 0.05, green: 0.05, blue: 0.05, alpha: 1.0).cgColor)
+            context.drawPath(using: .evenOdd)
+
+            let txtAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.016, weight: .black),
+                .foregroundColor: UIColor.white
+            ]
+            NSString(string: "ILFORD HP5 PLUS - 400").draw(at: CGPoint(x: border * 1.5, y: border * 0.25), withAttributes: txtAttrs)
+            let btmAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.014, weight: .bold),
+                .foregroundColor: UIColor.white.withAlphaComponent(0.45)
+            ]
+            NSString(string: "B&W DARKROOM PRINT").draw(at: CGPoint(x: border * 1.5, y: size.height - border * 0.8), withAttributes: btmAttrs)
             context.restoreGState()
         }
+    }
+
+    private func drawSprocketFrame(in size: CGSize, context: CGContext, topText: String, bottomText: String, textColor: UIColor) {
+        let barH = size.height * 0.09
+        context.saveGState()
+        context.setFillColor(UIColor.black.cgColor)
+        context.fill(CGRect(x: 0, y: 0, width: size.width, height: barH))
+        context.fill(CGRect(x: 0, y: size.height - barH, width: size.width, height: barH))
+
+        // 齿孔
+        let holeW = size.width * 0.024
+        let holeH = barH * 0.52
+        let count = Int(size.width / (holeW * 1.8))
+        let step = size.width / CGFloat(max(count, 1))
+
+        context.setFillColor(UIColor.white.withAlphaComponent(0.24).cgColor)
+        for i in 0..<count {
+            let x = CGFloat(i) * step + step * 0.2
+            let topHole = CGRect(x: x, y: barH * 0.24, width: holeW, height: holeH)
+            let btmHole = CGRect(x: x, y: size.height - barH + barH * 0.24, width: holeW, height: holeH)
+            let p1 = UIBezierPath(roundedRect: topHole, cornerRadius: 3)
+            context.addPath(p1.cgPath)
+            context.fillPath()
+            let p2 = UIBezierPath(roundedRect: btmHole, cornerRadius: 3)
+            context.addPath(p2.cgPath)
+            context.fillPath()
+        }
+
+        let txtAttrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.monospacedSystemFont(ofSize: size.width * 0.018, weight: .bold),
+            .foregroundColor: textColor
+        ]
+        NSString(string: topText).draw(at: CGPoint(x: 24, y: barH * 0.62), withAttributes: txtAttrs)
+        NSString(string: bottomText).draw(at: CGPoint(x: 24, y: size.height - barH * 0.38), withAttributes: txtAttrs)
+        context.restoreGState()
     }
 
     private func drawEXIFBar(_ info: PhotoEXIFInfo, in size: CGSize, context: CGContext) {

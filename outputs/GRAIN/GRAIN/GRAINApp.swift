@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(WidgetKit)
+import WidgetKit
+#endif
 
 @main
 struct GRAINApp: App {
@@ -20,6 +23,10 @@ struct GRAINApp: App {
             defaults.set(false, forKey: "showFileImportButton")
             defaults.set(true, forKey: "didMigrateFileImportDefaultOff")
         }
+
+        #if canImport(WidgetKit)
+        WidgetCenter.shared.reloadAllTimelines()
+        #endif
     }
 
     var body: some Scene {
@@ -35,7 +42,12 @@ struct GRAINApp: App {
                     .preferredColorScheme(appearanceMode.colorScheme)
                 }
             }
-            .onAppear(perform: GrainHaptics.prepare)
+            .onAppear {
+                GrainHaptics.prepare()
+                #if canImport(WidgetKit)
+                WidgetCenter.shared.reloadAllTimelines()
+                #endif
+            }
         }
     }
 }

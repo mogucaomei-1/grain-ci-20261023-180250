@@ -543,6 +543,37 @@ struct WidgetShowcaseView: View {
 
                             VStack(spacing: 8) {
                                 Button {
+                                    WidgetCenter.shared.reloadAllTimelines()
+                                    GrainHaptics.notification(type: .success)
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "arrow.clockwise.circle.fill")
+                                            .font(.system(size: 14, weight: .bold))
+                                            .foregroundStyle(GrainTheme.accent)
+                                        Text("向系统强制刷新与注册小组件")
+                                            .font(.system(size: 12.5, weight: .bold))
+                                            .foregroundStyle(GrainTheme.paper)
+                                        Spacer()
+                                        Text("立即触发")
+                                            .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                                            .foregroundStyle(GrainTheme.accent)
+                                            .padding(.horizontal, 7)
+                                            .padding(.vertical, 3)
+                                            .background(GrainTheme.accent.opacity(0.18), in: Capsule())
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .frame(height: 44)
+                                    .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 10))
+                                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(GrainTheme.accent.opacity(0.85), lineWidth: 1.0))
+                                }
+
+                                Text("系统使用说明：长按 iPhone 桌面空白处进入编辑模式 -> 点击左上角「+」号 -> 搜索「GRAIN」即可找到官方小组件添加到桌面或锁屏。")
+                                    .font(.system(size: 11, weight: .regular))
+                                    .foregroundStyle(GrainTheme.paper.opacity(0.55))
+                                    .lineSpacing(2.5)
+                                    .padding(.vertical, 2)
+
+                                Button {
                                     if let url = URL(string: "grain://camera?mode=photo") {
                                         UIApplication.shared.open(url)
                                         dismiss()
