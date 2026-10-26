@@ -1307,6 +1307,14 @@ final class CameraController: ObservableObject {
                 self.configureVideoFormat(quality, stabilization: stabilization)
                 self.configureMovieConnection(stabilization: stabilization, codec: codec, targetFPS: Double(quality.fps))
 
+                if let videoConn = self.movieOutput.connection(with: .video) {
+                    let available = self.movieOutput.availableVideoCodecTypes
+                    let targetCodec: AVVideoCodecType = (self.isVideoHDREnabled || codec == .hevc) && available.contains(.hevc) ? .hevc : (available.contains(.h264) ? .h264 : (available.first ?? .hevc))
+                    if available.contains(targetCodec) {
+                        self.movieOutput.setOutputSettings([AVVideoCodecKey: targetCodec], for: videoConn)
+                    }
+                }
+
                 let ext = container.fileExtension
                 let url = FileManager.default.temporaryDirectory
                     .appendingPathComponent("GRAIN-\(Int(Date().timeIntervalSince1970)).\(ext)")
@@ -1579,12 +1587,13 @@ final class CameraController: ObservableObject {
                 self.isUsingFrontCamera && self.frontMirrorEnabled
         }
 
-        // 确保 HEVC 编码器开启，因为 10-bit HDR / HLG 必须使用 HEVC 编码！
-        if self.movieOutput.availableVideoCodecTypes.contains(.hevc) {
-            let selectedCodec: AVVideoCodecType = (self.isVideoHDREnabled || codec == .hevc) ? .hevc : .h264
-            if self.movieOutput.availableVideoCodecTypes.contains(selectedCodec) {
-                self.movieOutput.setOutputSettings([AVVideoCodecKey: selectedCodec], for: connection)
-            }
+        // 确保 HEVC 编码器开启，因为 10-bit HDR / HLG 必须使用 HEVC 编码；普通视频优先使用 HEVC 或 H264，严禁设置为 ProRes
+        let available = self.movieOutput.availableVideoCodecTypes
+        let selectedCodec: AVVideoCodecType = (self.isVideoHDREnabled || codec == .hevc) && available.contains(.hevc)
+            ? .hevc
+            : (available.contains(.h264) ? .h264 : (available.first ?? .hevc))
+        if available.contains(selectedCodec) {
+            self.movieOutput.setOutputSettings([AVVideoCodecKey: selectedCodec], for: connection)
         }
     }
 
@@ -1680,6 +1689,25 @@ final class CameraController: ObservableObject {
         }
     }
 
+    /// 严格判断是否为 ProRes 或 4:2:2 硬件采集格式
+    /// 铁律：在 iOS 上，4K60 ProRes 格式被苹果强制限制为仅允许外接高速存储设备 (external storage) 捕获。
+    /// 当写入内部闪存（如 /tmp）时，AVCaptureMovieFileOutput 会抛出致命 NSInvalidArgumentException 导致瞬间闪退！
+    /// 因此，普通录像和 HDR 录像必须排除此类格式，使用标准的 4:2:0 10-bit HEVC 格式。
+    private func isProResOr422Format(_ format: AVCaptureDevice.Format) -> Bool {
+        let subType = CMFormatDescriptionGetMediaSubType(format.formatDescription)
+        if subType == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange ||
+           subType == kCVPixelFormatType_422YpCbCr10BiPlanarFullRange ||
+           subType == 0x78343232 || // 'x422'
+           subType == 0x78663232 {  // 'xf22'
+            return true
+        }
+        let desc = format.description.lowercased()
+        if desc.contains("prores") || desc.contains("x422") || desc.contains("422") {
+            return true
+        }
+        return false
+    }
+
     private func configureVideoFormatInternal(
         _ quality: VideoQuality,
         stabilization: VideoStabilization = .cinematicExtended
@@ -1690,7 +1718,7 @@ final class CameraController: ObservableObject {
         let targetFPS = Double(quality.fps)
         let desiredMode = stabilization.mode
 
-        // 检查当前格式是否已经是尺寸匹配、支持帧率、HDR 与色彩空间匹配以及防抖的 16:9 视频格式
+        // 检查当前格式是否已经是尺寸匹配、支持帧率、HDR 与色彩空间匹配以及防抖的 16:9 视频格式，且严禁为 ProRes 格式
         let currentDims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
         let curShort = Int(min(currentDims.width, currentDims.height))
         let curLong = Int(max(currentDims.width, currentDims.height))
@@ -1702,8 +1730,9 @@ final class CameraController: ObservableObject {
         let curHDRMatches = isVideoHDREnabled
             ? (device.activeFormat.isVideoHDRSupported && device.activeColorSpace == .HLG_BT2020)
             : (!device.isVideoHDREnabled)
+        let curIsSafeCodec = !isProResOr422Format(device.activeFormat)
 
-        if curShort == targetShort && curLong == targetLong && is16by9 && curSupportsFPS && curSupportsStab && curHDRMatches {
+        if curShort == targetShort && curLong == targetLong && is16by9 && curSupportsFPS && curSupportsStab && curHDRMatches && curIsSafeCodec {
             do {
                 try device.lockForConfiguration()
                 applySafeVideoHDR(to: device, enabled: isVideoHDREnabled)
@@ -1719,6 +1748,7 @@ final class CameraController: ObservableObject {
         let formats = device.formats
         var candidates: [AVCaptureDevice.Format] = []
         for format in formats {
+            guard !isProResOr422Format(format) else { continue }
             let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
             let short = Int(min(dims.width, dims.height))
             let long = Int(max(dims.width, dims.height))
@@ -1732,6 +1762,7 @@ final class CameraController: ObservableObject {
 
         if candidates.isEmpty {
             for format in formats {
+                guard !isProResOr422Format(format) else { continue }
                 let dims = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
                 let short = Int(min(dims.width, dims.height))
                 let long = Int(max(dims.width, dims.height))
@@ -1741,7 +1772,7 @@ final class CameraController: ObservableObject {
             }
         }
 
-        // 若开启视频 HDR，优先锁定同时支持 10-bit HLG_BT2020 色彩空间与 HDR 的硬件格式
+        // 若开启视频 HDR，优先锁定同时支持 10-bit HLG_BT2020 色彩空间与 HDR 的硬件格式（已排除 ProRes，纯 4:2:0 10-bit HEVC 格式）
         if isVideoHDREnabled {
             let hlgCandidates = candidates.filter { $0.isVideoHDRSupported && $0.supportedColorSpaces.contains(.HLG_BT2020) }
             if !hlgCandidates.isEmpty {

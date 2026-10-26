@@ -191,8 +191,8 @@ struct PhotoEXIFInfo: Equatable {
     var aperture: String = "f/1.8"
     var shutterSpeed: String = "1/250s"
     var iso: String = "ISO 100"
-    var dateString: String = "2026.10.25"
-    var locationString: String = "TOKYO, JAPAN"
+    var dateString: String = ""
+    var locationString: String = ""
 
     static func formatCity(from place: CLPlacemark) -> String {
         let admin = place.administrativeArea
@@ -236,22 +236,7 @@ struct PhotoEXIFInfo: Equatable {
         formatter.dateFormat = "yyyy.MM.dd"
         info.dateString = formatter.string(from: date)
 
-        if let loc = asset.location {
-            let lat = abs(loc.coordinate.latitude)
-            let lon = abs(loc.coordinate.longitude)
-            let latDir = loc.coordinate.latitude >= 0 ? "N" : "S"
-            let lonDir = loc.coordinate.longitude >= 0 ? "E" : "W"
-            info.locationString = String(format: "%.2f°%@ %.2f°%@", lat, latDir, lon, lonDir)
-
-            let geocoder = CLGeocoder()
-            if let placemarks = try? await geocoder.reverseGeocodeLocation(loc),
-               let place = placemarks.first {
-                let city = formatCity(from: place)
-                if !city.isEmpty {
-                    info.locationString = city
-                }
-            }
-        }
+        var detectedLocation: CLLocation? = asset.location
 
         let options = PHImageRequestOptions()
         options.isNetworkAccessAllowed = true
@@ -262,6 +247,18 @@ struct PhotoEXIFInfo: Equatable {
             PHImageManager.default().requestImageDataAndOrientation(for: asset, options: options) { data, _, _, _ in
                 if let data = data, let source = CGImageSourceCreateWithData(data as CFData, nil),
                    let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] {
+                    // 1. 如果 asset.location 为空，尝试从图像内置 EXIF GPS 字典解析经纬度
+                    if detectedLocation == nil,
+                       let gps = properties[kCGImagePropertyGPSDictionary as String] as? [String: Any],
+                       let latVal = gps[kCGImagePropertyGPSLatitude as String] as? Double,
+                       let lonVal = gps[kCGImagePropertyGPSLongitude as String] as? Double {
+                        let latRef = gps[kCGImagePropertyGPSLatitudeRef as String] as? String ?? "N"
+                        let lonRef = gps[kCGImagePropertyGPSLongitudeRef as String] as? String ?? "E"
+                        let lat = latRef.uppercased() == "S" ? -abs(latVal) : abs(latVal)
+                        let lon = lonRef.uppercased() == "W" ? -abs(lonVal) : abs(lonVal)
+                        detectedLocation = CLLocation(latitude: lat, longitude: lon)
+                    }
+
                     if let tiff = properties[kCGImagePropertyTIFFDictionary as String] as? [String: Any],
                        let model = tiff[kCGImagePropertyTIFFModel as String] as? String {
                         info.cameraModel = model.replacingOccurrences(of: "iPhone ", with: "IPHONE ")
@@ -288,6 +285,26 @@ struct PhotoEXIFInfo: Equatable {
                 continuation.resume()
             }
         }
+
+        // 2. 自动获取照片地址：支持照片自身 GPS 及回退到设备最近定位
+        let effectiveLocation = detectedLocation ?? CaptureLocationProvider.shared.latestLocation
+        if let loc = effectiveLocation {
+            let lat = abs(loc.coordinate.latitude)
+            let lon = abs(loc.coordinate.longitude)
+            let latDir = loc.coordinate.latitude >= 0 ? "N" : "S"
+            let lonDir = loc.coordinate.longitude >= 0 ? "E" : "W"
+            info.locationString = String(format: "%.2f°%@ %.2f°%@", lat, latDir, lon, lonDir)
+
+            let geocoder = CLGeocoder()
+            if let placemarks = try? await geocoder.reverseGeocodeLocation(loc),
+               let place = placemarks.first {
+                let city = formatCity(from: place)
+                if !city.isEmpty {
+                    info.locationString = city
+                }
+            }
+        }
+
         return info
     }
 }
@@ -521,9 +538,17 @@ struct CollageEditorView: View {
         .statusBarHidden()
         .simultaneousGesture(backSwipeGesture)
         .task {
+            CaptureLocationProvider.shared.start()
             await loadPreviewImages()
             if let first = selectedAssets.first {
-                exifInfo = await PhotoEXIFInfo.extract(from: first)
+                await refreshEXIF(for: first)
+            }
+        }
+        .onChange(of: selectedAssets) { _, newAssets in
+            if locationText.isEmpty, let first = newAssets.first {
+                Task {
+                    await refreshEXIF(for: first)
+                }
             }
         }
         .onChange(of: pickerItems) { _, items in
@@ -666,29 +691,29 @@ struct CollageEditorView: View {
                             )
                         }
                     }
-                }
 
-                // 1. 胶片模拟相框 (拍立得、35mm齿孔、哈苏中画幅等)
-                filmFrameOverlay(size: size)
+                    // 1. 胶片模拟相框 (拍立得、35mm齿孔、哈苏中画幅等)
+                    filmFrameOverlay(size: size)
 
-                // 2. EXIF 拍摄参数白条 / 铭牌
-                if showEXIFBar {
-                    exifBarOverlay(size: size)
-                }
+                    // 2. EXIF 拍摄参数白条 / 铭牌
+                    if showEXIFBar {
+                        exifBarOverlay(size: size)
+                    }
 
-                // 3. 经典橙色石英点阵日期印记
-                if showDateStamp {
-                    dateStampOverlay(size: size)
-                }
+                    // 3. 经典橙色石英点阵日期印记
+                    if showDateStamp {
+                        dateStampOverlay(size: size)
+                    }
 
-                // 4. 拍摄地点水印
-                if showLocationStamp {
-                    locationStampOverlay(size: size)
-                }
+                    // 4. 拍摄地点水印
+                    if showLocationStamp {
+                        locationStampOverlay(size: size)
+                    }
 
-                // 5. 表情包与贴纸自由放置层
-                ForEach(stickers) { sticker in
-                    stickerView(sticker: sticker, canvasSize: size)
+                    // 5. 自定义文字与表情包自由放置层
+                    ForEach(stickers) { sticker in
+                        stickerView(sticker: sticker, canvasSize: size)
+                    }
                 }
             }
             .frame(width: size.width, height: size.height)
@@ -1104,7 +1129,7 @@ struct CollageEditorView: View {
         HStack(spacing: 4) {
             Image(systemName: "mappin.and.ellipse")
                 .font(.system(size: 8, weight: .bold))
-            Text(locationText.isEmpty ? exifInfo.locationString : locationText)
+            Text(locationText.isEmpty ? (exifInfo.locationString.isEmpty ? "拍摄地点" : exifInfo.locationString) : locationText)
                 .font(.system(size: 8.5, weight: .bold, design: .rounded))
         }
         .foregroundStyle(Color.white.opacity(0.92))
@@ -1328,235 +1353,271 @@ struct CollageEditorView: View {
         }
     }
 
-    // 2. 胶片相框控制面板
+    // 2. 胶片相框控制面板（无照片时禁止操作）
     private var filmFrameControls: some View {
-        VStack(spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(FilmFrameStyle.allCases) { style in
+        Group {
+            if selectedAssets.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "film")
+                        .font(.system(size: 16))
+                        .foregroundStyle(GrainTheme.muted)
+                    Text("请先添加照片后再选择胶片相框")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(GrainTheme.muted)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 72)
+            } else {
+                VStack(spacing: 8) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(FilmFrameStyle.allCases) { style in
+                                Button {
+                                    withAnimation(.snappy(duration: 0.22)) {
+                                        filmFrame = style
+                                    }
+                                    GrainHaptics.selection(enabled: true)
+                                } label: {
+                                    VStack(spacing: 4) {
+                                        Image(systemName: style.icon)
+                                            .font(.system(size: 14, weight: .bold))
+                                        Text(style.rawValue)
+                                            .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                                    }
+                                    .foregroundStyle(filmFrame == style ? GrainTheme.black : GrainTheme.paper)
+                                    .frame(width: 70, height: 50)
+                                    .background(filmFrame == style ? GrainTheme.accent : GrainTheme.raised, in: RoundedRectangle(cornerRadius: 8))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 18)
+                    }
+                    .frame(height: 54)
+
+                    Text("胶片相框模拟经典暗房相纸、35mm 齿孔胶卷底片与拍立得白框")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(GrainTheme.muted)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
+                }
+            }
+        }
+    }
+
+    // 3. 水印与数据面板 (日期、地址、EXIF 拍摄参数，无照片时禁止操作)
+    private var watermarkControls: some View {
+        Group {
+            if selectedAssets.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "photo.badge.plus")
+                        .font(.system(size: 16))
+                        .foregroundStyle(GrainTheme.muted)
+                    Text("请先添加照片后再添加水印与拍摄数据")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(GrainTheme.muted)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 72)
+            } else {
+                VStack(spacing: 6) {
+                    // 日期开关与样式切换
+                    HStack(spacing: 8) {
                         Button {
-                            withAnimation(.snappy(duration: 0.22)) {
-                                filmFrame = style
+                            withAnimation { showDateStamp.toggle() }
+                            GrainHaptics.selection(enabled: true)
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: showDateStamp ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(showDateStamp ? GrainTheme.accent : GrainTheme.muted)
+                                Text("日期印记")
+                                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                                    .foregroundStyle(GrainTheme.paper)
+                            }
+                            .padding(.horizontal, 10)
+                            .frame(height: 30)
+                            .background(GrainTheme.raised, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+
+                        if showDateStamp {
+                            HStack(spacing: 5) {
+                                Button("石英点阵") { dateStampStyle = 0 }
+                                    .font(.system(size: 9, weight: dateStampStyle == 0 ? .bold : .medium))
+                                    .foregroundStyle(dateStampStyle == 0 ? GrainTheme.accent : GrainTheme.muted)
+                                Text("·").foregroundStyle(GrainTheme.muted)
+                                Button("现代极简") { dateStampStyle = 1 }
+                                    .font(.system(size: 9, weight: dateStampStyle == 1 ? .bold : .medium))
+                                    .foregroundStyle(dateStampStyle == 1 ? GrainTheme.accent : GrainTheme.muted)
+                            }
+                            .padding(.horizontal, 8)
+                            .frame(height: 30)
+                            .background(GrainTheme.surface, in: Capsule())
+                        }
+
+                        Spacer()
+                    }
+                    .padding(.horizontal, 18)
+
+                    // 地址水印开关（自动获取照片定位填入）
+                    HStack(spacing: 8) {
+                        Button {
+                            withAnimation {
+                                showLocationStamp.toggle()
+                                if showLocationStamp && locationText.isEmpty && !exifInfo.locationString.isEmpty {
+                                    locationText = exifInfo.locationString
+                                }
                             }
                             GrainHaptics.selection(enabled: true)
                         } label: {
-                            VStack(spacing: 4) {
-                                Image(systemName: style.icon)
-                                    .font(.system(size: 14, weight: .bold))
-                                Text(style.rawValue)
-                                    .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                            HStack(spacing: 5) {
+                                Image(systemName: showLocationStamp ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(showLocationStamp ? GrainTheme.accent : GrainTheme.muted)
+                                Text("拍摄地址")
+                                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                                    .foregroundStyle(GrainTheme.paper)
                             }
-                            .foregroundStyle(filmFrame == style ? GrainTheme.black : GrainTheme.paper)
-                            .frame(width: 70, height: 50)
-                            .background(filmFrame == style ? GrainTheme.accent : GrainTheme.raised, in: RoundedRectangle(cornerRadius: 8))
+                            .padding(.horizontal, 10)
+                            .frame(height: 30)
+                            .background(GrainTheme.raised, in: Capsule())
                         }
                         .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 18)
-            }
-            .frame(height: 54)
 
-            Text("胶片相框模拟经典暗房相纸、35mm 齿孔胶卷底片与拍立得白框")
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(GrainTheme.muted)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 18)
-        }
-    }
-
-    // 3. 水印与数据面板 (日期、地址、EXIF 拍摄参数)
-    private var watermarkControls: some View {
-        VStack(spacing: 6) {
-            // 日期开关与样式切换
-            HStack(spacing: 8) {
-                Button {
-                    withAnimation { showDateStamp.toggle() }
-                    GrainHaptics.selection(enabled: true)
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: showDateStamp ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(showDateStamp ? GrainTheme.accent : GrainTheme.muted)
-                        Text("日期印记")
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
-                            .foregroundStyle(GrainTheme.paper)
-                    }
-                    .padding(.horizontal, 10)
-                    .frame(height: 30)
-                    .background(GrainTheme.raised, in: Capsule())
-                }
-                .buttonStyle(.plain)
-
-                if showDateStamp {
-                    HStack(spacing: 5) {
-                        Button("石英点阵") { dateStampStyle = 0 }
-                            .font(.system(size: 9, weight: dateStampStyle == 0 ? .bold : .medium))
-                            .foregroundStyle(dateStampStyle == 0 ? GrainTheme.accent : GrainTheme.muted)
-                        Text("·").foregroundStyle(GrainTheme.muted)
-                        Button("现代极简") { dateStampStyle = 1 }
-                            .font(.system(size: 9, weight: dateStampStyle == 1 ? .bold : .medium))
-                            .foregroundStyle(dateStampStyle == 1 ? GrainTheme.accent : GrainTheme.muted)
-                    }
-                    .padding(.horizontal, 8)
-                    .frame(height: 30)
-                    .background(GrainTheme.surface, in: Capsule())
-                }
-
-                Spacer()
-            }
-            .padding(.horizontal, 18)
-
-            // 地址水印开关
-            HStack(spacing: 8) {
-                Button {
-                    withAnimation { showLocationStamp.toggle() }
-                    GrainHaptics.selection(enabled: true)
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: showLocationStamp ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(showLocationStamp ? GrainTheme.accent : GrainTheme.muted)
-                        Text("拍摄地址")
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
-                            .foregroundStyle(GrainTheme.paper)
-                    }
-                    .padding(.horizontal, 10)
-                    .frame(height: 30)
-                    .background(GrainTheme.raised, in: Capsule())
-                }
-                .buttonStyle(.plain)
-
-                if showLocationStamp {
-                    TextField("输入地址或城市", text: $locationText)
-                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
-                        .foregroundStyle(GrainTheme.paper)
-                        .padding(.horizontal, 10)
-                        .frame(height: 30)
-                        .background(GrainTheme.surface, in: Capsule())
-                }
-
-                Spacer()
-            }
-            .padding(.horizontal, 18)
-
-            // EXIF 拍摄参数铭牌开关
-            HStack(spacing: 8) {
-                Button {
-                    withAnimation { showEXIFBar.toggle() }
-                    GrainHaptics.selection(enabled: true)
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: showEXIFBar ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(showEXIFBar ? GrainTheme.accent : GrainTheme.muted)
-                        Text("EXIF 拍摄数据")
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
-                            .foregroundStyle(GrainTheme.paper)
-                    }
-                    .padding(.horizontal, 10)
-                    .frame(height: 30)
-                    .background(GrainTheme.raised, in: Capsule())
-                }
-                .buttonStyle(.plain)
-
-                if showEXIFBar {
-                    Text(exifParamText)
-                        .font(.system(size: 8, weight: .medium, design: .monospaced))
-                        .foregroundStyle(GrainTheme.muted)
-                        .lineLimit(1)
-                }
-
-                Spacer()
-            }
-            .padding(.horizontal, 18)
-        }
-    }
-
-    // 4. 添加文字面板（全面支持自定义输入、预设词条与表情，并保留照片编辑里的文字）
-    private var addTextControls: some View {
-        VStack(spacing: 8) {
-            // 自定义文字输入与添加按钮
-            HStack(spacing: 8) {
-                TextField("输入照片上的文字...", text: $customTextInput)
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(GrainTheme.paper)
-                    .padding(.horizontal, 12)
-                    .frame(height: 32)
-                    .background(GrainTheme.surface, in: Capsule())
-                    .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
-
-                Button {
-                    let trimmed = customTextInput.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmed.isEmpty else { return }
-                    addSticker(trimmed)
-                    customTextInput = ""
-                    GrainHaptics.selection(enabled: true)
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "plus")
-                        Text("添加文字")
-                    }
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundStyle(GrainTheme.black)
-                    .padding(.horizontal, 12)
-                    .frame(height: 32)
-                    .background(customTextInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? GrainTheme.muted : GrainTheme.accent, in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .disabled(customTextInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            .padding(.horizontal, 18)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    let labelStickers = ["FILM", "RAW", "35MM", "PORTRA", "FUJIFILM", "CINEMA", "MEMORY", "SUMMER", "VINTAGE", "GRAIN"]
-                    ForEach(labelStickers, id: \.self) { badge in
-                        Button {
-                            addSticker(badge)
-                        } label: {
-                            Text(badge)
-                                .font(.system(size: 9.5, weight: .black, design: .monospaced))
+                        if showLocationStamp {
+                            TextField("输入地址或城市", text: $locationText)
+                                .font(.system(size: 9.5, weight: .medium, design: .rounded))
                                 .foregroundStyle(GrainTheme.paper)
-                                .padding(.horizontal, 8)
+                                .padding(.horizontal, 10)
                                 .frame(height: 30)
-                                .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 6))
+                                .background(GrainTheme.surface, in: Capsule())
                         }
-                        .buttonStyle(.plain)
-                    }
 
-                    let emojiStickers = ["🎞️", "📷", "📸", "⚡️", "☀️", "🌙", "📼", "🌈", "☕️", "🖤", "✨", "🎬"]
-                    ForEach(emojiStickers, id: \.self) { emoji in
+                        Spacer()
+                    }
+                    .padding(.horizontal, 18)
+
+                    // EXIF 拍摄参数铭牌开关
+                    HStack(spacing: 8) {
                         Button {
-                            addSticker(emoji)
+                            withAnimation { showEXIFBar.toggle() }
+                            GrainHaptics.selection(enabled: true)
                         } label: {
-                            Text(emoji)
-                                .font(.system(size: 16))
-                                .frame(width: 30, height: 30)
-                                .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 6))
+                            HStack(spacing: 5) {
+                                Image(systemName: showEXIFBar ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(showEXIFBar ? GrainTheme.accent : GrainTheme.muted)
+                                Text("EXIF 拍摄数据")
+                                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                                    .foregroundStyle(GrainTheme.paper)
+                            }
+                            .padding(.horizontal, 10)
+                            .frame(height: 30)
+                            .background(GrainTheme.raised, in: Capsule())
                         }
                         .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 18)
-            }
-            .frame(height: 32)
 
-            HStack {
-                Text("轻按添加文字，在照片上可任意拖拽排版")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(GrainTheme.muted)
-                Spacer()
-                if !stickers.isEmpty {
-                    Button("清空文字") {
-                        withAnimation { stickers.removeAll() }
+                        if showEXIFBar {
+                            Text(exifParamText)
+                                .font(.system(size: 8, weight: .medium, design: .monospaced))
+                                .foregroundStyle(GrainTheme.muted)
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
                     }
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(Color.red)
+                    .padding(.horizontal, 18)
                 }
             }
-            .padding(.horizontal, 18)
+        }
+    }
+
+    // 4. 添加文字面板（去掉无用预设文字，支持自定义输入与表情包，无照片时禁止操作）
+    private var addTextControls: some View {
+        Group {
+            if selectedAssets.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "photo.on.rectangle.angled")
+                        .font(.system(size: 16))
+                        .foregroundStyle(GrainTheme.muted)
+                    Text("请先添加照片后再添加自定义文字")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(GrainTheme.muted)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 72)
+            } else {
+                VStack(spacing: 8) {
+                    // 自定义文字输入与添加按钮
+                    HStack(spacing: 8) {
+                        TextField("输入照片上的文字...", text: $customTextInput)
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundStyle(GrainTheme.paper)
+                            .padding(.horizontal, 12)
+                            .frame(height: 32)
+                            .background(GrainTheme.surface, in: Capsule())
+                            .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.6))
+
+                        Button {
+                            let trimmed = customTextInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !trimmed.isEmpty else { return }
+                            addSticker(trimmed)
+                            customTextInput = ""
+                            GrainHaptics.selection(enabled: true)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "plus")
+                                Text("添加文字")
+                            }
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .foregroundStyle(GrainTheme.black)
+                            .padding(.horizontal, 12)
+                            .frame(height: 32)
+                            .background(customTextInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? GrainTheme.muted : GrainTheme.accent, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(customTextInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                    .padding(.horizontal, 18)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            let emojiStickers = ["🎞️", "📷", "📸", "⚡️", "☀️", "🌙", "📼", "🌈", "☕️", "🖤", "✨", "🎬"]
+                            ForEach(emojiStickers, id: \.self) { emoji in
+                                Button {
+                                    addSticker(emoji)
+                                } label: {
+                                    Text(emoji)
+                                        .font(.system(size: 16))
+                                        .frame(width: 32, height: 32)
+                                        .background(GrainTheme.raised, in: RoundedRectangle(cornerRadius: 6))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 18)
+                    }
+                    .frame(height: 34)
+
+                    HStack {
+                        Text("轻按添加文字与表情，在照片上可任意拖拽排版")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(GrainTheme.muted)
+                        Spacer()
+                        if !stickers.isEmpty {
+                            Button("清空文字") {
+                                withAnimation { stickers.removeAll() }
+                            }
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(Color.red)
+                        }
+                    }
+                    .padding(.horizontal, 18)
+                }
+            }
         }
     }
 
     private func addSticker(_ text: String) {
+        guard !selectedAssets.isEmpty else { return }
         let newX = Double.random(in: 0.35...0.65)
         let newY = Double.random(in: 0.35...0.65)
         let s = EditorSticker(text: text, position: CGPoint(x: newX, y: newY))
@@ -1738,11 +1799,24 @@ struct CollageEditorView: View {
         showNotice("已打乱照片顺序")
     }
 
+    private func refreshEXIF(for asset: PHAsset) async {
+        let info = await PhotoEXIFInfo.extract(from: asset)
+        await MainActor.run {
+            self.exifInfo = info
+            if !info.locationString.isEmpty {
+                self.locationText = info.locationString
+            }
+        }
+    }
+
     private func makeCover(_ asset: PHAsset) {
         guard let index = selectedAssets.firstIndex(of: asset), index > 0 else { return }
         withAnimation(.snappy(duration: 0.24)) {
             selectedAssets.remove(at: index)
             selectedAssets.insert(asset, at: 0)
+        }
+        Task {
+            await refreshEXIF(for: asset)
         }
         GrainHaptics.selection(enabled: true)
         showNotice("已设为封面")
@@ -1792,6 +1866,10 @@ struct CollageEditorView: View {
         await MainActor.run {
             selectedAssets.append(contentsOf: trimmed)
             pickerItems.removeAll()
+        }
+
+        if let first = selectedAssets.first {
+            await refreshEXIF(for: first)
         }
 
         for asset in trimmed {
@@ -1994,7 +2072,7 @@ struct CollageEditorView: View {
 
             // 4. 地址水印（使用用户拖拽的位置）
             if showLocationStampValue {
-                drawLocationStamp(locationTextValue.isEmpty ? exifInfoValue.locationString : locationTextValue, in: canvasSize, context: cg, position: locationStampPositionValue)
+                drawLocationStamp(locationTextValue.isEmpty ? (exifInfoValue.locationString.isEmpty ? "拍摄地点" : exifInfoValue.locationString) : locationTextValue, in: canvasSize, context: cg, position: locationStampPositionValue)
             }
 
             // 5. 贴纸与表情包
