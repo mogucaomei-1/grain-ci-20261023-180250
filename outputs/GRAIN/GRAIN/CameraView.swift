@@ -368,8 +368,8 @@ enum VideoCropService {
         videoComposition.instructions = [instruction]
 
         let presetName: String
-        if AVAssetExportSession.allExportPresets().contains(AVAssetExportPresetHEVCHighestQualityWithHDR) {
-            presetName = AVAssetExportPresetHEVCHighestQualityWithHDR
+        if AVAssetExportSession.allExportPresets().contains(AVAssetExportPresetHEVCHighestQuality) {
+            presetName = AVAssetExportPresetHEVCHighestQuality
         } else {
             presetName = AVAssetExportPresetHighestQuality
         }
