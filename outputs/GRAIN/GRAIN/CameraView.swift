@@ -333,7 +333,24 @@ enum VideoCropService {
 
         let videoComposition = AVMutableVideoComposition()
         videoComposition.renderSize = CGSize(width: targetWidth, height: targetHeight)
-        videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+        let minFrameDuration = (try? await videoTrack.load(.minFrameDuration)) ?? CMTime(value: 1, timescale: 60)
+        videoComposition.frameDuration = minFrameDuration.isValid && minFrameDuration.seconds > 0 ? minFrameDuration : CMTime(value: 1, timescale: 60)
+
+        // 继承原视频色彩元数据（广色域 BT.2020、HLG/杜比视界 Transfer Function 与 YCbCr 矩阵），防止 HDR 裁剪时被静默转为 SDR Rec.709
+        if let formats = try? await videoTrack.load(.formatDescriptions), let firstFormat = formats.first {
+            let desc = firstFormat as CMFormatDescription
+            if let extensions = CMFormatDescriptionGetExtensions(desc) as? [String: Any] {
+                if let primaries = extensions[kCVImageBufferColorPrimariesKey as String] as? String {
+                    videoComposition.colorPrimaries = primaries
+                }
+                if let transfer = extensions[kCVImageBufferTransferFunctionKey as String] as? String {
+                    videoComposition.colorTransferFunction = transfer
+                }
+                if let matrix = extensions[kCVImageBufferYCbCrMatrixKey as String] as? String {
+                    videoComposition.colorYCbCrMatrix = matrix
+                }
+            }
+        }
 
         let instruction = AVMutableVideoCompositionInstruction()
         instruction.timeRange = timeRange
@@ -350,9 +367,15 @@ enum VideoCropService {
         instruction.layerInstructions = [layerInstruction]
         videoComposition.instructions = [instruction]
 
+        let presetName: String
+        if AVAssetExportSession.allExportPresets().contains(AVAssetExportPresetHEVCHighestQualityWithHDR) {
+            presetName = AVAssetExportPresetHEVCHighestQualityWithHDR
+        } else {
+            presetName = AVAssetExportPresetHighestQuality
+        }
         guard let exportSession = AVAssetExportSession(
             asset: composition,
-            presetName: AVAssetExportPresetHighestQuality
+            presetName: presetName
         ) else { return url }
 
         exportSession.outputURL = outputURL
@@ -1307,6 +1330,15 @@ final class CameraController: ObservableObject {
                 self.configureVideoFormat(quality, stabilization: stabilization)
                 self.configureMovieConnection(stabilization: stabilization, codec: codec, targetFPS: Double(quality.fps))
 
+                // 录制前终检：开启 HDR 时严格保障 HLG_BT2020 色彩空间与 10-bit HEVC 编码
+                if self.isVideoHDREnabled, let device = self.cameraDevice, device.activeFormat.supportedColorSpaces.contains(.HLG_BT2020) {
+                    if device.activeColorSpace != .HLG_BT2020 {
+                        try? device.lockForConfiguration()
+                        device.activeColorSpace = .HLG_BT2020
+                        device.unlockForConfiguration()
+                    }
+                }
+
                 if let videoConn = self.movieOutput.connection(with: .video) {
                     let available = self.movieOutput.availableVideoCodecTypes
                     let targetCodec: AVVideoCodecType = (self.isVideoHDREnabled || codec == .hevc) && available.contains(.hevc) ? .hevc : (available.contains(.h264) ? .h264 : (available.first ?? .hevc))
@@ -1403,9 +1435,11 @@ final class CameraController: ObservableObject {
                 // 7. 配置视频专属 16:9 格式、帧率与防抖
                 self.configureVideoFormatInternal(quality, stabilization: stabilization)
 
-                // 8. 应用色彩空间
+                // 8. 应用色彩空间：若开启视频 HDR，锁定 HLG_BT2020；若未开启 HDR，应用用户选择的 SDR 色彩空间
                 if let device = self.cameraDevice {
-                    let targetSpace = colorSpace.avColorSpace
+                    let targetSpace: AVCaptureColorSpace = self.isVideoHDREnabled
+                        ? (device.activeFormat.supportedColorSpaces.contains(.HLG_BT2020) ? .HLG_BT2020 : colorSpace.avColorSpace)
+                        : colorSpace.avColorSpace
                     if device.activeFormat.supportedColorSpaces.contains(targetSpace) {
                         do {
                             try device.lockForConfiguration()
@@ -1674,6 +1708,7 @@ final class CameraController: ObservableObject {
         sessionQueue.async { [weak self] in
             guard let self else { return }
             self.configureVideoFormat(quality, stabilization: stabilization)
+            self.configureMovieConnection(stabilization: stabilization, codec: .hevc)
         }
     }
 
@@ -1727,17 +1762,26 @@ final class CameraController: ObservableObject {
             $0.maxFrameRate >= targetFPS - 0.5
         }
         let curSupportsStab = desiredMode == .off || device.activeFormat.isVideoStabilizationModeSupported(desiredMode)
+        let is10BitHLG = device.activeFormat.supportedColorSpaces.contains(.HLG_BT2020)
         let curHDRMatches = isVideoHDREnabled
-            ? (device.activeFormat.isVideoHDRSupported && device.activeColorSpace == .HLG_BT2020)
-            : (!device.isVideoHDREnabled)
+            ? (is10BitHLG ? (device.activeColorSpace == .HLG_BT2020) : (device.activeFormat.isVideoHDRSupported && device.isVideoHDREnabled))
+            : (device.activeColorSpace != .HLG_BT2020 && !device.isVideoHDREnabled)
         let curIsSafeCodec = !isProResOr422Format(device.activeFormat)
 
         if curShort == targetShort && curLong == targetLong && is16by9 && curSupportsFPS && curSupportsStab && curHDRMatches && curIsSafeCodec {
             do {
                 try device.lockForConfiguration()
-                applySafeVideoHDR(to: device, enabled: isVideoHDREnabled)
-                if isVideoHDREnabled && device.activeFormat.supportedColorSpaces.contains(.HLG_BT2020) {
-                    device.activeColorSpace = .HLG_BT2020
+                if isVideoHDREnabled {
+                    if is10BitHLG {
+                        device.activeColorSpace = .HLG_BT2020
+                    } else {
+                        applySafeVideoHDR(to: device, enabled: true)
+                    }
+                } else {
+                    applySafeVideoHDR(to: device, enabled: false)
+                    if device.activeColorSpace == .HLG_BT2020 {
+                        device.activeColorSpace = .sRGB
+                    }
                 }
                 device.unlockForConfiguration()
             } catch {}
@@ -1772,16 +1816,23 @@ final class CameraController: ObservableObject {
             }
         }
 
-        // 若开启视频 HDR，优先锁定同时支持 10-bit HLG_BT2020 色彩空间与 HDR 的硬件格式（已排除 ProRes，纯 4:2:0 10-bit HEVC 格式）
+        // 若开启视频 HDR，优先锁定支持 10-bit HLG_BT2020 广色域高动态范围的原生硬件视频格式（已排除 ProRes，纯 4:2:0 10-bit HEVC 格式，苹果标准 10-bit HDR / 杜比视界）
+        // 关键：苹果 AVFoundation 铁律：10-bit HLG 原生格式属于恒定高动态范围，isVideoHDRSupported 属性固定为 false（该属性专指 8-bit EDR 双快门融合技术）。因此绝不能要求 isVideoHDRSupported == true，否则会直接排除所有 10-bit 杜比视界/HLG 格式！
         if isVideoHDREnabled {
-            let hlgCandidates = candidates.filter { $0.isVideoHDRSupported && $0.supportedColorSpaces.contains(.HLG_BT2020) }
+            let hlgCandidates = candidates.filter { $0.supportedColorSpaces.contains(.HLG_BT2020) }
             if !hlgCandidates.isEmpty {
                 candidates = hlgCandidates
             } else {
-                let hdrCandidates = candidates.filter { $0.isVideoHDRSupported }
-                if !hdrCandidates.isEmpty {
-                    candidates = hdrCandidates
+                let edrCandidates = candidates.filter { $0.isVideoHDRSupported }
+                if !edrCandidates.isEmpty {
+                    candidates = edrCandidates
                 }
+            }
+        } else {
+            // 未开启 HDR 时，严格选用标准 SDR 格式，避免非预期的 HLG_BT2020 导致画面发灰
+            let sdrCandidates = candidates.filter { !$0.supportedColorSpaces.contains(.HLG_BT2020) }
+            if !sdrCandidates.isEmpty {
+                candidates = sdrCandidates
             }
         }
 
@@ -1810,9 +1861,17 @@ final class CameraController: ObservableObject {
         do {
             try device.lockForConfiguration()
             device.activeFormat = format
-            applySafeVideoHDR(to: device, enabled: isVideoHDREnabled)
-            if isVideoHDREnabled && format.supportedColorSpaces.contains(.HLG_BT2020) {
-                device.activeColorSpace = .HLG_BT2020
+            if isVideoHDREnabled {
+                if format.supportedColorSpaces.contains(.HLG_BT2020) {
+                    device.activeColorSpace = .HLG_BT2020
+                } else {
+                    applySafeVideoHDR(to: device, enabled: true)
+                }
+            } else {
+                applySafeVideoHDR(to: device, enabled: false)
+                if device.activeColorSpace == .HLG_BT2020 {
+                    device.activeColorSpace = .sRGB
+                }
             }
             device.unlockForConfiguration()
         } catch {}
@@ -5313,7 +5372,8 @@ struct CameraView: View {
                                         quality: option,
                                         stabilization: stabilization,
                                         codec: videoCodec,
-                                        colorSpace: videoColorSpace
+                                        colorSpace: videoColorSpace,
+                                        hdr: videoHDREnabled
                                     )
                                 }
                             } label: {
@@ -5343,6 +5403,15 @@ struct CameraView: View {
                     // 2. 视频 10-bit HDR 开关（紧邻规格并排常驻，无需滚动即可一键开关！）
                     Button {
                         videoHDREnabled.toggle()
+                        if videoHDREnabled {
+                            videoColorSpace = .hlgHDR
+                            storedVideoColorSpace = VideoColorSpacePreference.hlgHDR.rawValue
+                        } else {
+                            if videoColorSpace == .hlgHDR {
+                                videoColorSpace = .rec709
+                                storedVideoColorSpace = VideoColorSpacePreference.rec709.rawValue
+                            }
+                        }
                         GrainHaptics.selection(enabled: true)
                         camera.setVideoHDR(videoHDREnabled, quality: videoQuality, stabilization: stabilization)
                     } label: {
@@ -5388,7 +5457,9 @@ struct CameraView: View {
                                     Button {
                                         videoColorSpace = pref
                                         storedVideoColorSpace = pref.rawValue
-                                        camera.applyColorSpace(pref)
+                                        let isHDR = (pref == .hlgHDR)
+                                        videoHDREnabled = isHDR
+                                        camera.setVideoHDR(isHDR, quality: videoQuality, stabilization: stabilization)
                                         GrainHaptics.selection(enabled: true)
                                     } label: {
                                         HStack {
@@ -5414,7 +5485,8 @@ struct CameraView: View {
                                             quality: videoQuality,
                                             stabilization: stabilization,
                                             codec: codec,
-                                            colorSpace: videoColorSpace
+                                            colorSpace: videoColorSpace,
+                                            hdr: videoHDREnabled
                                         )
                                     } label: {
                                         HStack {

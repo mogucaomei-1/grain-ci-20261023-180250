@@ -350,12 +350,20 @@ enum LibraryFormatFilter: String, CaseIterable, Identifiable {
     func matches(_ label: String?, mediaType: PHAssetMediaType? = nil) -> Bool {
         guard self != .all else { return true }
         if self == .video {
-            if mediaType == .video { return true }
+            // “视频”筛选类目必须且只能是视频，绝对不能混入任何照片图片
+            if let mediaType = mediaType {
+                return mediaType == .video
+            }
             guard let label else { return false }
-            return label.contains("fps") || label.contains("4K") || label.contains("1080P") || label.contains("720P") || label.contains("P") || label == "VIDEO"
+            return label == "VIDEO" || label.contains("fps")
+        } else {
+            // 照片格式类目（RAW, HEIF, PNG, JPEG, TIFF）必须严格排除视频资源
+            if let mediaType = mediaType, mediaType == .video {
+                return false
+            }
+            guard let label else { return false }
+            return label == title
         }
-        guard let label else { return false }
-        return label == title
     }
 }
 
