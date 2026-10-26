@@ -3245,8 +3245,6 @@ private enum CameraImageProcessor {
             }
 
             // decoded 已按 orientation 转正，裁切与缩放都在正向坐标系里进行
-            let sharpening = UserDefaults.standard
-                .object(forKey: "cameraSharpening") as? Int ?? 0
             let image = applySharpness(
                 to: resized(
                     crop(decoded, to: configuration.aspect.ratio),
