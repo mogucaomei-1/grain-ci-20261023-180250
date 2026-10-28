@@ -461,7 +461,7 @@ enum LibraryMediaTypeFilter: String, CaseIterable, Identifiable {
 struct PhotoLibraryHome: View {
     @ObservedObject var library: PhotoLibraryViewModel
     @Binding var externalIsSelecting: Bool
-    let onSelect: (PHAsset) -> Void
+    let onSelect: (PHAsset, [PHAsset]) -> Void
 
     private let usesExternalSelecting: Bool
     @State private var localIsSelecting = false
@@ -479,7 +479,7 @@ struct PhotoLibraryHome: View {
     init(
         library: PhotoLibraryViewModel,
         isSelecting: Binding<Bool>? = nil,
-        onSelect: @escaping (PHAsset) -> Void
+        onSelect: @escaping (PHAsset, [PHAsset]) -> Void
     ) {
         self.library = library
         if let isSelecting {
@@ -1147,7 +1147,7 @@ struct PhotoLibraryHome: View {
                     if isSelecting {
                         toggleSelection(asset)
                     } else {
-                        onSelect(asset)
+                        onSelect(asset, visibleAssets)
                     }
                 case .second:
                     if !isSelecting {
@@ -1640,6 +1640,11 @@ struct PhotoDetailBrowserView: View {
 
     @State private var currentAssetID: String
     @State private var showDeleteConfirm = false
+    @State private var dragOffsetY: CGFloat = 0
+    @State private var isDraggingDown = false
+    @State private var isDismissing = false
+    @State private var isScrubbingFilmstrip = false
+    @State private var dragStartIndex: Int = 0
 
     init(
         initialAsset: PHAsset,
@@ -1666,22 +1671,45 @@ struct PhotoDetailBrowserView: View {
         allAssets.first { $0.localIdentifier == currentAssetID } ?? allAssets.first
     }
 
+    private var dragProgress: CGFloat {
+        min(1.0, max(0.0, dragOffsetY / 280.0))
+    }
+
+    private var backgroundOpacity: Double {
+        max(0.0, 1.0 - Double(dragProgress) * 0.85)
+    }
+
+    private var controlsOpacity: Double {
+        max(0.0, 1.0 - Double(dragProgress) * 2.5)
+    }
+
+    private var photoScale: CGFloat {
+        max(0.72, 1.0 - dragProgress * 0.28)
+    }
+
     var body: some View {
         ZStack {
-            GrainTheme.black.ignoresSafeArea()
+            GrainTheme.black
+                .opacity(backgroundOpacity)
+                .ignoresSafeArea()
 
             VStack(spacing: 0) {
                 topNavigationBar
+                    .opacity(controlsOpacity)
 
                 Spacer(minLength: 0)
 
                 mainPagingView
+                    .offset(y: max(0, dragOffsetY))
+                    .scaleEffect(photoScale)
 
                 Spacer(minLength: 0)
 
                 thumbnailFilmstrip
+                    .opacity(controlsOpacity)
 
                 bottomActionBar
+                    .opacity(controlsOpacity)
             }
         }
         .ignoresSafeArea(.container, edges: .bottom)
@@ -1753,6 +1781,42 @@ struct PhotoDetailBrowserView: View {
             }
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
+        .contentShape(Rectangle())
+        .simultaneousGesture(downwardDragGesture)
+    }
+
+    private var downwardDragGesture: some Gesture {
+        DragGesture(minimumDistance: 8)
+            .onChanged { value in
+                if !isDraggingDown {
+                    if value.translation.height > 8 && abs(value.translation.height) > abs(value.translation.width) * 1.3 {
+                        isDraggingDown = true
+                    }
+                }
+                if isDraggingDown && value.translation.height > 0 {
+                    dragOffsetY = value.translation.height
+                }
+            }
+            .onEnded { value in
+                if isDraggingDown {
+                    let velocity = value.predictedEndTranslation.height - value.translation.height
+                    if value.translation.height > 80 || velocity > 150 {
+                        isDismissing = true
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            dragOffsetY = 800
+                        }
+                        GrainHaptics.selection(enabled: true)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                            onDismiss()
+                        }
+                    } else {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
+                            dragOffsetY = 0
+                        }
+                    }
+                    isDraggingDown = false
+                }
+            }
     }
 
     private var thumbnailFilmstrip: some View {
@@ -1784,9 +1848,14 @@ struct PhotoDetailBrowserView: View {
                 .padding(.horizontal, 16)
                 .frame(height: 48)
             }
+            .scrollDisabled(true)
+            .contentShape(Rectangle())
+            .simultaneousGesture(filmstripDragGesture(stripProxy: stripProxy))
             .onChange(of: currentAssetID) { _, newID in
-                withAnimation(.easeOut(duration: 0.2)) {
-                    stripProxy.scrollTo(newID, anchor: .center)
+                if !isScrubbingFilmstrip {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        stripProxy.scrollTo(newID, anchor: .center)
+                    }
                 }
             }
             .onAppear {
@@ -1795,76 +1864,105 @@ struct PhotoDetailBrowserView: View {
         }
     }
 
+    private func filmstripDragGesture(stripProxy: ScrollViewProxy) -> some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                if !isScrubbingFilmstrip {
+                    isScrubbingFilmstrip = true
+                    dragStartIndex = allAssets.firstIndex(where: { $0.localIdentifier == currentAssetID }) ?? 0
+                }
+                let step: CGFloat = 26.0
+                let delta = -Int(round(value.translation.width / step))
+                let targetIndex = max(0, min(allAssets.count - 1, dragStartIndex + delta))
+                let newAsset = allAssets[targetIndex]
+                if newAsset.localIdentifier != currentAssetID {
+                    currentAssetID = newAsset.localIdentifier
+                    GrainHaptics.selection(enabled: true)
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        stripProxy.scrollTo(newAsset.localIdentifier, anchor: .center)
+                    }
+                }
+            }
+            .onEnded { value in
+                let velocity = value.predictedEndTranslation.width - value.translation.width
+                let extra = -Int(round(velocity / 80.0))
+                let currentIndex = allAssets.firstIndex(where: { $0.localIdentifier == currentAssetID }) ?? 0
+                let finalIndex = max(0, min(allAssets.count - 1, currentIndex + extra))
+                let finalAsset = allAssets[finalIndex]
+                if finalAsset.localIdentifier != currentAssetID {
+                    currentAssetID = finalAsset.localIdentifier
+                    GrainHaptics.selection(enabled: true)
+                }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    stripProxy.scrollTo(finalAsset.localIdentifier, anchor: .center)
+                }
+                isScrubbingFilmstrip = false
+            }
+    }
+
     private var bottomActionBar: some View {
         HStack {
-            // 分享开关
-            Button {
-                if let asset = currentAsset {
-                    onShare(asset)
-                }
-            } label: {
-                Image(systemName: "square.and.arrow.up")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(GrainTheme.paper)
-                    .liquidGlassCircle(size: 38)
-            }
-            .buttonStyle(LiquidGlassButtonStyle())
-            .accessibilityLabel("分享照片")
-
             Spacer()
 
-            // 照片信息
-            Button {
-                if let asset = currentAsset {
-                    onShowInfo(asset)
+            HStack(spacing: 18) {
+                // 1. 删除
+                Button {
+                    showDeleteConfirm = true
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(GrainTheme.danger)
+                        .liquidGlassCircle(size: 38)
                 }
-            } label: {
-                Image(systemName: "info.circle")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(GrainTheme.paper)
-                    .liquidGlassCircle(size: 38)
-            }
-            .buttonStyle(LiquidGlassButtonStyle())
-            .accessibilityLabel("查看照片信息")
+                .buttonStyle(LiquidGlassButtonStyle())
+                .accessibilityLabel("删除照片")
 
-            Spacer()
-
-            // 照片编辑开关
-            Button {
-                if let asset = currentAsset {
-                    onEdit(asset)
+                // 2. 分享
+                Button {
+                    if let asset = currentAsset {
+                        onShare(asset)
+                    }
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(GrainTheme.paper)
+                        .liquidGlassCircle(size: 38)
                 }
-            } label: {
-                HStack(spacing: 5) {
+                .buttonStyle(LiquidGlassButtonStyle())
+                .accessibilityLabel("分享照片")
+
+                // 3. 图片信息
+                Button {
+                    if let asset = currentAsset {
+                        onShowInfo(asset)
+                    }
+                } label: {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(GrainTheme.paper)
+                        .liquidGlassCircle(size: 38)
+                }
+                .buttonStyle(LiquidGlassButtonStyle())
+                .accessibilityLabel("查看照片信息")
+
+                // 4. 编辑 (仅保留图标，无文字)
+                Button {
+                    if let asset = currentAsset {
+                        onEdit(asset)
+                    }
+                } label: {
                     Image(systemName: "slider.horizontal.2.square.on.square")
-                        .font(.system(size: 13, weight: .bold))
-                    Text("编辑")
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(GrainTheme.paper)
+                        .liquidGlassCircle(size: 38)
                 }
-                .foregroundStyle(Color.black)
-                .padding(.horizontal, 14)
-                .frame(height: 38)
-                .background(Color.white, in: Capsule())
-                .shadow(color: Color.black.opacity(0.18), radius: 4, y: 1)
+                .buttonStyle(LiquidGlassButtonStyle())
+                .accessibilityLabel("编辑照片")
             }
-            .buttonStyle(LiquidGlassButtonStyle())
-            .accessibilityLabel("进入照片编辑")
 
             Spacer()
-
-            // 删除开关
-            Button {
-                showDeleteConfirm = true
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(GrainTheme.danger)
-                    .liquidGlassCircle(size: 38)
-            }
-            .buttonStyle(LiquidGlassButtonStyle())
-            .accessibilityLabel("删除照片")
         }
-        .padding(.horizontal, 24)
+        .padding(.horizontal, 18)
         .frame(height: 44)
         .padding(.bottom, 22)
     }

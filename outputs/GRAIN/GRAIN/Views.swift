@@ -29,6 +29,7 @@ struct RootView: View {
     @State private var targetCameraMode: CameraMode = .photo
     @State private var isLibrarySelecting = false
     @State private var browsingAsset: PHAsset? = nil
+    @State private var browsingAssetList: [PHAsset] = []
     @State private var browserShareURL: URL? = nil
     @State private var showBrowserShareSheet = false
     @State private var browserInfoAsset: PHAsset? = nil
@@ -44,7 +45,8 @@ struct RootView: View {
 
             NavigationStack {
                 VStack(spacing: 0) {
-                    PhotoLibraryHome(library: photoLibrary, isSelecting: $isLibrarySelecting) { asset in
+                    PhotoLibraryHome(library: photoLibrary, isSelecting: $isLibrarySelecting) { asset, assets in
+                        browsingAssetList = assets
                         withAnimation(.easeInOut(duration: 0.2)) {
                             browsingAsset = asset
                         }
@@ -285,7 +287,7 @@ struct RootView: View {
         if let asset = browsingAsset, editor.photo == nil {
             PhotoDetailBrowserView(
                 initialAsset: asset,
-                allAssets: photoLibrary.assets,
+                allAssets: browsingAssetList.isEmpty ? photoLibrary.assets : browsingAssetList,
                 library: photoLibrary,
                 onDismiss: {
                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -328,6 +330,7 @@ struct RootView: View {
     }
 
     private func handleBrowserDelete(_ targetAsset: PHAsset) {
+        browsingAssetList.removeAll { $0.localIdentifier == targetAsset.localIdentifier }
         Task {
             try? await photoLibrary.deleteAssets(identifiers: [targetAsset.localIdentifier])
             await photoLibrary.refresh()
