@@ -412,6 +412,340 @@ struct FilmOrderEditorView: View {
 
 }
 
+/// iOS 27 Liquid Glass AI 智能调色与 API 调节配置卡片
+struct AiApiSettingsCard: View {
+    @AppStorage("aiApiEnabled") private var aiApiEnabled = true
+    @AppStorage("aiApiBaseURL") private var aiApiBaseURL = "https://api.deepseek.com"
+    @AppStorage("aiApiKey") private var aiApiKey = ""
+    @AppStorage("aiApiModel") private var aiApiModel = "deepseek-chat"
+    @AppStorage("aiApiTemperature") private var aiApiTemperature = 0.7
+    @AppStorage("aiApiStylePrompt") private var aiApiStylePrompt = "胶片质感, 高动态范围, 柔和高光, 细致颗粒"
+
+    @State private var showApiKey = false
+    @State private var isTesting = false
+    @State private var testResultText: String?
+    @State private var testIsSuccess: Bool = false
+
+    enum ProviderPreset: String, CaseIterable, Identifiable {
+        case deepseek = "DeepSeek"
+        case openai = "OpenAI"
+        case openrouter = "OpenRouter"
+        case custom = "自定义"
+
+        var id: String { rawValue }
+
+        var baseURL: String {
+            switch self {
+            case .deepseek: "https://api.deepseek.com"
+            case .openai: "https://api.openai.com/v1"
+            case .openrouter: "https://openrouter.ai/api/v1"
+            case .custom: ""
+            }
+        }
+
+        var defaultModel: String {
+            switch self {
+            case .deepseek: "deepseek-chat"
+            case .openai: "gpt-4o"
+            case .openrouter: "deepseek/deepseek-chat"
+            case .custom: ""
+            }
+        }
+    }
+
+    private func applyPreset(_ preset: ProviderPreset) {
+        if preset != .custom {
+            aiApiBaseURL = preset.baseURL
+            aiApiModel = preset.defaultModel
+        }
+        GrainHaptics.selection(enabled: true)
+    }
+
+    private func testConnection() {
+        let cleanURLString = aiApiBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: cleanURLString) else {
+            testIsSuccess = false
+            testResultText = "URL 格式不合法"
+            GrainHaptics.error(enabled: true)
+            return
+        }
+
+        isTesting = true
+        testResultText = nil
+
+        let testEndpoint = url.appendingPathComponent("models")
+        var request = URLRequest(url: testEndpoint, timeoutInterval: 8.0)
+        request.httpMethod = "GET"
+        let cleanKey = aiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanKey.isEmpty {
+            request.setValue("Bearer \(cleanKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        let startTime = CFAbsoluteTimeGetCurrent()
+
+        URLSession.shared.dataTask(with: request) { _, response, error in
+            let elapsed = Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000)
+            DispatchQueue.main.async {
+                self.isTesting = false
+                if let httpResponse = response as? HTTPURLResponse {
+                    if (200...299).contains(httpResponse.statusCode) {
+                        self.testIsSuccess = true
+                        self.testResultText = "连接成功 (HTTP \(httpResponse.statusCode)) · \(elapsed)ms"
+                        GrainHaptics.success(enabled: true)
+                    } else if httpResponse.statusCode == 401 {
+                        self.testIsSuccess = false
+                        self.testResultText = "服务器已响应但 API Key 无效 (401)"
+                        GrainHaptics.warning(enabled: true)
+                    } else {
+                        self.testIsSuccess = true
+                        self.testResultText = "连通正常 (HTTP \(httpResponse.statusCode)) · \(elapsed)ms"
+                        GrainHaptics.selection(enabled: true)
+                    }
+                } else if let error = error {
+                    self.testIsSuccess = false
+                    self.testResultText = "连接失败: \(error.localizedDescription)"
+                    GrainHaptics.error(enabled: true)
+                } else {
+                    self.testIsSuccess = false
+                    self.testResultText = "未知连接状态"
+                }
+            }
+        }.resume()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            // Header
+            HStack(spacing: 12) {
+                Image(systemName: "sparkles.rectangle.stack.fill")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(GrainTheme.accent)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text("AI 智能调色与 API 调节")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(GrainTheme.paper)
+                        Text("API 2.0")
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(GrainTheme.accent)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1.5)
+                            .background(GrainTheme.accent.opacity(0.18), in: Capsule())
+                    }
+                    Text("自定义大模型色彩科学接口、参数与提示词")
+                        .font(.system(size: 9, design: .rounded))
+                        .foregroundStyle(GrainTheme.muted)
+                }
+                Spacer()
+                Toggle("", isOn: $aiApiEnabled)
+                    .labelsHidden()
+                    .tint(GrainTheme.accent)
+            }
+
+            if aiApiEnabled {
+                Divider()
+                    .overlay(Color.white.opacity(0.08))
+
+                // Provider Presets Chips
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("服务商预设")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(GrainTheme.muted)
+
+                    HStack(spacing: 6) {
+                        ForEach(ProviderPreset.allCases) { preset in
+                            let isSelected = (preset != .custom && aiApiBaseURL == preset.baseURL)
+                            Button {
+                                applyPreset(preset)
+                            } label: {
+                                Text(preset.rawValue)
+                                    .font(.system(size: 9.5, weight: isSelected ? .bold : .medium, design: .rounded))
+                                    .foregroundStyle(isSelected ? GrainTheme.black : GrainTheme.paper)
+                                    .padding(.horizontal, 10)
+                                    .frame(height: 25)
+                                    .background(isSelected ? GrainTheme.accent : GrainTheme.raised, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                // API Base URL Field
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("接口地址 (Base URL)")
+                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(GrainTheme.muted)
+                    HStack(spacing: 8) {
+                        Image(systemName: "link")
+                            .font(.system(size: 11))
+                            .foregroundStyle(GrainTheme.muted)
+                            .frame(width: 14)
+                        TextField("https://api.openai.com/v1", text: $aiApiBaseURL)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(GrainTheme.paper)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(GrainTheme.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                    }
+                }
+
+                // API Key Field
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("API Key (密钥)")
+                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(GrainTheme.muted)
+                    HStack(spacing: 8) {
+                        Image(systemName: "key.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(GrainTheme.muted)
+                            .frame(width: 14)
+                        if showApiKey {
+                            TextField("sk-...", text: $aiApiKey)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(GrainTheme.paper)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                        } else {
+                            SecureField("sk-...", text: $aiApiKey)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(GrainTheme.paper)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                        }
+                        Button {
+                            showApiKey.toggle()
+                            GrainHaptics.selection(enabled: true)
+                        } label: {
+                            Image(systemName: showApiKey ? "eye.slash" : "eye")
+                                .font(.system(size: 11))
+                                .foregroundStyle(GrainTheme.muted)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(GrainTheme.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                    }
+                }
+
+                // Model Name Field
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("模型名称 (Model)")
+                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(GrainTheme.muted)
+                    HStack(spacing: 8) {
+                        Image(systemName: "cpu")
+                            .font(.system(size: 11))
+                            .foregroundStyle(GrainTheme.muted)
+                            .frame(width: 14)
+                        TextField("gpt-4o / deepseek-chat", text: $aiApiModel)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(GrainTheme.paper)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(GrainTheme.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                    }
+                }
+
+                // Temperature Slider
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("采样温度 (Temperature)")
+                            .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                            .foregroundStyle(GrainTheme.muted)
+                        Spacer()
+                        Text(String(format: "%.2f", aiApiTemperature))
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundStyle(GrainTheme.accent)
+                    }
+                    Slider(value: $aiApiTemperature, in: 0.0...1.5, step: 0.05)
+                        .tint(GrainTheme.accent)
+                }
+
+                // Style Prompt Field
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("风格提示词偏好 (Style Prompt)")
+                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(GrainTheme.muted)
+                    HStack(spacing: 8) {
+                        Image(systemName: "paintpalette")
+                            .font(.system(size: 11))
+                            .foregroundStyle(GrainTheme.muted)
+                            .frame(width: 14)
+                        TextField("胶片感、高宽容度、柔和高光", text: $aiApiStylePrompt)
+                            .font(.system(size: 11, design: .rounded))
+                            .foregroundStyle(GrainTheme.paper)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(GrainTheme.black.opacity(0.4), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
+                    }
+                }
+
+                // Test Connection Button & Status
+                HStack(spacing: 10) {
+                    Button {
+                        testConnection()
+                    } label: {
+                        HStack(spacing: 5) {
+                            if isTesting {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .tint(GrainTheme.black)
+                            } else {
+                                Image(systemName: "bolt.horizontal.fill")
+                                    .font(.system(size: 10, weight: .bold))
+                            }
+                            Text(isTesting ? "测试中..." : "测试连接")
+                                .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                        }
+                        .foregroundStyle(GrainTheme.black)
+                        .padding(.horizontal, 12)
+                        .frame(height: 28)
+                        .background(GrainTheme.accent, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isTesting)
+
+                    if let result = testResultText {
+                        HStack(spacing: 4) {
+                            Image(systemName: testIsSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(testIsSuccess ? Color.green : Color.orange)
+                            Text(result)
+                                .font(.system(size: 9.5, design: .rounded))
+                                .foregroundStyle(testIsSuccess ? Color.green : Color.orange)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer()
+                }
+            }
+        }
+        .padding(16)
+        .liquidGlass(cornerRadius: 18)
+    }
+}
+
 struct AppSettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -464,7 +798,7 @@ struct AppSettingsView: View {
 
     var body: some View {
         ZStack {
-            GrainTheme.black.ignoresSafeArea()
+            LiquidGlassBackground().ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                 HStack {
@@ -479,11 +813,14 @@ struct AppSettingsView: View {
                     Button { dismiss() } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 11, weight: .bold))
-                            .frame(width: 31, height: 31)
-                            .background(GrainTheme.raised, in: Circle())
+                            .frame(width: 32, height: 32)
+                            .liquidGlassCircle(size: 32)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(LiquidGlassButtonStyle())
                 }
+
+                // AI 智能调色与 API 调节（全新功能）
+                AiApiSettingsCard()
 
                 // 外观模式（主页与编辑页面，不控制相机）
                 HStack(spacing: 12) {
@@ -518,11 +855,7 @@ struct AppSettingsView: View {
                     }
                 }
                 .padding(16)
-                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 17)
-                        .stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlass(cornerRadius: 18)
 
                 // 相机外观（独立控制拍照与视频录制页面的白天/黑夜）
                 HStack(spacing: 12) {
@@ -557,11 +890,7 @@ struct AppSettingsView: View {
                     }
                 }
                 .padding(16)
-                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 17)
-                        .stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlass(cornerRadius: 18)
 
                 HStack(spacing: 12) {
                     Image(systemName: "power")
@@ -586,11 +915,7 @@ struct AppSettingsView: View {
                     }
                 }
                 .padding(16)
-                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 17)
-                        .stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlass(cornerRadius: 18)
 
                 HStack(spacing: 12) {
                     Image(systemName: "waveform")
@@ -615,11 +940,7 @@ struct AppSettingsView: View {
                         }
                 }
                 .padding(16)
-                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 17)
-                        .stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlass(cornerRadius: 18)
 
                 HStack(spacing: 12) {
                     Image(systemName: "waveform.path.ecg.rectangle")
@@ -639,11 +960,7 @@ struct AppSettingsView: View {
                         .tint(GrainTheme.accent)
                 }
                 .padding(16)
-                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 17)
-                        .stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlass(cornerRadius: 18)
 
                 // 桌面与锁屏小组件（官方 HIG 规范第 1 版）
                 Button {
@@ -676,11 +993,7 @@ struct AppSettingsView: View {
                             .foregroundStyle(GrainTheme.muted)
                     }
                     .padding(16)
-                    .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 17)
-                            .stroke(GrainTheme.line, lineWidth: 0.8)
-                    }
+                    .liquidGlass(cornerRadius: 18)
                 }
                 .buttonStyle(.plain)
 
@@ -702,11 +1015,7 @@ struct AppSettingsView: View {
                         .tint(GrainTheme.accent)
                 }
                 .padding(16)
-                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 17)
-                        .stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlass(cornerRadius: 18)
 
                 HStack(spacing: 12) {
                     Image(systemName: "folder")
@@ -726,11 +1035,7 @@ struct AppSettingsView: View {
                         .tint(GrainTheme.accent)
                 }
                 .padding(16)
-                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 17)
-                        .stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlass(cornerRadius: 18)
 
                 HStack(spacing: 12) {
                     Image(systemName: "puzzlepiece.extension.fill")
@@ -750,11 +1055,7 @@ struct AppSettingsView: View {
                         .tint(GrainTheme.accent)
                 }
                 .padding(16)
-                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 17)
-                        .stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlass(cornerRadius: 18)
 
                 HStack(spacing: 12) {
                     Image(systemName: "location.fill")
@@ -782,11 +1083,7 @@ struct AppSettingsView: View {
                         }
                 }
                 .padding(16)
-                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 17)
-                        .stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlass(cornerRadius: 18)
 
                 HStack(spacing: 12) {
                     Image(systemName: "camera.metering.center.weighted")
@@ -806,11 +1103,7 @@ struct AppSettingsView: View {
                         .tint(GrainTheme.accent)
                 }
                 .padding(16)
-                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 17)
-                        .stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlass(cornerRadius: 18)
 
                 // 快门声音
                 HStack(spacing: 12) {
@@ -831,11 +1124,7 @@ struct AppSettingsView: View {
                         .tint(GrainTheme.accent)
                 }
                 .padding(16)
-                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 17)
-                        .stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlass(cornerRadius: 18)
 
                 HStack(spacing: 12) {
                     Image(systemName: "person.crop.rectangle")
@@ -855,11 +1144,7 @@ struct AppSettingsView: View {
                         .tint(GrainTheme.accent)
                 }
                 .padding(16)
-                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 17)
-                        .stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlass(cornerRadius: 18)
 
                 // 拍摄锐度
                 VStack(alignment: .leading, spacing: 9) {
@@ -907,11 +1192,7 @@ struct AppSettingsView: View {
                     }
                 }
                 .padding(16)
-                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 17)
-                        .stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlass(cornerRadius: 18)
 
                 // 峰值对焦颜色
                 HStack(spacing: 12) {
@@ -951,11 +1232,7 @@ struct AppSettingsView: View {
                     }
                 }
                 .padding(16)
-                .background(GrainTheme.surface, in: RoundedRectangle(cornerRadius: 17))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 17)
-                        .stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlass(cornerRadius: 18)
             }
             .padding(20)
             }

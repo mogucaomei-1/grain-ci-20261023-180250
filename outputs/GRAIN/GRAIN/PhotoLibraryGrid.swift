@@ -1,3 +1,4 @@
+import AVFoundation
 import Photos
 import SwiftUI
 import UIKit
@@ -263,18 +264,25 @@ enum PhotoLibraryAssetLoader {
     enum LoadError: LocalizedError {
         case noResource
         case downloadFailed
+        case exportFailed
 
         var errorDescription: String? {
             switch self {
             case .noResource:
-                "iCloud 中没有找到这张照片的原始资源。"
+                "iCloud 中未找到该素材的原始文件。"
             case .downloadFailed:
-                "无法从 iCloud 下载原始照片，请检查网络后重试。"
+                "无法从 iCloud 下载原始文件，请检查网络后重试。"
+            case .exportFailed:
+                "无法导出视频文件，请稍后重试。"
             }
         }
     }
 
     static func loadOriginal(asset: PHAsset) async throws -> URL {
+        if asset.mediaType == .video {
+            return try await loadVideo(asset: asset)
+        }
+
         let rawMarkers = ["arw", "srf", "sr2", "dng", "camera-raw"]
         let allResources = PHAssetResource.assetResources(for: asset)
         let matchingResources = allResources.filter {
@@ -310,6 +318,97 @@ enum PhotoLibraryAssetLoader {
                     continuation.resume(returning: destination)
                 } else {
                     continuation.resume(throwing: LoadError.downloadFailed)
+                }
+            }
+        }
+    }
+
+    private static func loadVideo(asset: PHAsset) async throws -> URL {
+        let allResources = PHAssetResource.assetResources(for: asset)
+        let matchingResources = allResources.filter {
+            $0.assetLocalIdentifier == asset.localIdentifier
+        }
+        let resources = matchingResources.isEmpty ? allResources : matchingResources
+        let videoResource = resources.first(where: { $0.type == .fullSizeVideo })
+            ?? resources.first(where: { $0.type == .video })
+            ?? resources.first(where: { $0.type == .pairedVideo })
+
+        if let resource = videoResource {
+            let originalExtension = (resource.originalFilename as NSString).pathExtension
+            let ext = originalExtension.isEmpty ? "mov" : originalExtension
+            let destination = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString)
+                .appendingPathExtension(ext)
+            let options = PHAssetResourceRequestOptions()
+            options.isNetworkAccessAllowed = true
+
+            do {
+                return try await withCheckedThrowingContinuation { continuation in
+                    PHAssetResourceManager.default().writeData(
+                        for: resource,
+                        toFile: destination,
+                        options: options
+                    ) { error in
+                        if error == nil {
+                            continuation.resume(returning: destination)
+                        } else {
+                            continuation.resume(throwing: error ?? LoadError.downloadFailed)
+                        }
+                    }
+                }
+            } catch {
+                // 如果直接写资源失败，回退到 requestAVAsset 导出
+            }
+        }
+
+        // 回退方案：通过 PHImageManager requestAVAsset 读取
+        return try await withCheckedThrowingContinuation { continuation in
+            let options = PHVideoRequestOptions()
+            options.isNetworkAccessAllowed = true
+            options.deliveryMode = .highQualityFormat
+
+            PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, _ in
+                if let urlAsset = avAsset as? AVURLAsset {
+                    let ext = urlAsset.url.pathExtension.isEmpty ? "mov" : urlAsset.url.pathExtension
+                    let dest = FileManager.default.temporaryDirectory
+                        .appendingPathComponent(UUID().uuidString)
+                        .appendingPathExtension(ext)
+                    do {
+                        try? FileManager.default.removeItem(at: dest)
+                        try FileManager.default.copyItem(at: urlAsset.url, to: dest)
+                        continuation.resume(returning: dest)
+                        return
+                    } catch {
+                        // 复制失败则走后续导出
+                    }
+                }
+
+                guard let avAsset else {
+                    continuation.resume(throwing: LoadError.noResource)
+                    return
+                }
+
+                let dest = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString)
+                    .appendingPathExtension("mov")
+                try? FileManager.default.removeItem(at: dest)
+
+                guard let export = AVAssetExportSession(
+                    asset: avAsset,
+                    presetName: AVAssetExportPresetPassthrough
+                ) else {
+                    continuation.resume(throwing: LoadError.exportFailed)
+                    return
+                }
+
+                export.outputURL = dest
+                export.outputFileType = .mov
+                export.exportAsynchronously {
+                    if export.status == .completed {
+                        continuation.resume(returning: dest)
+                    } else {
+                        continuation.resume(throwing: export.error ?? LoadError.exportFailed)
+                    }
                 }
             }
         }

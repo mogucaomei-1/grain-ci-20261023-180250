@@ -11,11 +11,26 @@ import UIKit
 import UniformTypeIdentifiers
 
 extension AVCaptureConnection {
-    /// 安全设置竖屏朝向：优先采用 iOS 17+ 的 videoRotationAngle (90°)，未支持时回退到 videoOrientation，严防双调引发 NSInvalidArgumentException
-    func applyPortraitOrientationSafely() {
-        if isVideoRotationAngleSupported(90) {
-            videoRotationAngle = 90
-        } else if isVideoOrientationSupported {
+    /// 安全设置竖屏朝向：根据摄像头方向（前置 270°，后置 90°）或 RotationCoordinator 正确设置，杜绝前置自拍向左逆时针翻转 90°
+    func applyPortraitOrientationSafely(device: AVCaptureDevice? = nil, previewLayer: CALayer? = nil) {
+        if #available(iOS 17.0, *), let device = device {
+            let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: previewLayer)
+            let angle = (previewLayer != nil)
+                ? coordinator.videoRotationAngleForHorizonLevelPreview
+                : coordinator.videoRotationAngleForHorizonLevelCapture
+            if isVideoRotationAngleSupported(angle) {
+                videoRotationAngle = angle
+                return
+            }
+        }
+        if #available(iOS 17.0, *) {
+            let targetAngle: CGFloat = (device?.position == .front) ? 270 : 90
+            if isVideoRotationAngleSupported(targetAngle) {
+                videoRotationAngle = targetAngle
+                return
+            }
+        }
+        if isVideoOrientationSupported {
             videoOrientation = .portrait
         }
     }
@@ -907,7 +922,7 @@ final class CameraController: ObservableObject {
     /// 峰值分析图的旋转与镜像同预览层对齐，但视频防抖必须强制为 .off，杜绝多帧缓冲引入的 100~200ms 跟随延迟
     func updatePeakingConnection(stabilization: VideoStabilization? = nil) {
         guard let connection = peakingOutput.connection(with: .video) else { return }
-        connection.applyPortraitOrientationSafely()
+        connection.applyPortraitOrientationSafely(device: cameraDevice)
         if connection.isVideoMirroringSupported {
             connection.automaticallyAdjustsVideoMirroring = false
             connection.isVideoMirrored = cameraDevice?.position == .front
@@ -1087,6 +1102,9 @@ final class CameraController: ObservableObject {
             // 换镜头后峰值输出的方向/镜像必须跟着更新，否则红色描边会错位
             if peakingAttached {
                 updatePeakingConnection()
+            }
+            if movieAttached {
+                configureMovieConnection(stabilization: currentStabilization, codec: .hevc)
             }
             supportsRawCapture = device.position == .back
                 && (
@@ -1628,8 +1646,8 @@ final class CameraController: ObservableObject {
         targetFPS: Double = 60
     ) {
         guard let connection = self.movieOutput.connection(with: .video) else { return }
-        // 竖屏录制：写 90° 旋转元数据，而不是把像素真的转一遍
-        connection.applyPortraitOrientationSafely()
+        // 竖屏录制：前置270°/后置90° 旋转元数据，而不是把像素真的转一遍
+        connection.applyPortraitOrientationSafely(device: self.cameraDevice)
         if connection.isVideoStabilizationSupported {
             applyStabilization(stabilization, to: connection)
         }
@@ -2812,11 +2830,13 @@ final class CameraController: ObservableObject {
             photoOutput.isLivePhotoCaptureEnabled =
                 livePhoto && photoOutput.isLivePhotoCaptureSupported
         }
-        if let connection = photoOutput.connection(with: .video),
-           connection.isVideoMirroringSupported {
-            connection.automaticallyAdjustsVideoMirroring = false
-            connection.isVideoMirrored =
-                cameraDevice?.position == .front && frontMirrorEnabled
+        if let connection = photoOutput.connection(with: .video) {
+            connection.applyPortraitOrientationSafely(device: cameraDevice)
+            if connection.isVideoMirroringSupported {
+                connection.automaticallyAdjustsVideoMirroring = false
+                connection.isVideoMirrored =
+                    cameraDevice?.position == .front && frontMirrorEnabled
+            }
         }
         session.commitConfiguration()
         return photoOutputAttached
@@ -2827,13 +2847,14 @@ final class CameraController: ObservableObject {
         UserDefaults.standard.object(forKey: "frontCameraMirrorEnabled") as? Bool ?? true
     }
 
-    /// 把镜像设置写到照片输出连接：前置按开关镜像，后置永远不镜像
+    /// 把镜像设置与朝向写到照片输出连接：前置按开关镜像，后置永远不镜像
     private func applyPhotoMirroring(for device: AVCaptureDevice) {
-        guard let connection = photoOutput.connection(with: .video),
-              connection.isVideoMirroringSupported
-        else { return }
-        connection.automaticallyAdjustsVideoMirroring = false
-        connection.isVideoMirrored = device.position == .front && frontMirrorEnabled
+        guard let connection = photoOutput.connection(with: .video) else { return }
+        connection.applyPortraitOrientationSafely(device: device)
+        if connection.isVideoMirroringSupported {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = device.position == .front && frontMirrorEnabled
+        }
     }
 
     /// 用户切换镜像开关后，实时更新到运行中的会话
@@ -2947,6 +2968,9 @@ final class CameraController: ObservableObject {
         processorLock.lock()
         activeProcessors[id] = processor
         processorLock.unlock()
+        if let connection = photoOutput.connection(with: .video) {
+            connection.applyPortraitOrientationSafely(device: cameraDevice)
+        }
         photoOutput.capturePhoto(with: settings, delegate: processor)
     }
 
@@ -4070,7 +4094,8 @@ struct CameraPreviewView: UIViewRepresentable {
         view.attachTrackingSink(trackingSink)
         view.onTrackingFocus = onTrackingFocus
         if let connection = view.previewLayer.connection {
-            connection.applyPortraitOrientationSafely()
+            let currentDevice = (session.inputs.first(where: { ($0 as? AVCaptureDeviceInput)?.device.hasMediaType(.video) == true }) as? AVCaptureDeviceInput)?.device
+            connection.applyPortraitOrientationSafely(device: currentDevice, previewLayer: view.previewLayer)
             // 前置相机按系统相机习惯做镜像预览
             if connection.isVideoMirroringSupported {
                 connection.automaticallyAdjustsVideoMirroring = false
@@ -4109,7 +4134,8 @@ struct CameraPreviewView: UIViewRepresentable {
         }
         uiView.onTrackingFocus = onTrackingFocus
         if let connection = uiView.previewLayer.connection {
-            connection.applyPortraitOrientationSafely()
+            let currentDevice = (session.inputs.first(where: { ($0 as? AVCaptureDeviceInput)?.device.hasMediaType(.video) == true }) as? AVCaptureDeviceInput)?.device
+            connection.applyPortraitOrientationSafely(device: currentDevice, previewLayer: uiView.previewLayer)
             if connection.isVideoMirroringSupported,
                connection.isVideoMirrored != mirrored {
                 connection.automaticallyAdjustsVideoMirroring = false
@@ -6095,10 +6121,12 @@ struct CameraView: View {
                             .strokeBorder(
                                 LinearGradient(
                                     stops: [
-                                        .init(color: Color.white.opacity(0.65), location: 0.0),
-                                        .init(color: Color.white.opacity(0.15), location: 0.40),
-                                        .init(color: Color.black.opacity(0.30), location: 0.75),
-                                        .init(color: Color.white.opacity(0.35), location: 1.0)
+                                        .init(color: Color.white.opacity(0.68), location: 0.0),
+                                        .init(color: Color(hex: 0x8BE8FF).opacity(0.42), location: 0.18),
+                                        .init(color: Color(hex: 0xFFB37C).opacity(0.35), location: 0.36),
+                                        .init(color: Color.white.opacity(0.12), location: 0.55),
+                                        .init(color: Color.black.opacity(0.32), location: 0.82),
+                                        .init(color: Color.white.opacity(0.36), location: 1.0)
                                     ],
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing

@@ -226,25 +226,33 @@ struct LiquidGlassBackground: View {
             // 底层：深邃黑曜水晶基底
             GrainTheme.black
 
-            // 液体光斑 1：暖色折射流光（Amber Caustic Glow）
+            // 液体光斑 1：暖琥珀色深层折射流光（Amber Caustic Glow）
             RadialGradient(
-                colors: [GrainTheme.accent.opacity(0.13), .clear],
-                center: UnitPoint(x: 0.86, y: 0.03),
+                colors: [GrainTheme.accent.opacity(0.15), .clear],
+                center: UnitPoint(x: 0.88, y: 0.02),
                 startRadius: 10,
-                endRadius: 420
+                endRadius: 440
             )
 
             // 液体光斑 2：冷萃青蓝棱镜光斑（Prismatic Cyan Light）
             RadialGradient(
-                colors: [Color(red: 0.32, green: 0.68, blue: 0.92).opacity(0.065), .clear],
-                center: UnitPoint(x: 0.12, y: 0.76),
+                colors: [Color(hex: 0x4AE5FF).opacity(0.08), .clear],
+                center: UnitPoint(x: 0.10, y: 0.72),
                 startRadius: 20,
-                endRadius: 460
+                endRadius: 480
             )
 
-            // 液体光斑 3：顶部流体微光带（Top Liquid Sheen）
+            // 液体光斑 3：极光紫粉微透光晕（Aurora Violet Dispersion）
+            RadialGradient(
+                colors: [Color(hex: 0xA855F7).opacity(0.05), .clear],
+                center: UnitPoint(x: 0.80, y: 0.85),
+                startRadius: 10,
+                endRadius: 360
+            )
+
+            // 液体光斑 4：顶部流体天际微光带（Top Liquid Horizon Sheen）
             LinearGradient(
-                colors: [Color.white.opacity(0.045), .clear],
+                colors: [Color.white.opacity(0.06), Color.clear],
                 startPoint: .top,
                 endPoint: .center
             )
@@ -260,7 +268,7 @@ typealias GrainBackground = LiquidGlassBackground
 struct LiquidGlassModifier: ViewModifier {
     var cornerRadius: CGFloat = 16
     var opacity: CGFloat = 0.52
-    var specularIntensity: CGFloat = 0.38
+    var specularIntensity: CGFloat = 0.45
 
     func body(content: Content) -> some View {
         content
@@ -279,8 +287,8 @@ struct LiquidGlassModifier: ViewModifier {
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    Color.white.opacity(specularIntensity * 0.45),
-                                    Color.white.opacity(0.03),
+                                    Color.white.opacity(specularIntensity * 0.48),
+                                    Color.white.opacity(0.04),
                                     Color.clear
                                 ],
                                 startPoint: .top,
@@ -291,29 +299,31 @@ struct LiquidGlassModifier: ViewModifier {
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay {
-                // 4. 双色折射镜面边框 (Refractive Specular Border)
+                // 4. 多色彩虹棱镜折射镜面边框 (Iridescent Prismatic Specular Border)
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(
                         LinearGradient(
                             stops: [
                                 .init(color: Color.white.opacity(specularIntensity), location: 0.0),
-                                .init(color: Color.white.opacity(0.09), location: 0.35),
-                                .init(color: Color.black.opacity(0.25), location: 0.70),
-                                .init(color: Color.white.opacity(0.18), location: 1.0)
+                                .init(color: Color(hex: 0x8BE8FF).opacity(0.38), location: 0.16),
+                                .init(color: Color(hex: 0xFFB37C).opacity(0.30), location: 0.32),
+                                .init(color: Color.white.opacity(0.10), location: 0.55),
+                                .init(color: Color.black.opacity(0.28), location: 0.85),
+                                .init(color: Color.white.opacity(0.24), location: 1.0)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
-                        lineWidth: 0.8
+                        lineWidth: 0.85
                     )
             }
-            .shadow(color: Color.black.opacity(0.14), radius: 12, x: 0, y: 4)
+            .shadow(color: Color.black.opacity(0.18), radius: 14, x: 0, y: 5)
     }
 }
 
 struct LiquidGlassCapsuleModifier: ViewModifier {
     var isAccent: Bool = false
-    var specularIntensity: CGFloat = 0.36
+    var specularIntensity: CGFloat = 0.42
 
     func body(content: Content) -> some View {
         content
@@ -325,7 +335,7 @@ struct LiquidGlassCapsuleModifier: ViewModifier {
                     Capsule(style: .continuous)
                         .fill(
                             isAccent
-                                ? GrainTheme.accent.opacity(0.18)
+                                ? GrainTheme.accent.opacity(0.22)
                                 : GrainTheme.surface.opacity(0.48)
                         )
 
@@ -333,7 +343,7 @@ struct LiquidGlassCapsuleModifier: ViewModifier {
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    (isAccent ? GrainTheme.accent : Color.white).opacity(0.22),
+                                    (isAccent ? GrainTheme.accent : Color.white).opacity(0.26),
                                     Color.clear
                                 ],
                                 startPoint: .top,
@@ -349,9 +359,10 @@ struct LiquidGlassCapsuleModifier: ViewModifier {
                         LinearGradient(
                             stops: [
                                 .init(color: (isAccent ? GrainTheme.accent : Color.white).opacity(specularIntensity), location: 0.0),
-                                .init(color: Color.white.opacity(0.10), location: 0.40),
-                                .init(color: Color.black.opacity(0.20), location: 0.75),
-                                .init(color: (isAccent ? GrainTheme.accent : Color.white).opacity(0.22), location: 1.0)
+                                .init(color: (isAccent ? Color(hex: 0xFFB37C) : Color(hex: 0x8BE8FF)).opacity(0.35), location: 0.20),
+                                .init(color: Color.white.opacity(0.12), location: 0.45),
+                                .init(color: Color.black.opacity(0.24), location: 0.78),
+                                .init(color: (isAccent ? GrainTheme.accent : Color.white).opacity(0.25), location: 1.0)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
@@ -359,7 +370,7 @@ struct LiquidGlassCapsuleModifier: ViewModifier {
                         lineWidth: 0.85
                     )
             }
-            .shadow(color: (isAccent ? GrainTheme.accent.opacity(0.15) : Color.black.opacity(0.12)), radius: 8, x: 0, y: 3)
+            .shadow(color: (isAccent ? GrainTheme.accent.opacity(0.20) : Color.black.opacity(0.14)), radius: 9, x: 0, y: 3.5)
     }
 }
 
@@ -378,7 +389,7 @@ struct LiquidGlassCircleModifier: ViewModifier {
                     Circle()
                         .fill(
                             isAccent
-                                ? GrainTheme.accent.opacity(0.22)
+                                ? GrainTheme.accent.opacity(0.24)
                                 : GrainTheme.surface.opacity(0.48)
                         )
 
@@ -386,12 +397,13 @@ struct LiquidGlassCircleModifier: ViewModifier {
                         .fill(
                             RadialGradient(
                                 colors: [
-                                    (isAccent ? GrainTheme.accent : Color.white).opacity(0.35),
+                                    (isAccent ? GrainTheme.accent : Color.white).opacity(0.42),
+                                    (isAccent ? Color(hex: 0xFFB37C) : Color(hex: 0x8BE8FF)).opacity(0.15),
                                     Color.clear
                                 ],
                                 center: .topLeading,
                                 startRadius: 1,
-                                endRadius: size * 0.75
+                                endRadius: size * 0.8
                             )
                         )
                 }
@@ -402,10 +414,11 @@ struct LiquidGlassCircleModifier: ViewModifier {
                     .strokeBorder(
                         LinearGradient(
                             stops: [
-                                .init(color: (isAccent ? GrainTheme.accent : Color.white).opacity(0.42), location: 0.0),
-                                .init(color: Color.white.opacity(0.10), location: 0.45),
-                                .init(color: Color.black.opacity(0.25), location: 0.80),
-                                .init(color: Color.white.opacity(0.20), location: 1.0)
+                                .init(color: (isAccent ? GrainTheme.accent : Color.white).opacity(0.50), location: 0.0),
+                                .init(color: (isAccent ? Color(hex: 0xFFB37C) : Color(hex: 0x8BE8FF)).opacity(0.35), location: 0.22),
+                                .init(color: Color.white.opacity(0.12), location: 0.50),
+                                .init(color: Color.black.opacity(0.28), location: 0.82),
+                                .init(color: Color.white.opacity(0.24), location: 1.0)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
@@ -413,7 +426,7 @@ struct LiquidGlassCircleModifier: ViewModifier {
                         lineWidth: 0.85
                     )
             }
-            .shadow(color: Color.black.opacity(0.14), radius: 6, x: 0, y: 3)
+            .shadow(color: (isAccent ? GrainTheme.accent.opacity(0.18) : Color.black.opacity(0.16)), radius: 7, x: 0, y: 3.5)
     }
 }
 

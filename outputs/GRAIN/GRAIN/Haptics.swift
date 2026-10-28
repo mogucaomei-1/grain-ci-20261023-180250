@@ -44,6 +44,18 @@ enum GrainHaptics {
         mediumGenerator.prepare()
     }
 
+    static func success(enabled: Bool = true) {
+        guard enabled && isEnabled else { return }
+        notificationGenerator.notificationOccurred(.success)
+        notificationGenerator.prepare()
+    }
+
+    static func warning(enabled: Bool = true) {
+        guard enabled && isEnabled else { return }
+        notificationGenerator.notificationOccurred(.warning)
+        notificationGenerator.prepare()
+    }
+
     static func error(enabled: Bool = true) {
         guard enabled && isEnabled else { return }
         notificationGenerator.notificationOccurred(.error)
