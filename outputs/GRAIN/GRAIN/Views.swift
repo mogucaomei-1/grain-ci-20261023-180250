@@ -63,7 +63,7 @@ struct RootView: View {
                         }
                     }
                 }
-                .background(GrainTheme.black)
+                .background(Color.clear)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .toolbar(.hidden, for: .navigationBar)
                 .navigationDestination(isPresented: editorPresented) {
@@ -103,7 +103,7 @@ struct RootView: View {
                         )
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(GrainTheme.black.ignoresSafeArea())
+                    .background(Color.clear.ignoresSafeArea())
                     .toolbar(.hidden, for: .navigationBar)
                 }
             }
@@ -435,12 +435,13 @@ private struct MinimalTopBar: View {
                 if let onCancel {
                     Button(action: onCancel) {
                         Text("取消")
-                            .font(.system(size: 15, weight: .medium, design: .rounded))
+                            .font(.system(size: 12.5, weight: .semibold, design: .rounded))
                             .foregroundStyle(GrainTheme.paper)
-                            .padding(.horizontal, 4)
-                            .frame(height: 38)
+                            .padding(.horizontal, 14)
+                            .frame(height: 32)
+                            .liquidGlassCapsule()
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(LiquidGlassButtonStyle())
                     .accessibilityLabel("取消并返回主页")
                 }
             } else {
@@ -450,18 +451,28 @@ private struct MinimalTopBar: View {
                             .frame(width: 38, height: 38)
                             .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(LiquidGlassButtonStyle())
                     .accessibilityLabel("打开设置")
 
                     Button(action: onSettings) {
                         Text("GRAIN")
                             .font(.system(size: 14, weight: .heavy, design: .rounded))
                             .tracking(2.3)
-                            .foregroundStyle(GrainTheme.paper)
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [
+                                        GrainTheme.paper,
+                                        GrainTheme.paper.opacity(0.88),
+                                        GrainTheme.accent.opacity(0.92)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(LiquidGlassButtonStyle())
                     .accessibilityLabel("打开设置")
                 }
             }
@@ -477,10 +488,10 @@ private struct MinimalTopBar: View {
                     Button(action: onCamera) {
                         Image(systemName: "camera.fill")
                             .font(.system(size: 14, weight: .medium))
-                            .frame(width: 38, height: 38)
-                            .background(GrainTheme.raised, in: Circle())
+                            .foregroundStyle(GrainTheme.paper)
+                            .liquidGlassCircle(size: 38)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(LiquidGlassButtonStyle())
                     .accessibilityLabel("打开相机")
                 }
 
@@ -488,10 +499,10 @@ private struct MinimalTopBar: View {
                     Button(action: onFiles) {
                         Image(systemName: "folder")
                             .font(.system(size: 14, weight: .medium))
-                            .frame(width: 38, height: 38)
-                            .background(GrainTheme.raised, in: Circle())
+                            .foregroundStyle(GrainTheme.paper)
+                            .liquidGlassCircle(size: 38)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(LiquidGlassButtonStyle())
                     .accessibilityLabel("从文件导入")
                 }
 
@@ -500,10 +511,9 @@ private struct MinimalTopBar: View {
                         Image(systemName: "slider.horizontal.2.square.on.square")
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(GrainTheme.paper)
-                            .frame(width: 38, height: 38)
-                            .background(GrainTheme.raised, in: Circle())
+                            .liquidGlassCircle(size: 38)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(LiquidGlassButtonStyle())
                     .accessibilityLabel("编辑工作台")
                 }
             }
@@ -513,10 +523,9 @@ private struct MinimalTopBar: View {
                     Image(systemName: "waveform.path.ecg.rectangle")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(histogramVisible ? GrainTheme.accent : GrainTheme.muted)
-                        .frame(width: 38, height: 38)
-                        .background(GrainTheme.raised, in: Circle())
+                        .liquidGlassCircle(size: 38, isAccent: histogramVisible)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidGlassButtonStyle())
                 .accessibilityLabel(histogramVisible ? "隐藏直方图" : "显示直方图")
             }
 
@@ -526,10 +535,9 @@ private struct MinimalTopBar: View {
                         Image(systemName: "trash")
                             .font(.system(size: 14, weight: .medium))
                             .foregroundStyle(GrainTheme.danger)
-                            .frame(width: 38, height: 38)
-                            .background(GrainTheme.raised, in: Circle())
+                            .liquidGlassCircle(size: 38)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(LiquidGlassButtonStyle())
                     .accessibilityLabel("删除当前照片")
                 }
 
@@ -537,24 +545,18 @@ private struct MinimalTopBar: View {
                     Image(systemName: "info.circle")
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(GrainTheme.paper)
-                        .frame(width: 38, height: 38)
-                        .background(GrainTheme.raised, in: Circle())
+                        .liquidGlassCircle(size: 38)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidGlassButtonStyle())
                 .accessibilityLabel("查看图片信息")
 
                 Button(action: onExport) {
                     Image(systemName: "square.and.arrow.up")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(GrainTheme.paper)
-                        .frame(width: 38, height: 38)
-                        .background(GrainTheme.raised, in: Circle())
-                        .overlay(
-                            Circle()
-                                .stroke(GrainTheme.line, lineWidth: 0.6)
-                        )
+                        .liquidGlassCircle(size: 38, isAccent: true)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidGlassButtonStyle())
                 .accessibilityLabel("导出或分享")
             }
         }
@@ -598,14 +600,13 @@ private struct MinimalTopBar: View {
             Image(systemName: tool.symbol)
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(GrainTheme.paper)
-                .frame(width: 38, height: 38)
-                .background(GrainTheme.raised, in: Circle())
+                .liquidGlassCircle(size: 38)
                 .scaleEffect(draggingHomeTool == tool ? 1.12 : 1)
                 .offset(x: draggingHomeTool == tool ? homeToolDrag : 0)
                 .zIndex(draggingHomeTool == tool ? 1 : 0)
                 .animation(.snappy(duration: 0.18), value: draggingHomeTool)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LiquidGlassButtonStyle())
         .accessibilityLabel(tool.label)
         .simultaneousGesture(homeToolReorderGesture(tool))
     }
@@ -790,7 +791,7 @@ private struct EditorToolsPager: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
                 Button {
                     withAnimation(.snappy(duration: 0.24)) {
                         page = .adjust
@@ -802,8 +803,16 @@ private struct EditorToolsPager: View {
                     }
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .foregroundStyle(page == .adjust ? GrainTheme.accent : GrainTheme.muted)
+                    .padding(.horizontal, 10)
+                    .frame(height: 25)
+                    .background {
+                        if page == .adjust {
+                            Capsule().fill(.ultraThinMaterial)
+                                .overlay(Capsule().strokeBorder(GrainTheme.accent.opacity(0.45), lineWidth: 0.8))
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidGlassButtonStyle())
 
                 Button {
                     withAnimation(.snappy(duration: 0.24)) {
@@ -816,8 +825,16 @@ private struct EditorToolsPager: View {
                     }
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .foregroundStyle(page == .film ? GrainTheme.accent : GrainTheme.muted)
+                    .padding(.horizontal, 10)
+                    .frame(height: 25)
+                    .background {
+                        if page == .film {
+                            Capsule().fill(.ultraThinMaterial)
+                                .overlay(Capsule().strokeBorder(GrainTheme.accent.opacity(0.45), lineWidth: 0.8))
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidGlassButtonStyle())
 
                 Spacer()
 
@@ -827,9 +844,9 @@ private struct EditorToolsPager: View {
                     Image(systemName: "arrow.uturn.backward")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(editor.canUndo ? GrainTheme.paper : GrainTheme.muted.opacity(0.35))
-                        .frame(width: 28, height: 26)
+                        .liquidGlassCircle(size: 26)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidGlassButtonStyle())
                 .disabled(!editor.canUndo)
                 .accessibilityLabel("撤销上一步")
 
@@ -852,9 +869,9 @@ private struct EditorToolsPager: View {
                     .foregroundStyle(
                         recommendationActive ? GrainTheme.accent : GrainTheme.muted
                     )
-                    .frame(width: 28, height: 26)
+                    .liquidGlassCircle(size: 26, isAccent: recommendationActive)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidGlassButtonStyle())
                 .disabled(editor.isRecommending)
                 .accessibilityLabel(page == .film ? "推荐胶片" : "推荐照片参数")
 
@@ -870,14 +887,15 @@ private struct EditorToolsPager: View {
                         editor.resetAllAdjustments()
                     }
                 } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 12, weight: .semibold))
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(GrainTheme.muted)
-                        .frame(width: 28, height: 26)
+                        .liquidGlassCircle(size: 26)
                 }
+                .buttonStyle(LiquidGlassButtonStyle())
             }
             .padding(.horizontal, 18)
-            .frame(height: 28)
+            .frame(height: 32)
             .contentShape(Rectangle())
             .gesture(pageSwipeGesture)
 
@@ -897,9 +915,28 @@ private struct EditorToolsPager: View {
             }
             .frame(maxHeight: .infinity)
         }
-        .background(GrainTheme.surface)
+        .background {
+            ZStack {
+                Rectangle().fill(.ultraThinMaterial)
+                Rectangle().fill(GrainTheme.surface.opacity(0.68))
+                LinearGradient(
+                    colors: [Color.white.opacity(0.12), Color.clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+        }
         .overlay(alignment: .top) {
-            Rectangle().fill(GrainTheme.line).frame(height: 1)
+            LinearGradient(
+                stops: [
+                    .init(color: Color.white.opacity(0.28), location: 0.0),
+                    .init(color: Color.white.opacity(0.06), location: 0.5),
+                    .init(color: Color.white.opacity(0.20), location: 1.0)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(height: 0.8)
         }
     }
 

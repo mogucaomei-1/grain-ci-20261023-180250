@@ -218,18 +218,227 @@ extension FilmProfile {
     }
 }
 
-struct GrainBackground: View {
+// MARK: - iOS 27 液态玻璃设计系统 (Liquid Glass Design System)
+
+struct LiquidGlassBackground: View {
     var body: some View {
         ZStack {
+            // 底层：深邃黑曜水晶基底
             GrainTheme.black
+
+            // 液体光斑 1：暖色折射流光（Amber Caustic Glow）
             RadialGradient(
-                colors: [GrainTheme.accent.opacity(0.07), .clear],
-                center: UnitPoint(x: 0.82, y: 0.02),
-                startRadius: 0,
-                endRadius: 320
+                colors: [GrainTheme.accent.opacity(0.13), .clear],
+                center: UnitPoint(x: 0.86, y: 0.03),
+                startRadius: 10,
+                endRadius: 420
+            )
+
+            // 液体光斑 2：冷萃青蓝棱镜光斑（Prismatic Cyan Light）
+            RadialGradient(
+                colors: [Color(red: 0.32, green: 0.68, blue: 0.92).opacity(0.065), .clear],
+                center: UnitPoint(x: 0.12, y: 0.76),
+                startRadius: 20,
+                endRadius: 460
+            )
+
+            // 液体光斑 3：顶部流体微光带（Top Liquid Sheen）
+            LinearGradient(
+                colors: [Color.white.opacity(0.045), .clear],
+                startPoint: .top,
+                endPoint: .center
             )
         }
         .ignoresSafeArea()
+    }
+}
+
+typealias GrainBackground = LiquidGlassBackground
+
+// MARK: - 液态玻璃微透修饰器 (Liquid Glass Modifiers)
+
+struct LiquidGlassModifier: ViewModifier {
+    var cornerRadius: CGFloat = 16
+    var opacity: CGFloat = 0.52
+    var specularIntensity: CGFloat = 0.38
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                ZStack {
+                    // 1. 系统级动态微透磨砂材质 (Ultra-thin Frosted Optical Glass)
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(.ultraThinMaterial)
+
+                    // 2. 液体透光基色 (Subsurface Scattering Tint)
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(GrainTheme.surface.opacity(opacity))
+
+                    // 3. 顶部液态高光反光层 (Specular Top Reflection)
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(specularIntensity * 0.45),
+                                    Color.white.opacity(0.03),
+                                    Color.clear
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay {
+                // 4. 双色折射镜面边框 (Refractive Specular Border)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            stops: [
+                                .init(color: Color.white.opacity(specularIntensity), location: 0.0),
+                                .init(color: Color.white.opacity(0.09), location: 0.35),
+                                .init(color: Color.black.opacity(0.25), location: 0.70),
+                                .init(color: Color.white.opacity(0.18), location: 1.0)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.8
+                    )
+            }
+            .shadow(color: Color.black.opacity(0.14), radius: 12, x: 0, y: 4)
+    }
+}
+
+struct LiquidGlassCapsuleModifier: ViewModifier {
+    var isAccent: Bool = false
+    var specularIntensity: CGFloat = 0.36
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                ZStack {
+                    Capsule(style: .continuous)
+                        .fill(.ultraThinMaterial)
+
+                    Capsule(style: .continuous)
+                        .fill(
+                            isAccent
+                                ? GrainTheme.accent.opacity(0.18)
+                                : GrainTheme.surface.opacity(0.48)
+                        )
+
+                    Capsule(style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    (isAccent ? GrainTheme.accent : Color.white).opacity(0.22),
+                                    Color.clear
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                }
+            }
+            .clipShape(Capsule(style: .continuous))
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            stops: [
+                                .init(color: (isAccent ? GrainTheme.accent : Color.white).opacity(specularIntensity), location: 0.0),
+                                .init(color: Color.white.opacity(0.10), location: 0.40),
+                                .init(color: Color.black.opacity(0.20), location: 0.75),
+                                .init(color: (isAccent ? GrainTheme.accent : Color.white).opacity(0.22), location: 1.0)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.85
+                    )
+            }
+            .shadow(color: (isAccent ? GrainTheme.accent.opacity(0.15) : Color.black.opacity(0.12)), radius: 8, x: 0, y: 3)
+    }
+}
+
+struct LiquidGlassCircleModifier: ViewModifier {
+    var size: CGFloat = 38
+    var isAccent: Bool = false
+
+    func body(content: Content) -> some View {
+        content
+            .frame(width: size, height: size)
+            .background {
+                ZStack {
+                    Circle()
+                        .fill(.ultraThinMaterial)
+
+                    Circle()
+                        .fill(
+                            isAccent
+                                ? GrainTheme.accent.opacity(0.22)
+                                : GrainTheme.surface.opacity(0.48)
+                        )
+
+                    Circle()
+                        .fill(
+                            RadialGradient(
+                                colors: [
+                                    (isAccent ? GrainTheme.accent : Color.white).opacity(0.35),
+                                    Color.clear
+                                ],
+                                center: .topLeading,
+                                startRadius: 1,
+                                endRadius: size * 0.75
+                            )
+                        )
+                }
+            }
+            .clipShape(Circle())
+            .overlay {
+                Circle()
+                    .strokeBorder(
+                        LinearGradient(
+                            stops: [
+                                .init(color: (isAccent ? GrainTheme.accent : Color.white).opacity(0.42), location: 0.0),
+                                .init(color: Color.white.opacity(0.10), location: 0.45),
+                                .init(color: Color.black.opacity(0.25), location: 0.80),
+                                .init(color: Color.white.opacity(0.20), location: 1.0)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.85
+                    )
+            }
+            .shadow(color: Color.black.opacity(0.14), radius: 6, x: 0, y: 3)
+    }
+}
+
+struct LiquidGlassButtonStyle: ButtonStyle {
+    var scaleAmount: CGFloat = 0.94
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? scaleAmount : 1.0)
+            .opacity(configuration.isPressed ? 0.88 : 1.0)
+            .animation(.spring(response: 0.24, dampingFraction: 0.70), value: configuration.isPressed)
+    }
+}
+
+extension View {
+    func liquidGlass(cornerRadius: CGFloat = 16, opacity: CGFloat = 0.52) -> some View {
+        modifier(LiquidGlassModifier(cornerRadius: cornerRadius, opacity: opacity))
+    }
+
+    func liquidGlassCapsule(isAccent: Bool = false) -> some View {
+        modifier(LiquidGlassCapsuleModifier(isAccent: isAccent))
+    }
+
+    func liquidGlassCircle(size: CGFloat = 38, isAccent: Bool = false) -> some View {
+        modifier(LiquidGlassCircleModifier(size: size, isAccent: isAccent))
     }
 }
 

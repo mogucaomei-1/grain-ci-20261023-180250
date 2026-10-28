@@ -6086,24 +6086,61 @@ struct CameraView: View {
             }
         } label: {
             ZStack {
+                // 液态玻璃外环光晕与折射镜面边框
                 Circle()
-                    .stroke(
-                        captureMode == .video ? Color.red.opacity(0.85) : GrainTheme.paper,
-                        lineWidth: 3.4
-                    )
-                    .frame(width: shutterOuter, height: shutterOuter)
+                    .fill(.ultraThinMaterial)
+                    .frame(width: shutterOuter + 4, height: shutterOuter + 4)
+                    .overlay {
+                        Circle()
+                            .strokeBorder(
+                                LinearGradient(
+                                    stops: [
+                                        .init(color: Color.white.opacity(0.65), location: 0.0),
+                                        .init(color: Color.white.opacity(0.15), location: 0.40),
+                                        .init(color: Color.black.opacity(0.30), location: 0.75),
+                                        .init(color: Color.white.opacity(0.35), location: 1.0)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 2.8
+                            )
+                    }
+                    .shadow(color: Color.black.opacity(0.25), radius: 10, y: 4)
+
                 if captureMode == .video {
                     Circle()
-                        .fill(Color.red)
+                        .fill(
+                            RadialGradient(
+                                colors: [Color(red: 1.0, green: 0.35, blue: 0.30), Color(red: 0.85, green: 0.08, blue: 0.08)],
+                                center: .center,
+                                startRadius: 2,
+                                endRadius: shutterInner * 0.6
+                            )
+                        )
                         .frame(
                             width: camera.isRecording ? 28 : shutterInner,
                             height: camera.isRecording ? 28 : shutterInner
                         )
+                        .clipShape(RoundedRectangle(cornerRadius: camera.isRecording ? 6 : shutterInner / 2, style: .continuous))
                         .animation(.spring(response: 0.28, dampingFraction: 0.72), value: camera.isRecording)
                 } else {
-                    Circle()
-                        .fill(camera.isCapturing ? GrainTheme.muted : GrainTheme.paper)
-                        .frame(width: shutterInner, height: shutterInner)
+                    if camera.isCapturing {
+                        Circle()
+                            .fill(GrainTheme.muted)
+                            .frame(width: shutterInner, height: shutterInner)
+                    } else {
+                        Circle()
+                            .fill(
+                                RadialGradient(
+                                    colors: [Color.white, GrainTheme.paper],
+                                    center: .topLeading,
+                                    startRadius: 2,
+                                    endRadius: shutterInner * 0.7
+                                )
+                            )
+                            .frame(width: shutterInner, height: shutterInner)
+                    }
                 }
                 if camera.isCapturing, captureMode == .photo {
                     ProgressView()
@@ -6112,7 +6149,7 @@ struct CameraView: View {
                 }
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LiquidGlassButtonStyle(scaleAmount: 0.92))
         .disabled(!camera.isReady || (captureMode == .photo && camera.isCapturing))
     }
 
@@ -6133,13 +6170,9 @@ struct CameraView: View {
                 .foregroundStyle(
                     captureMode == .video ? GrainTheme.accent : GrainTheme.paper
                 )
-                .frame(width: sideButton, height: sideButton)
-                .background(GrainTheme.surface.opacity(0.85), in: Circle())
-                .overlay {
-                    Circle().stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlassCircle(size: sideButton, isAccent: captureMode == .video)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LiquidGlassButtonStyle())
         .disabled(camera.isRecording)
         .accessibilityLabel(captureMode == .video ? "切回拍照" : "切换到录像")
     }
@@ -6180,8 +6213,6 @@ struct CameraView: View {
             }
         } label: {
             ZStack {
-                Circle()
-                    .fill(GrainTheme.surface.opacity(0.85))
                 if let thumbnail = camera.latestCaptureThumbnail {
                     Image(uiImage: thumbnail)
                         .resizable()
@@ -6194,13 +6225,9 @@ struct CameraView: View {
                         .foregroundStyle(GrainTheme.paper)
                 }
             }
-            .frame(width: sideButton, height: sideButton)
-            .overlay {
-                Circle()
-                    .stroke(GrainTheme.line, lineWidth: 0.8)
-            }
+            .liquidGlassCircle(size: sideButton)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LiquidGlassButtonStyle())
         .accessibilityLabel(
             camera.latestCaptureAssetIdentifier == nil
                 ? "打开照片图库"
@@ -6216,13 +6243,9 @@ struct CameraView: View {
             Image(systemName: "arrow.triangle.2.circlepath.camera")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(GrainTheme.paper)
-                .frame(width: sideButton, height: sideButton)
-                .background(GrainTheme.surface.opacity(0.85), in: Circle())
-                .overlay {
-                    Circle().stroke(GrainTheme.line, lineWidth: 0.8)
-                }
+                .liquidGlassCircle(size: sideButton)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LiquidGlassButtonStyle())
         .disabled(camera.isRecording)
         .opacity(camera.isRecording ? 0.35 : 1)
         .accessibilityLabel("切换前后镜头")

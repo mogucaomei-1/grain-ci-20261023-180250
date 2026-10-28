@@ -480,11 +480,9 @@ struct PhotoLibraryHome: View {
                         .font(.system(size: 9.5, weight: .semibold, design: .rounded))
                         .foregroundStyle(GrainTheme.paper)
                 }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 13)
-                .background(GrainTheme.surface.opacity(0.92), in: Capsule())
-                .overlay(Capsule().stroke(GrainTheme.line, lineWidth: 0.8))
-                .shadow(color: Color.black.opacity(0.12), radius: 8, y: 3)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 14)
+                .liquidGlassCapsule()
             }
         }
         .confirmationDialog(
@@ -596,6 +594,9 @@ struct PhotoLibraryHome: View {
                     Text("\(visibleAssets.count)/\(library.assets.count)")
                         .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                         .foregroundStyle(GrainTheme.muted)
+                        .padding(.horizontal, 8)
+                        .frame(height: 22)
+                        .liquidGlassCapsule()
                 }
             }
 
@@ -626,18 +627,13 @@ struct PhotoLibraryHome: View {
                         .font(.system(size: 8.5, weight: .bold))
                 }
                 .foregroundStyle(mediaTypeFilter == .all ? GrainTheme.paper : GrainTheme.accent)
-                .padding(.horizontal, 10)
-                .frame(height: 28)
-                .background(GrainTheme.raised, in: Capsule())
-                .overlay(
-                    Capsule().stroke(
-                        mediaTypeFilter == .all ? GrainTheme.line : GrainTheme.accent.opacity(0.6),
-                        lineWidth: 0.6
-                    )
-                )
+                .padding(.horizontal, 11)
+                .frame(height: 29)
+                .liquidGlassCapsule(isAccent: mediaTypeFilter != .all)
             }
+            .buttonStyle(LiquidGlassButtonStyle())
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 14)
         .padding(.top, 4)
         .padding(.bottom, 6)
     }
@@ -653,11 +649,11 @@ struct PhotoLibraryHome: View {
                     .font(.system(size: 9.5, weight: .semibold, design: .rounded))
             }
             .foregroundStyle(GrainTheme.muted)
-            .padding(.horizontal, 9)
-            .frame(height: 24)
-            .background(GrainTheme.raised, in: Capsule())
+            .padding(.horizontal, 10)
+            .frame(height: 25)
+            .liquidGlassCapsule()
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LiquidGlassButtonStyle())
     }
 
     private var selectionToolbar: some View {
@@ -667,12 +663,15 @@ struct PhotoLibraryHome: View {
             }
             .font(.system(size: 11, weight: .semibold, design: .rounded))
             .foregroundStyle(GrainTheme.paper)
-            .buttonStyle(.plain)
+            .padding(.horizontal, 9)
+            .frame(height: 27)
+            .liquidGlassCapsule()
+            .buttonStyle(LiquidGlassButtonStyle())
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
 
             Text("已选\(selectedIdentifiers.count)张")
-                .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+                .font(.system(size: 9.5, weight: .bold, design: .rounded))
                 .foregroundStyle(GrainTheme.accent)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
@@ -697,11 +696,12 @@ struct PhotoLibraryHome: View {
                 .foregroundStyle(
                     selectedIdentifiers.isEmpty ? GrainTheme.muted : GrainTheme.accent
                 )
-                .padding(.horizontal, 7)
-                .frame(height: 28)
-                .background(GrainTheme.raised, in: Capsule())
+                .padding(.horizontal, 8)
+                .frame(height: 27)
+                .liquidGlassCapsule(isAccent: !selectedIdentifiers.isEmpty)
                 .fixedSize(horizontal: true, vertical: false)
             }
+            .buttonStyle(LiquidGlassButtonStyle())
             .disabled(selectedIdentifiers.isEmpty || isDeleting || batch.isRunning)
 
             Button {
@@ -719,12 +719,12 @@ struct PhotoLibraryHome: View {
                         ? GrainTheme.accent
                         : GrainTheme.muted
                 )
-                .padding(.horizontal, 7)
-                .frame(height: 28)
-                .background(GrainTheme.raised, in: Capsule())
+                .padding(.horizontal, 8)
+                .frame(height: 27)
+                .liquidGlassCapsule(isAccent: !selectedAssets.isEmpty && selectedAssets.count <= 10)
                 .fixedSize(horizontal: true, vertical: false)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LiquidGlassButtonStyle())
             .disabled(selectedAssets.isEmpty || selectedAssets.count > 10)
             .accessibilityLabel("在编辑工作台中编辑所选照片")
 
@@ -743,12 +743,12 @@ struct PhotoLibraryHome: View {
                         ? GrainTheme.accent
                         : GrainTheme.muted
                 )
-                .padding(.horizontal, 7)
-                .frame(height: 28)
-                .background(GrainTheme.raised, in: Capsule())
+                .padding(.horizontal, 8)
+                .frame(height: 27)
+                .liquidGlassCapsule(isAccent: !selectedIdentifiers.isEmpty)
                 .fixedSize(horizontal: true, vertical: false)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LiquidGlassButtonStyle())
             .disabled(selectedIdentifiers.isEmpty || isDeleting || isPreparingShare)
             .accessibilityLabel("分享所选照片")
 
@@ -758,19 +758,22 @@ struct PhotoLibraryHome: View {
                 Image(systemName: "trash")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(
-                        selectedIdentifiers.isEmpty ? GrainTheme.muted : GrainTheme.accent
+                        selectedIdentifiers.isEmpty ? GrainTheme.muted : GrainTheme.danger
                     )
-                    .frame(width: 28, height: 28)
-                    .background(GrainTheme.raised, in: Capsule())
+                    .frame(width: 27, height: 27)
+                    .liquidGlassCircle(size: 27, isAccent: !selectedIdentifiers.isEmpty)
                     .fixedSize(horizontal: true, vertical: false)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(LiquidGlassButtonStyle())
             .disabled(selectedIdentifiers.isEmpty || isDeleting)
             .accessibilityLabel("删除所选照片")
         }
-        .padding(.horizontal, 8)
-        .padding(.top, 3)
-        .padding(.bottom, 5)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .liquidGlass(cornerRadius: 16, opacity: 0.55)
+        .padding(.horizontal, 12)
+        .padding(.top, 4)
+        .padding(.bottom, 6)
     }
 
     private var visibleAssets: [PHAsset] {
