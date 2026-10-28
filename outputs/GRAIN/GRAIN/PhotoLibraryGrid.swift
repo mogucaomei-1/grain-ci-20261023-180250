@@ -739,7 +739,7 @@ struct PhotoLibraryHome: View {
             }
         }
         .padding(.horizontal, 4)
-        .padding(.bottom, 24)
+        .padding(.bottom, 0)
         .coordinateSpace(name: "photo-library-grid")
         .onPreferenceChange(PhotoTileFramePreferenceKey.self) {
             tileFrames = $0
@@ -856,29 +856,29 @@ struct PhotoLibraryHome: View {
     }
 
     private var selectionToolbar: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 6) {
             Button("取消") {
                 endSelection()
             }
-            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .font(.system(size: 13, weight: .semibold, design: .rounded))
             .foregroundStyle(GrainTheme.paper)
-            .padding(.horizontal, 9)
-            .frame(height: 27)
+            .padding(.horizontal, 12)
+            .frame(height: 38)
             .liquidGlassCapsule()
             .buttonStyle(LiquidGlassButtonStyle())
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
 
             Text("已选\(selectedIdentifiers.count)张")
-                .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                .font(.system(size: 12, weight: .bold, design: .rounded))
                 .foregroundStyle(Color.black)
-                .padding(.horizontal, 9)
-                .frame(height: 27)
+                .padding(.horizontal, 10)
+                .frame(height: 38)
                 .liquidGlassCapsule(isWhite: true)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
 
-            Spacer(minLength: 2)
+            Spacer(minLength: 4)
 
             Menu {
                 Button("批量套用最近配方", systemImage: "paintbrush.pointed") {
@@ -888,18 +888,18 @@ struct PhotoLibraryHome: View {
                     batchExportSelected()
                 }
             } label: {
-                HStack(spacing: 2) {
+                HStack(spacing: 3) {
                     Image(systemName: "square.stack.3d.down.right")
-                        .font(.system(size: 9.5, weight: .bold))
+                        .font(.system(size: 12, weight: .bold))
                     Text("批量")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
                         .lineLimit(1)
                 }
                 .foregroundStyle(
                     selectedIdentifiers.isEmpty ? Color.black.opacity(0.35) : Color.black
                 )
-                .padding(.horizontal, 8)
-                .frame(height: 27)
+                .padding(.horizontal, 10)
+                .frame(height: 38)
                 .liquidGlassCapsule(isWhite: true)
                 .fixedSize(horizontal: true, vertical: false)
             }
@@ -909,11 +909,11 @@ struct PhotoLibraryHome: View {
             Button {
                 showCollageEditor = true
             } label: {
-                HStack(spacing: 2) {
+                HStack(spacing: 3) {
                     Image(systemName: "slider.horizontal.2.square.on.square")
-                        .font(.system(size: 9.5, weight: .bold))
+                        .font(.system(size: 12, weight: .bold))
                     Text("编辑")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
                         .lineLimit(1)
                 }
                 .foregroundStyle(
@@ -921,8 +921,8 @@ struct PhotoLibraryHome: View {
                         ? Color.black
                         : Color.black.opacity(0.35)
                 )
-                .padding(.horizontal, 8)
-                .frame(height: 27)
+                .padding(.horizontal, 10)
+                .frame(height: 38)
                 .liquidGlassCapsule(isWhite: true)
                 .fixedSize(horizontal: true, vertical: false)
             }
@@ -933,11 +933,11 @@ struct PhotoLibraryHome: View {
             Button {
                 shareSelectedAssets()
             } label: {
-                HStack(spacing: 2) {
+                HStack(spacing: 3) {
                     Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 9.5, weight: .bold))
+                        .font(.system(size: 12, weight: .bold))
                     Text("分享")
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
                         .lineLimit(1)
                 }
                 .foregroundStyle(
@@ -945,8 +945,8 @@ struct PhotoLibraryHome: View {
                         ? Color.black
                         : Color.black.opacity(0.35)
                 )
-                .padding(.horizontal, 8)
-                .frame(height: 27)
+                .padding(.horizontal, 10)
+                .frame(height: 38)
                 .liquidGlassCapsule(isWhite: true)
                 .fixedSize(horizontal: true, vertical: false)
             }
@@ -958,24 +958,20 @@ struct PhotoLibraryHome: View {
                 showDeleteConfirmation = true
             } label: {
                 Image(systemName: "trash")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(
                         selectedIdentifiers.isEmpty ? Color.black.opacity(0.35) : Color.black
                     )
-                    .frame(width: 27, height: 27)
-                    .liquidGlassCircle(size: 27, isWhite: true)
+                    .frame(width: 38, height: 38)
+                    .liquidGlassCircle(size: 38, isWhite: true)
                     .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(LiquidGlassButtonStyle())
             .disabled(selectedIdentifiers.isEmpty || isDeleting)
             .accessibilityLabel("删除所选照片")
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .liquidGlass(cornerRadius: 16, opacity: 0.55)
-        .padding(.horizontal, 12)
-        .padding(.top, 4)
-        .padding(.bottom, 6)
+        .padding(.horizontal, 14)
+        .frame(height: 54)
     }
 
     private var visibleAssets: [PHAsset] {
@@ -1091,14 +1087,20 @@ struct PhotoLibraryHome: View {
                 RoundedRectangle(cornerRadius: tileRadius, style: .continuous)
                     .fill(Color.black.opacity(selected ? 0.22 : 0.04))
 
-                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: gridColumnCount >= 7 ? 10 : (gridColumnCount >= 5 ? 13 : 19), weight: .semibold))
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(
-                        selected ? GrainTheme.black : Color.white.opacity(0.86),
-                        selected ? Color.white : Color.black.opacity(0.34)
-                    )
-                    .padding(gridColumnCount >= 7 ? 2 : 4)
+                if selected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: gridColumnCount >= 7 ? 11 : (gridColumnCount >= 5 ? 14 : 20), weight: .bold))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(Color.black, Color.white)
+                        .shadow(color: Color.black.opacity(0.35), radius: 2, x: 0, y: 1)
+                        .padding(gridColumnCount >= 7 ? 2 : 4)
+                } else {
+                    Image(systemName: "circle")
+                        .font(.system(size: gridColumnCount >= 7 ? 11 : (gridColumnCount >= 5 ? 14 : 20), weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.92))
+                        .shadow(color: Color.black.opacity(0.45), radius: 1.5, x: 0, y: 1)
+                        .padding(gridColumnCount >= 7 ? 2 : 4)
+                }
 
                 RoundedRectangle(cornerRadius: tileRadius, style: .continuous)
                     .stroke(
