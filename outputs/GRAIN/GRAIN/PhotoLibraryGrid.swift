@@ -388,7 +388,6 @@ struct PhotoLibraryHome: View {
     @AppStorage("libraryGridColumnCount") private var gridColumnCount: Int = 3
     @State private var baseColumnCount: Int = 3
     @State private var isPinching: Bool = false
-    @State private var currentPinchScale: CGFloat = 1.0
 
     private var columns: [GridItem] {
         let count = max(1, min(5, gridColumnCount))
@@ -400,43 +399,38 @@ struct PhotoLibraryHome: View {
         gridColumnCount >= 5 ? 1.5 : (gridColumnCount >= 4 ? 2 : 3)
     }
 
-    private var pinchGesture: some Gesture {
-        MagnificationGesture()
-            .onChanged { scale in
-                if !isPinching {
-                    isPinching = true
-                    baseColumnCount = gridColumnCount
-                }
-                currentPinchScale = scale
+    private func handlePinch(scale: CGFloat, state: UIGestureRecognizer.State) {
+        switch state {
+        case .began:
+            baseColumnCount = gridColumnCount
+            isPinching = true
+        case .changed:
+            let targetCount: Int
+            if scale > 1.80 {
+                targetCount = max(1, baseColumnCount - 2)
+            } else if scale > 1.25 {
+                targetCount = max(2, baseColumnCount - 1)
+            } else if scale < 0.58 {
+                targetCount = min(5, baseColumnCount + 2)
+            } else if scale < 0.80 {
+                targetCount = min(5, baseColumnCount + 1)
+            } else {
+                targetCount = baseColumnCount
+            }
 
-                // 双指放大 (scale > 1.0) -> 列数减少，照片变大
-                // 双指缩小 (scale < 1.0) -> 列数增加，照片变小，同屏展示更多照片
-                let targetCount: Int
-                if scale > 1.80 {
-                    targetCount = max(1, baseColumnCount - 2)
-                } else if scale > 1.25 {
-                    targetCount = max(2, baseColumnCount - 1)
-                } else if scale < 0.58 {
-                    targetCount = min(5, baseColumnCount + 2)
-                } else if scale < 0.80 {
-                    targetCount = min(5, baseColumnCount + 1)
-                } else {
-                    targetCount = baseColumnCount
-                }
-
-                let clamped = max(1, min(5, targetCount))
-                if clamped != gridColumnCount {
-                    GrainHaptics.selection(enabled: hapticsEnabled)
-                    withAnimation(.spring(response: 0.30, dampingFraction: 0.80)) {
-                        gridColumnCount = clamped
-                    }
+            let clamped = max(1, min(5, targetCount))
+            if clamped != gridColumnCount {
+                GrainHaptics.selection(enabled: hapticsEnabled)
+                withAnimation(.spring(response: 0.30, dampingFraction: 0.80)) {
+                    gridColumnCount = clamped
                 }
             }
-            .onEnded { _ in
-                isPinching = false
-                currentPinchScale = 1.0
-                baseColumnCount = gridColumnCount
-            }
+        case .ended, .cancelled, .failed:
+            isPinching = false
+            baseColumnCount = gridColumnCount
+        default:
+            break
+        }
     }
 
     var body: some View {
@@ -450,24 +444,29 @@ struct PhotoLibraryHome: View {
             if library.accessDenied {
                 permissionView
             } else {
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: gridSpacing) {
-                        ForEach(visibleAssets, id: \.localIdentifier) { asset in
-                            libraryTile(asset)
+                ZStack {
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: gridSpacing) {
+                            ForEach(visibleAssets, id: \.localIdentifier) { asset in
+                                libraryTile(asset)
+                            }
                         }
+                        .padding(.horizontal, 4)
+                        .padding(.bottom, 24)
+                        .coordinateSpace(name: "photo-library-grid")
+                        .onPreferenceChange(PhotoTileFramePreferenceKey.self) {
+                            tileFrames = $0
+                        }
+                        .simultaneousGesture(selectionDragGesture)
                     }
-                    .padding(.horizontal, 4)
-                    .padding(.bottom, 24)
-                    .coordinateSpace(name: "photo-library-grid")
-                    .onPreferenceChange(PhotoTileFramePreferenceKey.self) {
-                        tileFrames = $0
+                    .scrollIndicators(.hidden)
+                    .refreshable {
+                        await library.refresh()
                     }
-                    .simultaneousGesture(selectionDragGesture)
-                }
-                .scrollIndicators(.hidden)
-                .simultaneousGesture(pinchGesture)
-                .refreshable {
-                    await library.refresh()
+
+                    PinchGestureRecognizerView { scale, state in
+                        handlePinch(scale: scale, state: state)
+                    }
                 }
             }
         }
@@ -1289,5 +1288,56 @@ private struct AssetThumbnail: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - 专用双指缩放手势视图（完全不干扰 ScrollView 原生单指纵向滚动）
+
+struct PinchGestureRecognizerView: UIViewRepresentable {
+    let onPinch: (CGFloat, UIGestureRecognizer.State) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = PinchHostingView()
+        view.backgroundColor = .clear
+        let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handlePinch(_:)))
+        pinch.cancelsTouchesInView = false
+        pinch.delaysTouchesBegan = false
+        pinch.delaysTouchesEnded = false
+        pinch.delegate = context.coordinator
+        view.addGestureRecognizer(pinch)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPinch: onPinch)
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        let onPinch: (CGFloat, UIGestureRecognizer.State) -> Void
+
+        init(onPinch: @escaping (CGFloat, UIGestureRecognizer.State) -> Void) {
+            self.onPinch = onPinch
+        }
+
+        @objc func handlePinch(_ recognizer: UIPinchGestureRecognizer) {
+            onPinch(recognizer.scale, recognizer.state)
+        }
+
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+            true
+        }
+    }
+}
+
+private final class PinchHostingView: UIView {
+    // 关键设计：单指触摸完全透传（返回 nil），确保单指纵向滑动与点击绝对不受任何阻拦
+    // 仅在屏幕上有 2 个及以上触控点（双指捏合缩放）时才激活
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard let touches = event?.allTouches, touches.count >= 2 else {
+            return nil
+        }
+        return self
     }
 }
