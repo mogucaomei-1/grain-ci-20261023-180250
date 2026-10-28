@@ -30,6 +30,8 @@ struct RootView: View {
     @State private var isLibrarySelecting = false
     @State private var browsingAsset: PHAsset? = nil
     @State private var browsingAssetList: [PHAsset] = []
+    @State private var browserSourceRect: CGRect? = nil
+    @State private var browserTileFrames: [String: CGRect] = [:]
     @State private var browserShareURL: URL? = nil
     @State private var showBrowserShareSheet = false
     @State private var browserInfoAsset: PHAsset? = nil
@@ -45,11 +47,11 @@ struct RootView: View {
 
             NavigationStack {
                 VStack(spacing: 0) {
-                    PhotoLibraryHome(library: photoLibrary, isSelecting: $isLibrarySelecting) { asset, assets in
+                    PhotoLibraryHome(library: photoLibrary, isSelecting: $isLibrarySelecting) { asset, assets, sourceRect, tileFrames in
                         browsingAssetList = assets
-                        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-                            browsingAsset = asset
-                        }
+                        browserSourceRect = sourceRect
+                        browserTileFrames = tileFrames
+                        browsingAsset = asset
                     }
 
                     if !isLibrarySelecting {
@@ -289,20 +291,19 @@ struct RootView: View {
                 initialAsset: asset,
                 allAssets: browsingAssetList.isEmpty ? photoLibrary.assets : browsingAssetList,
                 library: photoLibrary,
+                sourceRect: browserSourceRect,
+                tileFrames: browserTileFrames,
                 onDismiss: {
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
-                        browsingAsset = nil
-                    }
+                    browsingAsset = nil
+                    browserSourceRect = nil
+                    browserTileFrames = [:]
                 },
                 onEdit: handleBrowserEdit,
                 onShowInfo: handleBrowserShowInfo,
                 onShare: handleBrowserShare,
                 onDelete: handleBrowserDelete
             )
-            .transition(.asymmetric(
-                insertion: .scale(scale: 0.92).combined(with: .opacity),
-                removal: .scale(scale: 0.88).combined(with: .opacity)
-            ))
+            .ignoresSafeArea()
             .zIndex(2)
         }
     }

@@ -424,6 +424,14 @@ private struct PhotoTileFramePreferenceKey: PreferenceKey {
     }
 }
 
+private struct PhotoTileGlobalFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
 enum LibraryMediaTypeFilter: String, CaseIterable, Identifiable {
     case all
     case photos
@@ -461,7 +469,7 @@ enum LibraryMediaTypeFilter: String, CaseIterable, Identifiable {
 struct PhotoLibraryHome: View {
     @ObservedObject var library: PhotoLibraryViewModel
     @Binding var externalIsSelecting: Bool
-    let onSelect: (PHAsset, [PHAsset]) -> Void
+    let onSelect: (PHAsset, [PHAsset], CGRect?, [String: CGRect]) -> Void
 
     private let usesExternalSelecting: Bool
     @State private var localIsSelecting = false
@@ -479,7 +487,7 @@ struct PhotoLibraryHome: View {
     init(
         library: PhotoLibraryViewModel,
         isSelecting: Binding<Bool>? = nil,
-        onSelect: @escaping (PHAsset, [PHAsset]) -> Void
+        onSelect: @escaping (PHAsset, [PHAsset], CGRect?, [String: CGRect]) -> Void
     ) {
         self.library = library
         if let isSelecting {
@@ -506,6 +514,7 @@ struct PhotoLibraryHome: View {
     @State private var shareError: String?
     @State private var deleteError: String?
     @State private var tileFrames: [String: CGRect] = [:]
+    @State private var tileGlobalFrames: [String: CGRect] = [:]
     @State private var lastSelectionDragPoint: CGPoint?
     @State private var mediaTypeFilter: LibraryMediaTypeFilter = .all
     @State private var sortAscending = false
@@ -748,6 +757,9 @@ struct PhotoLibraryHome: View {
         .coordinateSpace(name: "photo-library-grid")
         .onPreferenceChange(PhotoTileFramePreferenceKey.self) {
             tileFrames = $0
+        }
+        .onPreferenceChange(PhotoTileGlobalFramePreferenceKey.self) {
+            tileGlobalFrames = $0
         }
 
         if isSelecting {
@@ -1120,14 +1132,21 @@ struct PhotoLibraryHome: View {
         .gesture(libraryTileGesture(asset))
         .background {
             GeometryReader { proxy in
-                Color.clear.preference(
-                    key: PhotoTileFramePreferenceKey.self,
-                    value: [
-                        asset.localIdentifier: proxy.frame(
-                            in: .named("photo-library-grid")
-                        )
-                    ]
-                )
+                Color.clear
+                    .preference(
+                        key: PhotoTileFramePreferenceKey.self,
+                        value: [
+                            asset.localIdentifier: proxy.frame(
+                                in: .named("photo-library-grid")
+                            )
+                        ]
+                    )
+                    .preference(
+                        key: PhotoTileGlobalFramePreferenceKey.self,
+                        value: [
+                            asset.localIdentifier: proxy.frame(in: .global)
+                        ]
+                    )
             }
         }
         .accessibilityLabel(
@@ -1147,7 +1166,8 @@ struct PhotoLibraryHome: View {
                     if isSelecting {
                         toggleSelection(asset)
                     } else {
-                        onSelect(asset, visibleAssets)
+                        let sourceRect = tileGlobalFrames[asset.localIdentifier]
+                        onSelect(asset, visibleAssets, sourceRect, tileGlobalFrames)
                     }
                 case .second:
                     if !isSelecting {
@@ -2044,6 +2064,8 @@ struct PhotoDetailBrowserView: View {
     let initialAsset: PHAsset
     let allAssets: [PHAsset]
     let library: PhotoLibraryViewModel
+    let sourceRect: CGRect?
+    let tileFrames: [String: CGRect]
     let onDismiss: () -> Void
     let onEdit: (PHAsset) -> Void
     let onShowInfo: (PHAsset) -> Void
@@ -2052,14 +2074,17 @@ struct PhotoDetailBrowserView: View {
 
     @State private var currentIndex: Int
     @State private var showDeleteConfirm = false
-    @State private var dragOffset: CGSize = .zero
+    @State private var isPresented = false
+    @State private var isClosing = false
     @State private var isDraggingDown = false
-    @State private var isDismissing = false
+    @State private var dragTranslation: CGSize = .zero
 
     init(
         initialAsset: PHAsset,
         allAssets: [PHAsset],
         library: PhotoLibraryViewModel,
+        sourceRect: CGRect? = nil,
+        tileFrames: [String: CGRect] = [:],
         onDismiss: @escaping () -> Void,
         onEdit: @escaping (PHAsset) -> Void,
         onShowInfo: @escaping (PHAsset) -> Void,
@@ -2070,6 +2095,8 @@ struct PhotoDetailBrowserView: View {
         let list = allAssets.isEmpty ? [initialAsset] : allAssets
         self.allAssets = list
         self.library = library
+        self.sourceRect = sourceRect
+        self.tileFrames = tileFrames
         self.onDismiss = onDismiss
         self.onEdit = onEdit
         self.onShowInfo = onShowInfo
@@ -2084,78 +2111,116 @@ struct PhotoDetailBrowserView: View {
         return allAssets[currentIndex]
     }
 
-    private var dragProgress: CGFloat {
-        min(1.0, max(0.0, dragOffset.height / 300.0))
-    }
+    private func computeGeometry(screenSize: CGSize) -> (offset: CGSize, scale: CGFloat, cornerRadius: CGFloat) {
+        let screenCenter = CGPoint(x: screenSize.width / 2, y: screenSize.height / 2)
+        let currentTileRect = (currentAsset != nil ? tileFrames[currentAsset!.localIdentifier] : nil) ?? sourceRect
 
-    private var backgroundOpacity: Double {
-        max(0.0, 1.0 - Double(dragProgress) * 0.95)
-    }
+        if isClosing {
+            if let rect = currentTileRect {
+                let targetX = rect.midX - screenCenter.x
+                let targetY = rect.midY - screenCenter.y
+                let targetScale = rect.width / screenSize.width
+                return (CGSize(width: targetX, height: targetY), targetScale, 3.5)
+            } else {
+                return (CGSize(width: 0, height: screenSize.height * 0.7), 0.5, 24.0)
+            }
+        }
 
-    private var controlsOpacity: Double {
-        max(0.0, 1.0 - Double(dragProgress) * 2.8)
-    }
+        if !isPresented {
+            if let rect = sourceRect {
+                let initialX = rect.midX - screenCenter.x
+                let initialY = rect.midY - screenCenter.y
+                let initialScale = rect.width / screenSize.width
+                return (CGSize(width: initialX, height: initialY), initialScale, 3.5)
+            } else {
+                return (CGSize(width: 0, height: 60), 0.88, 20.0)
+            }
+        }
 
-    private var photoScale: CGFloat {
-        max(0.65, 1.0 - dragProgress * 0.35)
-    }
+        if isDraggingDown {
+            let dy = max(0, dragTranslation.height)
+            let dx = dragTranslation.width * 0.4
+            let progress = min(1.0, dy / 350.0)
+            let scale = max(0.55, 1.0 - progress * 0.42)
+            let radius = min(28.0, progress * 28.0)
+            return (CGSize(width: dx, height: dy), scale, radius)
+        }
 
-    private var photoCornerRadius: CGFloat {
-        min(28.0, dragProgress * 28.0)
+        return (.zero, 1.0, 0.0)
     }
 
     var body: some View {
-        ZStack {
-            GrainTheme.black
-                .opacity(backgroundOpacity)
-                .ignoresSafeArea()
+        GeometryReader { geo in
+            let screenSize = geo.size
+            let geom = computeGeometry(screenSize: screenSize)
+            let dragProgress = min(1.0, max(0.0, dragTranslation.height / 350.0))
+            let bgOpacity: Double = {
+                if !isPresented || isClosing { return 0.0 }
+                if isDraggingDown { return max(0.0, 1.0 - Double(dragProgress) * 0.95) }
+                return 1.0
+            }()
+            let controlsOpacity: Double = {
+                if !isPresented || isClosing { return 0.0 }
+                if isDraggingDown { return max(0.0, 1.0 - Double(dragProgress) * 2.8) }
+                return 1.0
+            }()
 
-            VStack(spacing: 0) {
-                BrowserTopBarView(
-                    date: currentAsset?.creationDate,
-                    formatLabel: currentAsset.flatMap { library.formatLabels[$0.localIdentifier] },
-                    onDismiss: onDismiss
-                )
-                .opacity(controlsOpacity)
-
-                Spacer(minLength: 0)
+            ZStack {
+                GrainTheme.black
+                    .opacity(bgOpacity)
+                    .ignoresSafeArea()
 
                 PhotoPagingViewControllerRepresentable(
                     allAssets: allAssets,
                     currentIndex: $currentIndex
                 )
-                .offset(
-                    x: dragOffset.width * 0.35,
-                    y: max(0, dragOffset.height)
-                )
-                .scaleEffect(photoScale)
-                .clipShape(RoundedRectangle(cornerRadius: photoCornerRadius, style: .continuous))
+                .offset(geom.offset)
+                .scaleEffect(geom.scale)
+                .clipShape(RoundedRectangle(cornerRadius: geom.cornerRadius, style: .continuous))
                 .shadow(
-                    color: Color.black.opacity(dragProgress > 0.05 ? 0.35 : 0),
-                    radius: 12,
-                    y: 6
+                    color: Color.black.opacity(geom.cornerRadius > 2 ? 0.35 : 0),
+                    radius: 16,
+                    y: 8
                 )
                 .contentShape(Rectangle())
                 .simultaneousGesture(downwardDragGesture)
 
-                Spacer(minLength: 0)
+                VStack(spacing: 0) {
+                    BrowserTopBarView(
+                        date: currentAsset?.creationDate,
+                        formatLabel: currentAsset.flatMap { library.formatLabels[$0.localIdentifier] },
+                        onDismiss: closeBrowser
+                    )
+                    .padding(.top, max(geo.safeAreaInsets.top, 12))
 
-                FilmstripBarView(
-                    allAssets: allAssets,
-                    currentIndex: $currentIndex
-                )
-                .opacity(controlsOpacity)
+                    Spacer(minLength: 0)
 
-                BrowserBottomBarView(
-                    onDelete: { showDeleteConfirm = true },
-                    onShare: { if let a = currentAsset { onShare(a) } },
-                    onShowInfo: { if let a = currentAsset { onShowInfo(a) } },
-                    onEdit: { if let a = currentAsset { onEdit(a) } }
-                )
+                    FilmstripBarView(
+                        allAssets: allAssets,
+                        currentIndex: $currentIndex
+                    )
+                    .padding(.bottom, 6)
+
+                    BrowserBottomBarView(
+                        onDelete: { showDeleteConfirm = true },
+                        onShare: { if let a = currentAsset { onShare(a) } },
+                        onShowInfo: { if let a = currentAsset { onShowInfo(a) } },
+                        onEdit: { if let a = currentAsset { onEdit(a) } }
+                    )
+                    .padding(.bottom, max(0, geo.safeAreaInsets.bottom - 10))
+                }
                 .opacity(controlsOpacity)
+                .allowsHitTesting(controlsOpacity > 0.5)
+            }
+            .ignoresSafeArea()
+            .onAppear {
+                DispatchQueue.main.async {
+                    withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
+                        isPresented = true
+                    }
+                }
             }
         }
-        .ignoresSafeArea(.container, edges: .bottom)
         .confirmationDialog(
             "确定要删除这张照片吗？",
             isPresented: $showDeleteConfirm,
@@ -2180,40 +2245,46 @@ struct PhotoDetailBrowserView: View {
                         isDraggingDown = true
                     }
                 }
-                if isDraggingDown && value.translation.height > 0 {
-                    dragOffset = value.translation
+                if isDraggingDown {
+                    dragTranslation = CGSize(
+                        width: value.translation.width,
+                        height: max(0, value.translation.height)
+                    )
                 }
             }
             .onEnded { value in
                 if isDraggingDown {
                     let velocityY = value.predictedEndTranslation.height - value.translation.height
-                    if value.translation.height > 80 || velocityY > 180 {
-                        isDismissing = true
-                        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-                            dragOffset = CGSize(
-                                width: value.translation.width * 0.5,
-                                height: UIScreen.main.bounds.height * 0.8
-                            )
-                        }
-                        GrainHaptics.selection(enabled: true)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                            onDismiss()
-                        }
+                    if value.translation.height > 80 || velocityY > 160 {
+                        closeBrowser()
                     } else {
                         withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
-                            dragOffset = .zero
+                            dragTranslation = .zero
+                            isDraggingDown = false
                         }
                     }
-                    isDraggingDown = false
                 }
             }
+    }
+
+    private func closeBrowser() {
+        guard !isClosing else { return }
+        isClosing = true
+        GrainHaptics.selection(enabled: true)
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.84)) {
+            isPresented = false
+            isDraggingDown = false
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) {
+            onDismiss()
+        }
     }
 
     private func performDelete(_ asset: PHAsset) {
         onDelete(asset)
         let remaining = allAssets.filter { $0.localIdentifier != asset.localIdentifier }
         if remaining.isEmpty {
-            onDismiss()
+            closeBrowser()
         } else {
             currentIndex = min(currentIndex, remaining.count - 1)
         }
