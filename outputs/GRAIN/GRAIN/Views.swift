@@ -47,7 +47,7 @@ struct RootView: View {
                 VStack(spacing: 0) {
                     PhotoLibraryHome(library: photoLibrary, isSelecting: $isLibrarySelecting) { asset, assets in
                         browsingAssetList = assets
-                        withAnimation(.easeInOut(duration: 0.2)) {
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
                             browsingAsset = asset
                         }
                     }
@@ -290,7 +290,7 @@ struct RootView: View {
                 allAssets: browsingAssetList.isEmpty ? photoLibrary.assets : browsingAssetList,
                 library: photoLibrary,
                 onDismiss: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
                         browsingAsset = nil
                     }
                 },
@@ -299,7 +299,10 @@ struct RootView: View {
                 onShare: handleBrowserShare,
                 onDelete: handleBrowserDelete
             )
-            .transition(.opacity)
+            .transition(.asymmetric(
+                insertion: .scale(scale: 0.92).combined(with: .opacity),
+                removal: .scale(scale: 0.88).combined(with: .opacity)
+            ))
             .zIndex(2)
         }
     }

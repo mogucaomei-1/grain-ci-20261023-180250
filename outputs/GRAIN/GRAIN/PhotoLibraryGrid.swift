@@ -1626,7 +1626,7 @@ struct ScrollViewPinchAttachment: UIViewRepresentable {
     }
 }
 
-// MARK: - 照片浏览 (Photo Detail Browser / iOS 17 风格相册浏览 - 极速高性能版)
+// MARK: - 照片浏览 (Photo Detail Browser / iOS 17 风格相册浏览 - 极速高性能 120 FPS 版)
 
 struct FilmstripThumbnailView: View {
     let asset: PHAsset
@@ -1679,6 +1679,208 @@ struct FilmstripThumbnailView: View {
                 self.image = result
             }
         }
+    }
+}
+
+struct FilmstripBarView: View {
+    let allAssets: [PHAsset]
+    @Binding var currentIndex: Int
+
+    @State private var isScrubbing = false
+    @State private var dragStartIndex = 0
+
+    var body: some View {
+        ScrollViewReader { stripProxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 4) {
+                    ForEach(0..<allAssets.count, id: \.self) { index in
+                        let asset = allAssets[index]
+                        let isSelected = index == currentIndex
+                        FilmstripThumbnailView(asset: asset, isSelected: isSelected)
+                            .id(asset.localIdentifier)
+                            .onTapGesture {
+                                currentIndex = index
+                                GrainHaptics.selection(enabled: true)
+                                withAnimation(.easeInOut(duration: 0.18)) {
+                                    stripProxy.scrollTo(asset.localIdentifier, anchor: .center)
+                                }
+                            }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .frame(height: 48)
+            }
+            .contentShape(Rectangle())
+            .simultaneousGesture(filmstripDragGesture(stripProxy: stripProxy))
+            .onChange(of: currentIndex) { _, newIndex in
+                if !isScrubbing, newIndex >= 0, newIndex < allAssets.count {
+                    let id = allAssets[newIndex].localIdentifier
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        stripProxy.scrollTo(id, anchor: .center)
+                    }
+                }
+            }
+            .onAppear {
+                if currentIndex >= 0, currentIndex < allAssets.count {
+                    stripProxy.scrollTo(allAssets[currentIndex].localIdentifier, anchor: .center)
+                }
+            }
+        }
+    }
+
+    private func filmstripDragGesture(stripProxy: ScrollViewProxy) -> some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                if !isScrubbing {
+                    isScrubbing = true
+                    dragStartIndex = currentIndex
+                }
+                let step: CGFloat = 26.0
+                let delta = -Int(round(value.translation.width / step))
+                let targetIndex = max(0, min(allAssets.count - 1, dragStartIndex + delta))
+                if targetIndex != currentIndex {
+                    currentIndex = targetIndex
+                    GrainHaptics.selection(enabled: true)
+                    stripProxy.scrollTo(allAssets[targetIndex].localIdentifier, anchor: .center)
+                }
+            }
+            .onEnded { value in
+                let velocity = value.predictedEndTranslation.width - value.translation.width
+                let extra = -Int(round(velocity / 80.0))
+                let finalIndex = max(0, min(allAssets.count - 1, currentIndex + extra))
+                if finalIndex != currentIndex {
+                    currentIndex = finalIndex
+                    GrainHaptics.selection(enabled: true)
+                }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    stripProxy.scrollTo(allAssets[finalIndex].localIdentifier, anchor: .center)
+                }
+                isScrubbing = false
+            }
+    }
+}
+
+struct BrowserTopBarView: View {
+    let date: Date?
+    let formatLabel: String?
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack {
+            Button {
+                GrainHaptics.selection(enabled: true)
+                onDismiss()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 13, weight: .bold))
+                    Text("相册")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                }
+                .foregroundStyle(GrainTheme.paper)
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .liquidGlassCapsule()
+            }
+            .buttonStyle(LiquidGlassButtonStyle())
+
+            Spacer()
+
+            if let date {
+                VStack(spacing: 1) {
+                    Text(formatDate(date))
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(GrainTheme.paper)
+                    Text(formatTime(date))
+                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(GrainTheme.muted)
+                }
+            }
+
+            Spacer()
+
+            if let formatLabel {
+                AssetFormatBadge(label: formatLabel)
+            } else {
+                Color.clear.frame(width: 44, height: 32)
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 44)
+    }
+
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日"
+        return formatter.string(from: date)
+    }
+
+    private func formatTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+}
+
+struct BrowserBottomBarView: View {
+    let onDelete: () -> Void
+    let onShare: () -> Void
+    let onShowInfo: () -> Void
+    let onEdit: () -> Void
+
+    var body: some View {
+        HStack {
+            Spacer()
+
+            HStack(spacing: 18) {
+                // 1. 删除
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(GrainTheme.danger)
+                        .liquidGlassCircle(size: 38)
+                }
+                .buttonStyle(LiquidGlassButtonStyle())
+                .accessibilityLabel("删除照片")
+
+                // 2. 分享
+                Button(action: onShare) {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(GrainTheme.paper)
+                        .liquidGlassCircle(size: 38)
+                }
+                .buttonStyle(LiquidGlassButtonStyle())
+                .accessibilityLabel("分享照片")
+
+                // 3. 图片信息
+                Button(action: onShowInfo) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(GrainTheme.paper)
+                        .liquidGlassCircle(size: 38)
+                }
+                .buttonStyle(LiquidGlassButtonStyle())
+                .accessibilityLabel("查看照片信息")
+
+                // 4. 编辑 (仅保留图标，无文字)
+                Button(action: onEdit) {
+                    Image(systemName: "slider.horizontal.2.square.on.square")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(GrainTheme.paper)
+                        .liquidGlassCircle(size: 38)
+                }
+                .buttonStyle(LiquidGlassButtonStyle())
+                .accessibilityLabel("编辑照片")
+            }
+
+            Spacer()
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 44)
+        .padding(.bottom, 22)
     }
 }
 
@@ -1850,11 +2052,9 @@ struct PhotoDetailBrowserView: View {
 
     @State private var currentIndex: Int
     @State private var showDeleteConfirm = false
-    @State private var dragOffsetY: CGFloat = 0
+    @State private var dragOffset: CGSize = .zero
     @State private var isDraggingDown = false
     @State private var isDismissing = false
-    @State private var isScrubbingFilmstrip = false
-    @State private var dragStartIndex: Int = 0
 
     init(
         initialAsset: PHAsset,
@@ -1885,19 +2085,23 @@ struct PhotoDetailBrowserView: View {
     }
 
     private var dragProgress: CGFloat {
-        min(1.0, max(0.0, dragOffsetY / 280.0))
+        min(1.0, max(0.0, dragOffset.height / 300.0))
     }
 
     private var backgroundOpacity: Double {
-        max(0.0, 1.0 - Double(dragProgress) * 0.85)
+        max(0.0, 1.0 - Double(dragProgress) * 0.95)
     }
 
     private var controlsOpacity: Double {
-        max(0.0, 1.0 - Double(dragProgress) * 2.5)
+        max(0.0, 1.0 - Double(dragProgress) * 2.8)
     }
 
     private var photoScale: CGFloat {
-        max(0.72, 1.0 - dragProgress * 0.28)
+        max(0.65, 1.0 - dragProgress * 0.35)
+    }
+
+    private var photoCornerRadius: CGFloat {
+        min(28.0, dragProgress * 28.0)
     }
 
     var body: some View {
@@ -1907,22 +2111,48 @@ struct PhotoDetailBrowserView: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
-                topNavigationBar
-                    .opacity(controlsOpacity)
+                BrowserTopBarView(
+                    date: currentAsset?.creationDate,
+                    formatLabel: currentAsset.flatMap { library.formatLabels[$0.localIdentifier] },
+                    onDismiss: onDismiss
+                )
+                .opacity(controlsOpacity)
 
                 Spacer(minLength: 0)
 
-                mainPagingView
-                    .offset(y: max(0, dragOffsetY))
-                    .scaleEffect(photoScale)
+                PhotoPagingViewControllerRepresentable(
+                    allAssets: allAssets,
+                    currentIndex: $currentIndex
+                )
+                .offset(
+                    x: dragOffset.width * 0.35,
+                    y: max(0, dragOffset.height)
+                )
+                .scaleEffect(photoScale)
+                .clipShape(RoundedRectangle(cornerRadius: photoCornerRadius, style: .continuous))
+                .shadow(
+                    color: Color.black.opacity(dragProgress > 0.05 ? 0.35 : 0),
+                    radius: 12,
+                    y: 6
+                )
+                .contentShape(Rectangle())
+                .simultaneousGesture(downwardDragGesture)
 
                 Spacer(minLength: 0)
 
-                thumbnailFilmstrip
-                    .opacity(controlsOpacity)
+                FilmstripBarView(
+                    allAssets: allAssets,
+                    currentIndex: $currentIndex
+                )
+                .opacity(controlsOpacity)
 
-                bottomActionBar
-                    .opacity(controlsOpacity)
+                BrowserBottomBarView(
+                    onDelete: { showDeleteConfirm = true },
+                    onShare: { if let a = currentAsset { onShare(a) } },
+                    onShowInfo: { if let a = currentAsset { onShowInfo(a) } },
+                    onEdit: { if let a = currentAsset { onEdit(a) } }
+                )
+                .opacity(controlsOpacity)
             }
         }
         .ignoresSafeArea(.container, edges: .bottom)
@@ -1942,227 +2172,41 @@ struct PhotoDetailBrowserView: View {
         }
     }
 
-    private var topNavigationBar: some View {
-        HStack {
-            Button {
-                GrainHaptics.selection(enabled: true)
-                onDismiss()
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 13, weight: .bold))
-                    Text("相册")
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                }
-                .foregroundStyle(GrainTheme.paper)
-                .padding(.horizontal, 10)
-                .frame(height: 32)
-                .liquidGlassCapsule()
-            }
-            .buttonStyle(LiquidGlassButtonStyle())
-
-            Spacer()
-
-            if let date = currentAsset?.creationDate {
-                VStack(spacing: 1) {
-                    Text(Self.formatDate(date))
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .foregroundStyle(GrainTheme.paper)
-                    Text(Self.formatTime(date))
-                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
-                        .foregroundStyle(GrainTheme.muted)
-                }
-            }
-
-            Spacer()
-
-            if let asset = currentAsset, let label = library.formatLabels[asset.localIdentifier] {
-                AssetFormatBadge(label: label)
-            } else {
-                Color.clear.frame(width: 44, height: 32)
-            }
-        }
-        .padding(.horizontal, 16)
-        .frame(height: 44)
-    }
-
-    private var mainPagingView: some View {
-        PhotoPagingViewControllerRepresentable(
-            allAssets: allAssets,
-            currentIndex: $currentIndex
-        )
-        .contentShape(Rectangle())
-        .simultaneousGesture(downwardDragGesture)
-    }
-
     private var downwardDragGesture: some Gesture {
-        DragGesture(minimumDistance: 8)
+        DragGesture(minimumDistance: 6)
             .onChanged { value in
                 if !isDraggingDown {
-                    if value.translation.height > 8 && abs(value.translation.height) > abs(value.translation.width) * 1.3 {
+                    if value.translation.height > 6 && abs(value.translation.height) > abs(value.translation.width) * 1.25 {
                         isDraggingDown = true
                     }
                 }
                 if isDraggingDown && value.translation.height > 0 {
-                    dragOffsetY = value.translation.height
+                    dragOffset = value.translation
                 }
             }
             .onEnded { value in
                 if isDraggingDown {
-                    let velocity = value.predictedEndTranslation.height - value.translation.height
-                    if value.translation.height > 80 || velocity > 150 {
+                    let velocityY = value.predictedEndTranslation.height - value.translation.height
+                    if value.translation.height > 80 || velocityY > 180 {
                         isDismissing = true
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            dragOffsetY = 800
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                            dragOffset = CGSize(
+                                width: value.translation.width * 0.5,
+                                height: UIScreen.main.bounds.height * 0.8
+                            )
                         }
                         GrainHaptics.selection(enabled: true)
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                             onDismiss()
                         }
                     } else {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
-                            dragOffsetY = 0
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                            dragOffset = .zero
                         }
                     }
                     isDraggingDown = false
                 }
             }
-    }
-
-    private var thumbnailFilmstrip: some View {
-        ScrollViewReader { stripProxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 4) {
-                    ForEach(Array(allAssets.enumerated()), id: \.element.localIdentifier) { index, asset in
-                        let isSelected = index == currentIndex
-                        FilmstripThumbnailView(asset: asset, isSelected: isSelected)
-                            .id(asset.localIdentifier)
-                            .onTapGesture {
-                                currentIndex = index
-                                GrainHaptics.selection(enabled: true)
-                                withAnimation(.easeInOut(duration: 0.18)) {
-                                    stripProxy.scrollTo(asset.localIdentifier, anchor: .center)
-                                }
-                            }
-                    }
-                }
-                .padding(.horizontal, 16)
-                .frame(height: 48)
-            }
-            .contentShape(Rectangle())
-            .simultaneousGesture(filmstripDragGesture(stripProxy: stripProxy))
-            .onChange(of: currentIndex) { _, newIndex in
-                if !isScrubbingFilmstrip, newIndex >= 0, newIndex < allAssets.count {
-                    let id = allAssets[newIndex].localIdentifier
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        stripProxy.scrollTo(id, anchor: .center)
-                    }
-                }
-            }
-            .onAppear {
-                if currentIndex >= 0, currentIndex < allAssets.count {
-                    stripProxy.scrollTo(allAssets[currentIndex].localIdentifier, anchor: .center)
-                }
-            }
-        }
-    }
-
-    private func filmstripDragGesture(stripProxy: ScrollViewProxy) -> some Gesture {
-        DragGesture(minimumDistance: 4)
-            .onChanged { value in
-                if !isScrubbingFilmstrip {
-                    isScrubbingFilmstrip = true
-                    dragStartIndex = currentIndex
-                }
-                let step: CGFloat = 26.0
-                let delta = -Int(round(value.translation.width / step))
-                let targetIndex = max(0, min(allAssets.count - 1, dragStartIndex + delta))
-                if targetIndex != currentIndex {
-                    currentIndex = targetIndex
-                    GrainHaptics.selection(enabled: true)
-                    stripProxy.scrollTo(allAssets[targetIndex].localIdentifier, anchor: .center)
-                }
-            }
-            .onEnded { value in
-                let velocity = value.predictedEndTranslation.width - value.translation.width
-                let extra = -Int(round(velocity / 80.0))
-                let finalIndex = max(0, min(allAssets.count - 1, currentIndex + extra))
-                if finalIndex != currentIndex {
-                    currentIndex = finalIndex
-                    GrainHaptics.selection(enabled: true)
-                }
-                withAnimation(.easeOut(duration: 0.2)) {
-                    stripProxy.scrollTo(allAssets[finalIndex].localIdentifier, anchor: .center)
-                }
-                isScrubbingFilmstrip = false
-            }
-    }
-
-    private var bottomActionBar: some View {
-        HStack {
-            Spacer()
-
-            HStack(spacing: 18) {
-                // 1. 删除
-                Button {
-                    showDeleteConfirm = true
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(GrainTheme.danger)
-                        .liquidGlassCircle(size: 38)
-                }
-                .buttonStyle(LiquidGlassButtonStyle())
-                .accessibilityLabel("删除照片")
-
-                // 2. 分享
-                Button {
-                    if let asset = currentAsset {
-                        onShare(asset)
-                    }
-                } label: {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(GrainTheme.paper)
-                        .liquidGlassCircle(size: 38)
-                }
-                .buttonStyle(LiquidGlassButtonStyle())
-                .accessibilityLabel("分享照片")
-
-                // 3. 图片信息
-                Button {
-                    if let asset = currentAsset {
-                        onShowInfo(asset)
-                    }
-                } label: {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(GrainTheme.paper)
-                        .liquidGlassCircle(size: 38)
-                }
-                .buttonStyle(LiquidGlassButtonStyle())
-                .accessibilityLabel("查看照片信息")
-
-                // 4. 编辑 (仅保留图标，无文字)
-                Button {
-                    if let asset = currentAsset {
-                        onEdit(asset)
-                    }
-                } label: {
-                    Image(systemName: "slider.horizontal.2.square.on.square")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(GrainTheme.paper)
-                        .liquidGlassCircle(size: 38)
-                }
-                .buttonStyle(LiquidGlassButtonStyle())
-                .accessibilityLabel("编辑照片")
-            }
-
-            Spacer()
-        }
-        .padding(.horizontal, 18)
-        .frame(height: 44)
-        .padding(.bottom, 22)
     }
 
     private func performDelete(_ asset: PHAsset) {
@@ -2173,19 +2217,5 @@ struct PhotoDetailBrowserView: View {
         } else {
             currentIndex = min(currentIndex, remaining.count - 1)
         }
-    }
-
-    private static func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy年M月d日"
-        return formatter.string(from: date)
-    }
-
-    private static func formatTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "HH:mm"
-        return formatter.string(from: date)
     }
 }
