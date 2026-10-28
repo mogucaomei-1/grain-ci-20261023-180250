@@ -796,7 +796,7 @@ struct PhotoLibraryHome: View {
                 }
             } label: {
                 HStack(spacing: 4) {
-                    Text(mediaTypeFilter == .all ? "媒体类型" : mediaTypeFilter.title)
+                    Text(mediaTypeFilter.title)
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.system(size: 8.5, weight: .bold))

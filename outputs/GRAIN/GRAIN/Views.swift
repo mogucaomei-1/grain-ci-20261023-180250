@@ -766,55 +766,51 @@ private struct EditorToolsPager: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
+                // 照片编辑（只保留图标）
                 Button {
                     withAnimation(.snappy(duration: 0.24)) {
                         page = .adjust
                     }
                 } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "slider.horizontal.3")
-                        Text("照片调节")
-                    }
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundStyle(page == .adjust ? GrainTheme.accent : GrainTheme.muted)
-                    .padding(.horizontal, 10)
-                    .frame(height: 25)
-                    .background {
-                        if page == .adjust {
-                            Capsule().fill(.ultraThinMaterial)
-                                .overlay(Capsule().strokeBorder(GrainTheme.accent.opacity(0.45), lineWidth: 0.8))
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(page == .adjust ? GrainTheme.accent : GrainTheme.muted)
+                        .frame(width: 32, height: 25)
+                        .background {
+                            if page == .adjust {
+                                Capsule().fill(.ultraThinMaterial)
+                                    .overlay(Capsule().strokeBorder(GrainTheme.accent.opacity(0.45), lineWidth: 0.8))
+                            }
                         }
-                    }
                 }
                 .buttonStyle(LiquidGlassButtonStyle())
+                .accessibilityLabel("照片编辑")
 
+                // 胶片模拟（只保留图标）
                 Button {
                     withAnimation(.snappy(duration: 0.24)) {
                         page = .film
                     }
                 } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "camera.aperture")
-                        Text("胶片滤镜")
-                    }
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundStyle(page == .film ? GrainTheme.accent : GrainTheme.muted)
-                    .padding(.horizontal, 10)
-                    .frame(height: 25)
-                    .background {
-                        if page == .film {
-                            Capsule().fill(.ultraThinMaterial)
-                                .overlay(Capsule().strokeBorder(GrainTheme.accent.opacity(0.45), lineWidth: 0.8))
+                    Image(systemName: "camera.aperture")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(page == .film ? GrainTheme.accent : GrainTheme.muted)
+                        .frame(width: 32, height: 25)
+                        .background {
+                            if page == .film {
+                                Capsule().fill(.ultraThinMaterial)
+                                    .overlay(Capsule().strokeBorder(GrainTheme.accent.opacity(0.45), lineWidth: 0.8))
+                            }
                         }
-                    }
                 }
                 .buttonStyle(LiquidGlassButtonStyle())
+                .accessibilityLabel("胶片模拟")
 
-                // AI 一键调色（默认白底灰字，开启白底橙字，带明确状态反馈）
+                // AI 调色（图标 + "AI"）
                 Button {
                     editor.applyAiColorGrading()
                 } label: {
-                    HStack(spacing: 3) {
+                    HStack(spacing: 2.5) {
                         if editor.isAiGrading {
                             ProgressView()
                                 .controlSize(.mini)
@@ -823,11 +819,11 @@ private struct EditorToolsPager: View {
                             Image(systemName: editor.isAiGradingApplied ? "sparkles" : "sparkle")
                                 .font(.system(size: 10, weight: .bold))
                         }
-                        Text(editor.isAiGrading ? "计算中" : "AI调色")
-                            .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                        Text("AI")
+                            .font(.system(size: 11, weight: .heavy, design: .rounded))
                     }
                     .foregroundStyle(editor.isAiGradingApplied ? GrainTheme.accent : Color(hex: 0x8E8E93))
-                    .padding(.horizontal, 9)
+                    .padding(.horizontal, 8)
                     .frame(height: 25)
                     .background(Color.white, in: Capsule())
                     .overlay(
@@ -843,7 +839,7 @@ private struct EditorToolsPager: View {
                 }
                 .buttonStyle(LiquidGlassButtonStyle())
                 .disabled(editor.isAiGrading)
-                .accessibilityLabel(editor.isAiGradingApplied ? "关闭 AI 算法调色" : "开启 AI 算法调色")
+                .accessibilityLabel(editor.isAiGradingApplied ? "关闭 AI 调色" : "开启 AI 调色")
 
                 Spacer()
 
