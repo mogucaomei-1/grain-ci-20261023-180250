@@ -23,7 +23,7 @@
         <string>iPhoneOS</string>
     </array>
     <key>CFBundleVersion</key>
-    <string>127</string>
+    <string>128</string>
     <key>MinimumOSVersion</key>
     <string>17.0</string>
     <key>UIDeviceFamily</key>

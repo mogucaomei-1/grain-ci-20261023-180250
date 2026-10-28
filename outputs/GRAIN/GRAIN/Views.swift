@@ -290,7 +290,7 @@ struct RootView: View {
                 allAssets: browsingAssetList.isEmpty ? photoLibrary.assets : browsingAssetList,
                 library: photoLibrary,
                 onDismiss: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(.easeInOut(duration: 0.18)) {
                         browsingAsset = nil
                     }
                 },
@@ -299,10 +299,7 @@ struct RootView: View {
                 onShare: handleBrowserShare,
                 onDelete: handleBrowserDelete
             )
-            .transition(.asymmetric(
-                insertion: .opacity.combined(with: .scale(scale: 0.96)),
-                removal: .opacity.combined(with: .scale(scale: 0.96))
-            ))
+            .transition(.opacity)
             .zIndex(2)
         }
     }

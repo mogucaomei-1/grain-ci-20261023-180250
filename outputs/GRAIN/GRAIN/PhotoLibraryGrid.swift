@@ -1626,7 +1626,217 @@ struct ScrollViewPinchAttachment: UIViewRepresentable {
     }
 }
 
-// MARK: - 照片浏览 (Photo Detail Browser / iOS 17 风格相册浏览)
+// MARK: - 照片浏览 (Photo Detail Browser / iOS 17 风格相册浏览 - 极速高性能版)
+
+struct FilmstripThumbnailView: View {
+    let asset: PHAsset
+    let isSelected: Bool
+    @State private var image: UIImage?
+
+    private static let cache = NSCache<NSString, UIImage>()
+
+    var body: some View {
+        ZStack {
+            GrainTheme.surface
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            }
+        }
+        .frame(width: isSelected ? 32 : 24, height: 40)
+        .clipShape(RoundedRectangle(cornerRadius: 3.5, style: .continuous))
+        .overlay {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 3.5, style: .continuous)
+                    .stroke(Color.white, lineWidth: 2)
+            }
+        }
+        .onAppear(perform: loadMiniThumbnail)
+    }
+
+    private func loadMiniThumbnail() {
+        let key = asset.localIdentifier as NSString
+        if let cached = Self.cache.object(forKey: key) {
+            self.image = cached
+            return
+        }
+
+        let targetSize = CGSize(width: 72, height: 108)
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .fastFormat
+        options.resizeMode = .fast
+        options.isNetworkAccessAllowed = false
+
+        PHImageManager.default().requestImage(
+            for: asset,
+            targetSize: targetSize,
+            contentMode: .aspectFill,
+            options: options
+        ) { result, _ in
+            if let result {
+                Self.cache.setObject(result, forKey: key)
+                self.image = result
+            }
+        }
+    }
+}
+
+struct PhotoPagingViewControllerRepresentable: UIViewControllerRepresentable {
+    let allAssets: [PHAsset]
+    @Binding var currentIndex: Int
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeUIViewController(context: Context) -> UIPageViewController {
+        let pvc = UIPageViewController(
+            transitionStyle: .scroll,
+            navigationOrientation: .horizontal,
+            options: [UIPageViewController.OptionsKey.interPageSpacing: 16]
+        )
+        pvc.dataSource = context.coordinator
+        pvc.delegate = context.coordinator
+        pvc.view.backgroundColor = .clear
+
+        if currentIndex >= 0 && currentIndex < allAssets.count {
+            let initialVC = PhotoSinglePageVC(asset: allAssets[currentIndex], index: currentIndex)
+            pvc.setViewControllers([initialVC], direction: .forward, animated: false)
+        }
+        return pvc
+    }
+
+    func updateUIViewController(_ uiViewController: UIPageViewController, context: Context) {
+        context.coordinator.parent = self
+        guard let currentVC = uiViewController.viewControllers?.first as? PhotoSinglePageVC else { return }
+        if currentVC.index != currentIndex && currentIndex >= 0 && currentIndex < allAssets.count {
+            let dir: UIPageViewController.NavigationDirection = currentIndex >= currentVC.index ? .forward : .reverse
+            let newVC = PhotoSinglePageVC(asset: allAssets[currentIndex], index: currentIndex)
+            uiViewController.setViewControllers([newVC], direction: dir, animated: false)
+        }
+    }
+
+    class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+        var parent: PhotoPagingViewControllerRepresentable
+
+        init(_ parent: PhotoPagingViewControllerRepresentable) {
+            self.parent = parent
+        }
+
+        func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
+            guard let page = viewController as? PhotoSinglePageVC, page.index > 0 else { return nil }
+            let prevIndex = page.index - 1
+            return PhotoSinglePageVC(asset: parent.allAssets[prevIndex], index: prevIndex)
+        }
+
+        func pageViewController(_ pageViewController: UIPageViewController, viewControllerAfter viewController: UIViewController) -> UIViewController? {
+            guard let page = viewController as? PhotoSinglePageVC, page.index < parent.allAssets.count - 1 else { return nil }
+            let nextIndex = page.index + 1
+            return PhotoSinglePageVC(asset: parent.allAssets[nextIndex], index: nextIndex)
+        }
+
+        func pageViewController(_ pageViewController: UIPageViewController, didFinishAnimating finished: Bool, previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
+            if completed, let current = pageViewController.viewControllers?.first as? PhotoSinglePageVC {
+                if parent.currentIndex != current.index {
+                    parent.currentIndex = current.index
+                }
+            }
+        }
+    }
+}
+
+class PhotoSinglePageVC: UIViewController {
+    let asset: PHAsset
+    let index: Int
+    private let imageView = UIImageView()
+    private let playIcon = UIImageView()
+    private var requestID: PHImageRequestID?
+
+    init(asset: PHAsset, index: Int) {
+        self.asset = asset
+        self.index = index
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+
+        imageView.contentMode = .scaleAspectFit
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(imageView)
+
+        NSLayoutConstraint.activate([
+            imageView.topAnchor.constraint(equalTo: view.topAnchor),
+            imageView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            imageView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            imageView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
+        ])
+
+        if asset.mediaType == .video {
+            let config = UIImage.SymbolConfiguration(pointSize: 48, weight: .light)
+            playIcon.image = UIImage(systemName: "play.circle.fill", withConfiguration: config)
+            playIcon.tintColor = UIColor.white.withAlphaComponent(0.85)
+            playIcon.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(playIcon)
+            NSLayoutConstraint.activate([
+                playIcon.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                playIcon.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+            ])
+        }
+
+        loadImage()
+    }
+
+    private func loadImage() {
+        let scale = UIScreen.main.scale
+        let screenBounds = UIScreen.main.bounds
+        let targetSize = CGSize(
+            width: screenBounds.width * scale,
+            height: screenBounds.height * scale
+        )
+
+        // 先以快速模式取低清缩略图即时渲染（零延迟上屏）
+        let fastOptions = PHImageRequestOptions()
+        fastOptions.deliveryMode = .fastFormat
+        fastOptions.resizeMode = .fast
+        fastOptions.isNetworkAccessAllowed = false
+        _ = PHImageManager.default().requestImage(
+            for: asset,
+            targetSize: CGSize(width: 320, height: 320),
+            contentMode: .aspectFit,
+            options: fastOptions
+        ) { [weak self] img, _ in
+            if let img, self?.imageView.image == nil {
+                self?.imageView.image = img
+            }
+        }
+
+        // 后台并发请求全高清屏幕适配图
+        let fullOptions = PHImageRequestOptions()
+        fullOptions.deliveryMode = .opportunistic
+        fullOptions.isNetworkAccessAllowed = true
+        requestID = PHImageManager.default().requestImage(
+            for: asset,
+            targetSize: targetSize,
+            contentMode: .aspectFit,
+            options: fullOptions
+        ) { [weak self] img, _ in
+            if let img {
+                self?.imageView.image = img
+            }
+        }
+    }
+
+    deinit {
+        if let requestID {
+            PHImageManager.default().cancelImageRequest(requestID)
+        }
+    }
+}
 
 struct PhotoDetailBrowserView: View {
     let initialAsset: PHAsset
@@ -1638,7 +1848,7 @@ struct PhotoDetailBrowserView: View {
     let onShare: (PHAsset) -> Void
     let onDelete: (PHAsset) -> Void
 
-    @State private var currentAssetID: String
+    @State private var currentIndex: Int
     @State private var showDeleteConfirm = false
     @State private var dragOffsetY: CGFloat = 0
     @State private var isDraggingDown = false
@@ -1657,18 +1867,21 @@ struct PhotoDetailBrowserView: View {
         onDelete: @escaping (PHAsset) -> Void
     ) {
         self.initialAsset = initialAsset
-        self.allAssets = allAssets.isEmpty ? [initialAsset] : allAssets
+        let list = allAssets.isEmpty ? [initialAsset] : allAssets
+        self.allAssets = list
         self.library = library
         self.onDismiss = onDismiss
         self.onEdit = onEdit
         self.onShowInfo = onShowInfo
         self.onShare = onShare
         self.onDelete = onDelete
-        _currentAssetID = State(initialValue: initialAsset.localIdentifier)
+        let idx = list.firstIndex(where: { $0.localIdentifier == initialAsset.localIdentifier }) ?? 0
+        _currentIndex = State(initialValue: idx)
     }
 
     private var currentAsset: PHAsset? {
-        allAssets.first { $0.localIdentifier == currentAssetID } ?? allAssets.first
+        guard currentIndex >= 0 && currentIndex < allAssets.count else { return allAssets.first }
+        return allAssets[currentIndex]
     }
 
     private var dragProgress: CGFloat {
@@ -1774,13 +1987,10 @@ struct PhotoDetailBrowserView: View {
     }
 
     private var mainPagingView: some View {
-        TabView(selection: $currentAssetID) {
-            ForEach(allAssets, id: \.localIdentifier) { asset in
-                PhotoBrowserItemView(asset: asset)
-                    .tag(asset.localIdentifier)
-            }
-        }
-        .tabViewStyle(.page(indexDisplayMode: .never))
+        PhotoPagingViewControllerRepresentable(
+            allAssets: allAssets,
+            currentIndex: $currentIndex
+        )
         .contentShape(Rectangle())
         .simultaneousGesture(downwardDragGesture)
     }
@@ -1823,43 +2033,36 @@ struct PhotoDetailBrowserView: View {
         ScrollViewReader { stripProxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 4) {
-                    ForEach(allAssets, id: \.localIdentifier) { asset in
-                        let isSelected = asset.localIdentifier == currentAssetID
-                        AssetThumbnail(asset: asset)
-                            .frame(width: isSelected ? 34 : 26, height: 42)
-                            .clipShape(RoundedRectangle(cornerRadius: 3.5, style: .continuous))
-                            .overlay {
-                                if isSelected {
-                                    RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-                                        .stroke(Color.white, lineWidth: 2)
-                                }
-                            }
-                            .scaleEffect(isSelected ? 1.08 : 1.0)
-                            .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isSelected)
-                            .onTapGesture {
-                                withAnimation(.easeInOut(duration: 0.18)) {
-                                    currentAssetID = asset.localIdentifier
-                                }
-                                GrainHaptics.selection(enabled: true)
-                            }
+                    ForEach(Array(allAssets.enumerated()), id: \.element.localIdentifier) { index, asset in
+                        let isSelected = index == currentIndex
+                        FilmstripThumbnailView(asset: asset, isSelected: isSelected)
                             .id(asset.localIdentifier)
+                            .onTapGesture {
+                                currentIndex = index
+                                GrainHaptics.selection(enabled: true)
+                                withAnimation(.easeInOut(duration: 0.18)) {
+                                    stripProxy.scrollTo(asset.localIdentifier, anchor: .center)
+                                }
+                            }
                     }
                 }
                 .padding(.horizontal, 16)
                 .frame(height: 48)
             }
-            .scrollDisabled(true)
             .contentShape(Rectangle())
             .simultaneousGesture(filmstripDragGesture(stripProxy: stripProxy))
-            .onChange(of: currentAssetID) { _, newID in
-                if !isScrubbingFilmstrip {
+            .onChange(of: currentIndex) { _, newIndex in
+                if !isScrubbingFilmstrip, newIndex >= 0, newIndex < allAssets.count {
+                    let id = allAssets[newIndex].localIdentifier
                     withAnimation(.easeOut(duration: 0.2)) {
-                        stripProxy.scrollTo(newID, anchor: .center)
+                        stripProxy.scrollTo(id, anchor: .center)
                     }
                 }
             }
             .onAppear {
-                stripProxy.scrollTo(currentAssetID, anchor: .center)
+                if currentIndex >= 0, currentIndex < allAssets.count {
+                    stripProxy.scrollTo(allAssets[currentIndex].localIdentifier, anchor: .center)
+                }
             }
         }
     }
@@ -1869,32 +2072,27 @@ struct PhotoDetailBrowserView: View {
             .onChanged { value in
                 if !isScrubbingFilmstrip {
                     isScrubbingFilmstrip = true
-                    dragStartIndex = allAssets.firstIndex(where: { $0.localIdentifier == currentAssetID }) ?? 0
+                    dragStartIndex = currentIndex
                 }
                 let step: CGFloat = 26.0
                 let delta = -Int(round(value.translation.width / step))
                 let targetIndex = max(0, min(allAssets.count - 1, dragStartIndex + delta))
-                let newAsset = allAssets[targetIndex]
-                if newAsset.localIdentifier != currentAssetID {
-                    currentAssetID = newAsset.localIdentifier
+                if targetIndex != currentIndex {
+                    currentIndex = targetIndex
                     GrainHaptics.selection(enabled: true)
-                    withAnimation(.easeOut(duration: 0.12)) {
-                        stripProxy.scrollTo(newAsset.localIdentifier, anchor: .center)
-                    }
+                    stripProxy.scrollTo(allAssets[targetIndex].localIdentifier, anchor: .center)
                 }
             }
             .onEnded { value in
                 let velocity = value.predictedEndTranslation.width - value.translation.width
                 let extra = -Int(round(velocity / 80.0))
-                let currentIndex = allAssets.firstIndex(where: { $0.localIdentifier == currentAssetID }) ?? 0
                 let finalIndex = max(0, min(allAssets.count - 1, currentIndex + extra))
-                let finalAsset = allAssets[finalIndex]
-                if finalAsset.localIdentifier != currentAssetID {
-                    currentAssetID = finalAsset.localIdentifier
+                if finalIndex != currentIndex {
+                    currentIndex = finalIndex
                     GrainHaptics.selection(enabled: true)
                 }
                 withAnimation(.easeOut(duration: 0.2)) {
-                    stripProxy.scrollTo(finalAsset.localIdentifier, anchor: .center)
+                    stripProxy.scrollTo(allAssets[finalIndex].localIdentifier, anchor: .center)
                 }
                 isScrubbingFilmstrip = false
             }
@@ -1968,14 +2166,12 @@ struct PhotoDetailBrowserView: View {
     }
 
     private func performDelete(_ asset: PHAsset) {
-        guard let index = allAssets.firstIndex(where: { $0.localIdentifier == asset.localIdentifier }) else { return }
         onDelete(asset)
         let remaining = allAssets.filter { $0.localIdentifier != asset.localIdentifier }
         if remaining.isEmpty {
             onDismiss()
         } else {
-            let nextIndex = min(index, remaining.count - 1)
-            currentAssetID = remaining[nextIndex].localIdentifier
+            currentIndex = min(currentIndex, remaining.count - 1)
         }
     }
 
@@ -1991,64 +2187,5 @@ struct PhotoDetailBrowserView: View {
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "HH:mm"
         return formatter.string(from: date)
-    }
-}
-
-struct PhotoBrowserItemView: View {
-    let asset: PHAsset
-    @State private var image: UIImage?
-    @State private var requestID: PHImageRequestID?
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                Color.clear
-
-                if let image {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: geo.size.width, maxHeight: geo.size.height)
-                } else {
-                    ProgressView()
-                        .tint(GrainTheme.paper)
-                }
-
-                if asset.mediaType == .video {
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 48, weight: .light))
-                        .foregroundStyle(Color.white.opacity(0.85))
-                        .shadow(color: Color.black.opacity(0.4), radius: 6)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .onAppear(perform: loadImage)
-        .onDisappear {
-            if let requestID {
-                PHImageManager.default().cancelImageRequest(requestID)
-            }
-        }
-    }
-
-    private func loadImage() {
-        guard image == nil else { return }
-        let options = PHImageRequestOptions()
-        options.deliveryMode = .opportunistic
-        options.isNetworkAccessAllowed = true
-        let targetSize = CGSize(
-            width: UIScreen.main.bounds.width * UIScreen.main.scale,
-            height: UIScreen.main.bounds.height * UIScreen.main.scale
-        )
-        requestID = PHImageManager.default().requestImage(
-            for: asset,
-            targetSize: targetSize,
-            contentMode: .aspectFit,
-            options: options
-        ) { result, _ in
-            if let result {
-                self.image = result
-            }
-        }
     }
 }
