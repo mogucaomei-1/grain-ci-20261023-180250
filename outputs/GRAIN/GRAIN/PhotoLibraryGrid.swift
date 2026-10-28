@@ -621,6 +621,11 @@ struct PhotoLibraryHome: View {
                 }
             }
 
+            // 黑色间隔条：清晰分隔上方照片区域与最下方功能条
+            Rectangle()
+                .fill(Color.black.opacity(0.22))
+                .frame(height: 1)
+
             if isSelecting {
                 selectionToolbar
             }
@@ -857,6 +862,22 @@ struct PhotoLibraryHome: View {
 
     private var selectionToolbar: some View {
         HStack(spacing: 6) {
+            Button {
+                showDeleteConfirmation = true
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(
+                        selectedIdentifiers.isEmpty ? Color.black.opacity(0.35) : Color.black
+                    )
+                    .frame(width: 38, height: 38)
+                    .liquidGlassCircle(size: 38, isWhite: true)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .buttonStyle(LiquidGlassButtonStyle())
+            .disabled(selectedIdentifiers.isEmpty || isDeleting)
+            .accessibilityLabel("删除所选照片")
+
             Button("取消") {
                 endSelection()
             }
@@ -953,22 +974,6 @@ struct PhotoLibraryHome: View {
             .buttonStyle(LiquidGlassButtonStyle())
             .disabled(selectedIdentifiers.isEmpty || isDeleting || isPreparingShare)
             .accessibilityLabel("分享所选照片")
-
-            Button {
-                showDeleteConfirmation = true
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(
-                        selectedIdentifiers.isEmpty ? Color.black.opacity(0.35) : Color.black
-                    )
-                    .frame(width: 38, height: 38)
-                    .liquidGlassCircle(size: 38, isWhite: true)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-            .buttonStyle(LiquidGlassButtonStyle())
-            .disabled(selectedIdentifiers.isEmpty || isDeleting)
-            .accessibilityLabel("删除所选照片")
         }
         .padding(.horizontal, 14)
         .frame(height: 54)

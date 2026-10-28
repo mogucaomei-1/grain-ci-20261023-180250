@@ -1339,19 +1339,13 @@ final class CameraController: ObservableObject {
             self?.finishRecording(url: url, error: error)
         }
 
-        // 提前在主线程播放提示音与触感，确保提示音在实际开始录音前已结束，绝不录入视频音轨中
-        if GrainFeedbackSound.isEnabled {
-            AudioServicesPlaySystemSound(1117)
-        }
-        GrainHaptics.selection(enabled: true)
+        // 录像模式仅触发物理触感反馈，杜绝任何快门/提示声被麦克风录入音轨中
+        GrainHaptics.mediumImpact(enabled: true)
 
         Task {
             let micAllowed = await requestMediaAccess(for: .audio)
             sessionQueue.async { [weak self] in
                 guard let self else { return }
-
-                // 留出 0.32 秒使扬声器提示音播放完毕，麦克风不会收录到“叮”的一声
-                Thread.sleep(forTimeInterval: 0.32)
 
                 if !self.movieAttached {
                     if micAllowed { self.attachAudioInput() }
@@ -1677,14 +1671,9 @@ final class CameraController: ObservableObject {
 
     func stopRecording() {
         guard isRecording else { return }
+        GrainHaptics.mediumImpact(enabled: true)
         sessionQueue.async { [weak self] in
             self?.movieOutput.stopRecording()
-            DispatchQueue.main.async {
-                if GrainFeedbackSound.isEnabled {
-                    AudioServicesPlaySystemSound(1118)
-                }
-                GrainHaptics.selection(enabled: true)
-            }
         }
     }
 

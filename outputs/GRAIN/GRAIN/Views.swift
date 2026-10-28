@@ -394,6 +394,7 @@ private enum HomeTool: String, CaseIterable, Identifiable {
     case camera
     case files
     case collage
+    case settings
 
     var id: String { rawValue }
 
@@ -402,6 +403,7 @@ private enum HomeTool: String, CaseIterable, Identifiable {
         case .camera: "camera.fill"
         case .files: "folder"
         case .collage: "slider.horizontal.2.square.on.square"
+        case .settings: "gearshape"
         }
     }
 
@@ -410,6 +412,7 @@ private enum HomeTool: String, CaseIterable, Identifiable {
         case .camera: "打开相机"
         case .files: "从文件导入"
         case .collage: "编辑工作台"
+        case .settings: "打开设置"
         }
     }
 }
@@ -427,7 +430,7 @@ private struct MinimalTopBar: View {
     let onExport: () -> Void
     let onDelete: (() -> Void)?
 
-    @AppStorage("homeToolOrder") private var homeToolOrder = "camera,files,collage"
+    @AppStorage("homeToolOrder") private var homeToolOrder = "camera,files,collage,settings"
     @State private var draggingHomeTool: HomeTool?
     @State private var homeToolDrag: CGFloat = 0
     @State private var suppressHomeToolTap = false
@@ -447,52 +450,9 @@ private struct MinimalTopBar: View {
                     .buttonStyle(LiquidGlassButtonStyle())
                     .accessibilityLabel("取消并返回主页")
                 }
-            } else {
-                // 主页底部左侧：相机与工具（相机、文件、编辑工作台）
-                if !visibleHomeTools.isEmpty {
-                    HStack(spacing: 10) {
-                        ForEach(visibleHomeTools) { tool in
-                            homeToolButton(tool)
-                        }
-                    }
-                }
-            }
 
-            Spacer()
+                Spacer()
 
-            if !hasPhoto {
-                // 主页底部右侧：设置（文字 + 标志，移到最右边）
-                HStack(spacing: 8) {
-                    Button(action: onSettings) {
-                        Text("GRAIN")
-                            .font(.system(size: 14, weight: .heavy, design: .rounded))
-                            .tracking(2.3)
-                            .foregroundStyle(
-                                LinearGradient(
-                                    colors: [
-                                        GrainTheme.paper,
-                                        GrainTheme.paper.opacity(0.88),
-                                        GrainTheme.accent.opacity(0.92)
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                    }
-                    .buttonStyle(LiquidGlassButtonStyle())
-                    .accessibilityLabel("打开设置")
-
-                    Button(action: onSettings) {
-                        AnimatedEditorMark(size: 29)
-                            .frame(width: 38, height: 38)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(LiquidGlassButtonStyle())
-                    .accessibilityLabel("打开设置")
-                }
-            } else {
                 if let onToggleHistogram {
                     Button(action: onToggleHistogram) {
                         Image(systemName: "waveform.path.ecg.rectangle")
@@ -532,6 +492,17 @@ private struct MinimalTopBar: View {
                 }
                 .buttonStyle(LiquidGlassButtonStyle())
                 .accessibilityLabel("导出或分享")
+            } else {
+                // 主页底部：去掉“GRAIN”文字，所有功能图标集中居中显示，长按可左右拖动调整顺序
+                Spacer()
+
+                HStack(spacing: 14) {
+                    ForEach(visibleHomeTools) { tool in
+                        homeToolButton(tool)
+                    }
+                }
+
+                Spacer()
             }
         }
         .foregroundStyle(GrainTheme.paper)
@@ -539,7 +510,7 @@ private struct MinimalTopBar: View {
         .frame(height: 54)
     }
 
-    // MARK: 主页三个入口的顺序
+    // MARK: 主页入口的顺序
 
     private var orderedHomeToolIDs: [String] {
         let valid = HomeTool.allCases.map(\.rawValue)
@@ -558,6 +529,7 @@ private struct MinimalTopBar: View {
             case .camera: return onCamera == nil ? nil : tool
             case .files: return onFiles == nil ? nil : tool
             case .collage: return onCollage == nil ? nil : tool
+            case .settings: return tool
             }
         }
     }
@@ -569,16 +541,23 @@ private struct MinimalTopBar: View {
             case .camera: onCamera?()
             case .files: onFiles?()
             case .collage: onCollage?()
+            case .settings: onSettings()
             }
         } label: {
-            Image(systemName: tool.symbol)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(GrainTheme.paper)
-                .liquidGlassCircle(size: 38)
-                .scaleEffect(draggingHomeTool == tool ? 1.12 : 1)
-                .offset(x: draggingHomeTool == tool ? homeToolDrag : 0)
-                .zIndex(draggingHomeTool == tool ? 1 : 0)
-                .animation(.snappy(duration: 0.18), value: draggingHomeTool)
+            Group {
+                if tool == .settings {
+                    AnimatedEditorMark(size: 26)
+                } else {
+                    Image(systemName: tool.symbol)
+                        .font(.system(size: 14, weight: .medium))
+                }
+            }
+            .foregroundStyle(GrainTheme.paper)
+            .liquidGlassCircle(size: 38)
+            .scaleEffect(draggingHomeTool == tool ? 1.15 : 1)
+            .offset(x: draggingHomeTool == tool ? homeToolDrag : 0)
+            .zIndex(draggingHomeTool == tool ? 1 : 0)
+            .animation(.snappy(duration: 0.18), value: draggingHomeTool)
         }
         .buttonStyle(LiquidGlassButtonStyle())
         .accessibilityLabel(tool.label)
@@ -623,8 +602,8 @@ private struct MinimalTopBar: View {
     private func commitHomeToolOrder(_ tool: HomeTool, translation: CGFloat) {
         var visible = visibleHomeTools.map(\.id)
         guard let index = visible.firstIndex(of: tool.id) else { return }
-        // 每个按钮宽 38 + 间距 12
-        let steps = Int((translation / 50).rounded())
+        // 每个按钮宽 38 + 间距 14
+        let steps = Int((translation / 52).rounded())
         let target = min(max(index + steps, 0), visible.count - 1)
         guard target != index else { return }
         visible.remove(at: index)
