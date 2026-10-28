@@ -384,19 +384,19 @@ struct PhotoLibraryHome: View {
     @State private var batchNotice: String?
     @State private var batchError: String?
 
-    // 双指缩放网格列数（类似 iOS 官方相册动态伸缩：1/2/3/4/5 列），偏好持久化
+    // 双指缩放网格列数（类似 iOS 官方相册动态伸缩：1~10 列），偏好持久化
     @AppStorage("libraryGridColumnCount") private var gridColumnCount: Int = 3
     @State private var baseColumnCount: Int = 3
     @State private var isPinching: Bool = false
 
     private var columns: [GridItem] {
-        let count = max(1, min(5, gridColumnCount))
-        let spacing: CGFloat = count >= 5 ? 1.5 : (count >= 4 ? 2 : 3)
+        let count = max(1, min(10, gridColumnCount))
+        let spacing: CGFloat = count >= 8 ? 1.0 : (count >= 5 ? 1.5 : (count >= 4 ? 2 : 3))
         return Array(repeating: GridItem(.flexible(), spacing: spacing), count: count)
     }
 
     private var gridSpacing: CGFloat {
-        gridColumnCount >= 5 ? 1.5 : (gridColumnCount >= 4 ? 2 : 3)
+        gridColumnCount >= 8 ? 1.0 : (gridColumnCount >= 5 ? 1.5 : (gridColumnCount >= 4 ? 2 : 3))
     }
 
     private func handlePinch(scale: CGFloat, state: UIGestureRecognizer.State, recognizer: UIPinchGestureRecognizer) {
@@ -416,8 +416,8 @@ struct PhotoLibraryHome: View {
                     recognizer.scale = 1.0
                 }
             } else if scale < 0.80 {
-                // 双指缩小 -> 列数增加，照片变小，同屏展示更多照片
-                if gridColumnCount < 5 {
+                // 双指缩小 -> 列数增加，照片变小，同屏展示更多照片（支持最多 10 列）
+                if gridColumnCount < 10 {
                     let next = gridColumnCount + 1
                     GrainHaptics.mediumImpact(enabled: hapticsEnabled)
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
@@ -833,10 +833,11 @@ struct PhotoLibraryHome: View {
 
     private func libraryTile(_ asset: PHAsset) -> some View {
         let selected = selectedIdentifiers.contains(asset.localIdentifier)
+        let tileRadius: CGFloat = gridColumnCount >= 7 ? 1.5 : (gridColumnCount >= 5 ? 2.5 : 3)
 
         return ZStack(alignment: .topTrailing) {
             AssetThumbnail(asset: asset)
-                .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: tileRadius, style: .continuous))
                 .id(asset.localIdentifier)
 
             let badgeLabel: String? = {
@@ -856,39 +857,48 @@ struct PhotoLibraryHome: View {
             }
 
             if asset.mediaType == .video {
-                HStack(spacing: 2) {
-                    Image(systemName: "video.fill")
-                        .font(.system(size: gridColumnCount >= 4 ? 6 : 7.5))
-                    if gridColumnCount <= 4 {
-                        Text(Self.formatDuration(asset.duration))
-                            .font(.system(size: gridColumnCount >= 4 ? 7.5 : 9, weight: .bold, design: .rounded))
+                if gridColumnCount <= 6 {
+                    HStack(spacing: 2) {
+                        Image(systemName: "video.fill")
+                            .font(.system(size: gridColumnCount >= 4 ? 6 : 7.5))
+                        if gridColumnCount <= 4 {
+                            Text(Self.formatDuration(asset.duration))
+                                .font(.system(size: gridColumnCount >= 4 ? 7.5 : 9, weight: .bold, design: .rounded))
+                        }
                     }
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, gridColumnCount >= 4 ? 3 : 4.5)
+                    .padding(.vertical, gridColumnCount >= 4 ? 1.5 : 2.5)
+                    .background(Color.black.opacity(0.68), in: Capsule())
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(gridColumnCount >= 4 ? 2 : 4)
+                } else {
+                    Image(systemName: "video.fill")
+                        .font(.system(size: gridColumnCount >= 9 ? 4.5 : 5.5))
+                        .foregroundStyle(Color.white.opacity(0.92))
+                        .shadow(color: .black.opacity(0.8), radius: 1)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                        .padding(1.5)
                 }
-                .foregroundStyle(Color.white)
-                .padding(.horizontal, gridColumnCount >= 4 ? 3 : 4.5)
-                .padding(.vertical, gridColumnCount >= 4 ? 1.5 : 2.5)
-                .background(Color.black.opacity(0.68), in: Capsule())
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                .padding(gridColumnCount >= 4 ? 2 : 4)
             }
 
             if isSelecting {
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                RoundedRectangle(cornerRadius: tileRadius, style: .continuous)
                     .fill(Color.black.opacity(selected ? 0.22 : 0.04))
 
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 19, weight: .semibold))
+                    .font(.system(size: gridColumnCount >= 7 ? 10 : (gridColumnCount >= 5 ? 13 : 19), weight: .semibold))
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(
                         selected ? GrainTheme.paper : Color.white.opacity(0.86),
                         selected ? GrainTheme.accent : Color.black.opacity(0.34)
                     )
-                    .padding(6)
+                    .padding(gridColumnCount >= 7 ? 2 : 4)
 
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                RoundedRectangle(cornerRadius: tileRadius, style: .continuous)
                     .stroke(
                         selected ? GrainTheme.accent : Color.clear,
-                        lineWidth: 2
+                        lineWidth: gridColumnCount >= 7 ? 1 : 2
                     )
             }
         }
@@ -1252,7 +1262,7 @@ private struct AssetThumbnail: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         Image(systemName: "photo")
-                            .font(.system(size: 17, weight: .light))
+                            .font(.system(size: 11, weight: .light))
                             .foregroundStyle(GrainTheme.muted.opacity(0.5))
                     }
                 }
