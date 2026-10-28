@@ -581,22 +581,40 @@ struct PhotoLibraryHome: View {
                                 }
                             )
                     }
+                    .id(mediaTypeFilter)
+                    .defaultScrollAnchor(.bottom)
                     .scrollIndicators(.hidden)
                     .refreshable {
                         await library.refresh()
+                        scrollToBottom(proxy: proxy)
                     }
                     .onAppear {
-                        if !didInitialScrollToBottom, let lastID = visibleAssets.last?.localIdentifier {
-                            didInitialScrollToBottom = true
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                                proxy.scrollTo(lastID, anchor: .bottom)
-                            }
+                        scrollToBottom(proxy: proxy)
+                    }
+                    .onChange(of: mediaTypeFilter) { _, _ in
+                        scrollToBottom(proxy: proxy)
+                    }
+                    .onChange(of: visibleAssets.count) { _, count in
+                        if count > 0 && !sortAscending {
+                            scrollToBottom(proxy: proxy)
+                        }
+                    }
+                    .onChange(of: library.isLoading) { _, loading in
+                        if !loading && !visibleAssets.isEmpty && !sortAscending {
+                            scrollToBottom(proxy: proxy)
                         }
                     }
                     .onChange(of: library.assets.count) { _, count in
-                        if count > 0, let lastID = visibleAssets.last?.localIdentifier {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                                proxy.scrollTo(lastID, anchor: .bottom)
+                        if count > 0 && !sortAscending {
+                            scrollToBottom(proxy: proxy)
+                        }
+                    }
+                    .onChange(of: sortAscending) { _, ascending in
+                        if !ascending {
+                            scrollToBottom(proxy: proxy, animated: true)
+                        } else if let firstID = visibleAssets.first?.localIdentifier {
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                proxy.scrollTo(firstID, anchor: .top)
                             }
                         }
                     }
@@ -745,13 +763,21 @@ struct PhotoLibraryHome: View {
                         .foregroundStyle(Color.black)
                         .padding(.horizontal, 8)
                         .frame(height: 22)
-                        .liquidGlassCapsule(isWhite: true)
+                        .background {
+                            Capsule(style: .continuous)
+                                .fill(Color.white)
+                                .overlay(
+                                    Capsule(style: .continuous)
+                                        .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.6)
+                                )
+                        }
+                        .clipShape(Capsule(style: .continuous))
                 }
             }
 
             Spacer()
 
-            // 右侧最上方：媒体类型分类（照片 / 视频 / 截图 / 全部，选择后去橙色改为黑字白底）
+            // 右侧最上方：媒体类型分类（照片 / 视频 / 截图 / 全部，选择后去橙色改为黑字白底，绝无阴影裁切瑕疵）
             Menu {
                 ForEach(LibraryMediaTypeFilter.allCases) { filter in
                     Button {
@@ -778,9 +804,25 @@ struct PhotoLibraryHome: View {
                 .foregroundStyle(mediaTypeFilter == .all ? GrainTheme.paper : Color.black)
                 .padding(.horizontal, 11)
                 .frame(height: 29)
-                .liquidGlassCapsule(isWhite: mediaTypeFilter != .all)
+                .background {
+                    if mediaTypeFilter != .all {
+                        Capsule(style: .continuous)
+                            .fill(Color.white)
+                            .overlay(
+                                Capsule(style: .continuous)
+                                    .strokeBorder(Color.black.opacity(0.10), lineWidth: 0.6)
+                            )
+                    } else {
+                        Capsule(style: .continuous)
+                            .fill(.ultraThinMaterial)
+                            .overlay(
+                                Capsule(style: .continuous)
+                                    .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.8)
+                            )
+                    }
+                }
+                .clipShape(Capsule(style: .continuous))
             }
-            .buttonStyle(LiquidGlassButtonStyle())
         }
         .padding(.horizontal, 14)
         .padding(.top, 4)
@@ -800,7 +842,15 @@ struct PhotoLibraryHome: View {
             .foregroundStyle(Color.black)
             .padding(.horizontal, 10)
             .frame(height: 25)
-            .liquidGlassCapsule(isWhite: true)
+            .background {
+                Capsule(style: .continuous)
+                    .fill(Color.white)
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.6)
+                    )
+            }
+            .clipShape(Capsule(style: .continuous))
         }
         .buttonStyle(LiquidGlassButtonStyle())
     }
@@ -1162,6 +1212,23 @@ struct PhotoLibraryHome: View {
             addSelection(asset.localIdentifier)
         }
         GrainHaptics.selection(enabled: hapticsEnabled)
+    }
+
+    private func scrollToBottom(proxy: ScrollViewProxy, animated: Bool = false) {
+        guard !sortAscending, let lastID = visibleAssets.last?.localIdentifier else { return }
+        if animated {
+            withAnimation(.easeOut(duration: 0.18)) {
+                proxy.scrollTo(lastID, anchor: .bottom)
+            }
+        } else {
+            proxy.scrollTo(lastID, anchor: .bottom)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            proxy.scrollTo(lastID, anchor: .bottom)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            proxy.scrollTo(lastID, anchor: .bottom)
+        }
     }
 
     private func endSelection() {

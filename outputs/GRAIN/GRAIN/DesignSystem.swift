@@ -329,11 +329,11 @@ struct LiquidGlassCapsuleModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background {
-                ZStack {
-                    if isWhite {
-                        Capsule(style: .continuous)
-                            .fill(Color.white)
-                    } else {
+                if isWhite {
+                    Capsule(style: .continuous)
+                        .fill(Color.white)
+                } else {
+                    ZStack {
                         Capsule(style: .continuous)
                             .fill(.ultraThinMaterial)
 
@@ -364,7 +364,7 @@ struct LiquidGlassCapsuleModifier: ViewModifier {
                     .strokeBorder(
                         isWhite
                             ? LinearGradient(
-                                colors: [Color.white, Color.white.opacity(0.85)],
+                                colors: [Color.black.opacity(0.10), Color.black.opacity(0.06)],
                                 startPoint: .top,
                                 endPoint: .bottom
                             )
@@ -382,7 +382,7 @@ struct LiquidGlassCapsuleModifier: ViewModifier {
                         lineWidth: isWhite ? 0.6 : 0.85
                     )
             }
-            .shadow(color: isWhite ? Color.black.opacity(0.16) : (isAccent ? GrainTheme.accent.opacity(0.20) : Color.black.opacity(0.14)), radius: 8, x: 0, y: 3)
+            .shadow(color: isWhite ? Color.black.opacity(0.08) : (isAccent ? GrainTheme.accent.opacity(0.20) : Color.black.opacity(0.14)), radius: isWhite ? 4 : 8, x: 0, y: isWhite ? 1.5 : 3)
     }
 }
 
