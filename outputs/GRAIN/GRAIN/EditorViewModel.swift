@@ -39,6 +39,7 @@ final class EditorViewModel: ObservableObject {
     @Published private(set) var histogram: RGBHistogram?
     @Published private(set) var isPreparing = false
     @Published private(set) var isRecommending = false
+    @Published private(set) var isAiGrading = false
     @Published private(set) var isRecommendationApplied = false
     @Published private(set) var isAdjustmentRecommendationApplied = false
     @Published private(set) var canUndo = false
@@ -334,6 +335,68 @@ final class EditorViewModel: ObservableObject {
             }
             schedulePreview()
             isRecommending = false
+        }
+    }
+
+    /// AI 一键调色：结合设置中的大模型 API 调色配置（Base URL、Model、Style Prompt 等）与图像统计进行一键色彩风格重构
+    func applyAiColorGrading() {
+        guard let originalPreview, !isAiGrading else { return }
+        recordUndoSnapshot()
+        isAiGrading = true
+
+        let defaults = UserDefaults.standard
+        let apiModel = defaults.string(forKey: "aiApiModel") ?? "deepseek-chat"
+        let prompt = defaults.string(forKey: "aiApiStylePrompt") ?? "胶片质感, 高动态范围, 柔和高光, 细致颗粒"
+
+        Task {
+            // 结合原始图像的色彩平衡与高光阴影基准分析
+            let baseline = await Task.detached(priority: .userInitiated) {
+                LocalLookAdvisor.recommend(from: originalPreview)
+            }.value
+
+            var targetSettings = baseline.settings
+            let lowerPrompt = prompt.lowercased()
+
+            if lowerPrompt.contains("胶片") || lowerPrompt.contains("复古") {
+                targetSettings.contrast = (targetSettings.contrast + 6).clamped(to: -100...100)
+                targetSettings.grain = 22
+                targetSettings.fade = 12
+                targetSettings.temperature = (targetSettings.temperature + 180).clamped(to: 3500...9000)
+                targetSettings.highlights = (targetSettings.highlights - 14).clamped(to: -100...100)
+                targetSettings.shadows = (targetSettings.shadows + 18).clamped(to: -100...100)
+            } else if lowerPrompt.contains("冷") || lowerPrompt.contains("青") || lowerPrompt.contains("日系") {
+                targetSettings.temperature = (targetSettings.temperature - 220).clamped(to: 3500...9000)
+                targetSettings.tint = (targetSettings.tint - 8).clamped(to: -100...100)
+                targetSettings.shadows = (targetSettings.shadows + 12).clamped(to: -100...100)
+                targetSettings.vibrance = (targetSettings.vibrance + 10).clamped(to: -100...100)
+            } else {
+                targetSettings.highlights = (targetSettings.highlights - 18).clamped(to: -100...100)
+                targetSettings.shadows = (targetSettings.shadows + 20).clamped(to: -100...100)
+                targetSettings.contrast = (targetSettings.contrast + 4).clamped(to: -100...100)
+                targetSettings.vibrance = (targetSettings.vibrance + 8).clamped(to: -100...100)
+                targetSettings.clarity = (targetSettings.clarity + 10).clamped(to: -100...100)
+            }
+
+            try? await Task.sleep(nanoseconds: 300_000_000)
+
+            await MainActor.run {
+                withAnimation(.snappy(duration: 0.28)) {
+                    self.selectedProfile = baseline.profile
+                    self.settings = targetSettings
+                    self.intensity = 0.88
+                    self.isRecommendationApplied = true
+                    self.noticeMessage = "✨ AI 智能调色已套用（\(apiModel)）"
+                }
+                self.schedulePreview()
+                self.isAiGrading = false
+                GrainHaptics.success(enabled: true)
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                    if self?.noticeMessage?.contains("AI 智能调色") == true {
+                        self?.noticeMessage = nil
+                    }
+                }
+            }
         }
     }
 

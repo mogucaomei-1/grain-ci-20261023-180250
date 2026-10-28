@@ -784,6 +784,8 @@ struct AppSettingsView: View {
     @AppStorage("cameraSharpening") private var cameraSharpening = 0
     /// 人脸追焦：关掉后只保留连续自动对焦，不做人脸检测
     @AppStorage("faceTrackingEnabled") private var faceTrackingEnabled = true
+    /// 软件整体 DPI 调节（缩小两档、默认、放大）
+    @AppStorage("appDPISetting") private var dpiSetting = AppDPIScale.standard
     @State private var showWidgetShowcase = false
 
     private var sharpeningLabel: String {
@@ -821,6 +823,44 @@ struct AppSettingsView: View {
 
                 // AI 智能调色与 API 调节（全新功能）
                 AiApiSettingsCard()
+
+                // 软件整体 DPI 调节（缩小两档、默认、放大）
+                HStack(spacing: 12) {
+                    Image(systemName: "viewfinder.circle")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(GrainTheme.accent)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("整体 DPI 调节")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(GrainTheme.paper)
+                        Text("缩小两档、默认或放大全软件界面比例")
+                            .font(.system(size: 9, design: .rounded))
+                            .foregroundStyle(GrainTheme.muted)
+                    }
+                    Spacer()
+                    HStack(spacing: 4) {
+                        ForEach(AppDPIScale.allCases) { option in
+                            let isSelected = (dpiSetting == option)
+                            Button {
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                    dpiSetting = option
+                                }
+                                GrainHaptics.selection()
+                            } label: {
+                                Text(option.shortTitle)
+                                    .font(.system(size: 10, weight: isSelected ? .bold : .medium, design: .rounded))
+                                    .foregroundStyle(isSelected ? GrainTheme.black : GrainTheme.muted)
+                                    .padding(.horizontal, 7)
+                                    .frame(height: 26)
+                                    .background(isSelected ? GrainTheme.paper : GrainTheme.raised, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .padding(16)
+                .liquidGlass(cornerRadius: 18)
 
                 // 外观模式（主页与编辑页面，不控制相机）
                 HStack(spacing: 12) {

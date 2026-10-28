@@ -323,110 +323,134 @@ struct LiquidGlassModifier: ViewModifier {
 
 struct LiquidGlassCapsuleModifier: ViewModifier {
     var isAccent: Bool = false
+    var isWhite: Bool = false
     var specularIntensity: CGFloat = 0.42
 
     func body(content: Content) -> some View {
         content
             .background {
                 ZStack {
-                    Capsule(style: .continuous)
-                        .fill(.ultraThinMaterial)
+                    if isWhite {
+                        Capsule(style: .continuous)
+                            .fill(Color.white)
+                    } else {
+                        Capsule(style: .continuous)
+                            .fill(.ultraThinMaterial)
 
-                    Capsule(style: .continuous)
-                        .fill(
-                            isAccent
-                                ? GrainTheme.accent.opacity(0.22)
-                                : GrainTheme.surface.opacity(0.48)
-                        )
-
-                    Capsule(style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    (isAccent ? GrainTheme.accent : Color.white).opacity(0.26),
-                                    Color.clear
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
+                        Capsule(style: .continuous)
+                            .fill(
+                                isAccent
+                                    ? GrainTheme.accent.opacity(0.22)
+                                    : GrainTheme.surface.opacity(0.48)
                             )
-                        )
+
+                        Capsule(style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        (isAccent ? GrainTheme.accent : Color.white).opacity(0.26),
+                                        Color.clear
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                    }
                 }
             }
             .clipShape(Capsule(style: .continuous))
             .overlay {
                 Capsule(style: .continuous)
                     .strokeBorder(
-                        LinearGradient(
-                            stops: [
-                                .init(color: (isAccent ? GrainTheme.accent : Color.white).opacity(specularIntensity), location: 0.0),
-                                .init(color: (isAccent ? Color(hex: 0xFFB37C) : Color(hex: 0x8BE8FF)).opacity(0.35), location: 0.20),
-                                .init(color: Color.white.opacity(0.12), location: 0.45),
-                                .init(color: Color.black.opacity(0.24), location: 0.78),
-                                .init(color: (isAccent ? GrainTheme.accent : Color.white).opacity(0.25), location: 1.0)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.85
+                        isWhite
+                            ? LinearGradient(
+                                colors: [Color.white, Color.white.opacity(0.85)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            : LinearGradient(
+                                stops: [
+                                    .init(color: (isAccent ? GrainTheme.accent : Color.white).opacity(specularIntensity), location: 0.0),
+                                    .init(color: (isAccent ? Color(hex: 0xFFB37C) : Color(hex: 0x8BE8FF)).opacity(0.35), location: 0.20),
+                                    .init(color: Color.white.opacity(0.12), location: 0.45),
+                                    .init(color: Color.black.opacity(0.24), location: 0.78),
+                                    .init(color: (isAccent ? GrainTheme.accent : Color.white).opacity(0.25), location: 1.0)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                        lineWidth: isWhite ? 0.6 : 0.85
                     )
             }
-            .shadow(color: (isAccent ? GrainTheme.accent.opacity(0.20) : Color.black.opacity(0.14)), radius: 9, x: 0, y: 3.5)
+            .shadow(color: isWhite ? Color.black.opacity(0.16) : (isAccent ? GrainTheme.accent.opacity(0.20) : Color.black.opacity(0.14)), radius: 8, x: 0, y: 3)
     }
 }
 
 struct LiquidGlassCircleModifier: ViewModifier {
     var size: CGFloat = 38
     var isAccent: Bool = false
+    var isWhite: Bool = false
 
     func body(content: Content) -> some View {
         content
             .frame(width: size, height: size)
             .background {
                 ZStack {
-                    Circle()
-                        .fill(.ultraThinMaterial)
+                    if isWhite {
+                        Circle()
+                            .fill(Color.white)
+                    } else {
+                        Circle()
+                            .fill(.ultraThinMaterial)
 
-                    Circle()
-                        .fill(
-                            isAccent
-                                ? GrainTheme.accent.opacity(0.24)
-                                : GrainTheme.surface.opacity(0.48)
-                        )
-
-                    Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [
-                                    (isAccent ? GrainTheme.accent : Color.white).opacity(0.42),
-                                    (isAccent ? Color(hex: 0xFFB37C) : Color(hex: 0x8BE8FF)).opacity(0.15),
-                                    Color.clear
-                                ],
-                                center: .topLeading,
-                                startRadius: 1,
-                                endRadius: size * 0.8
+                        Circle()
+                            .fill(
+                                isAccent
+                                    ? GrainTheme.accent.opacity(0.24)
+                                    : GrainTheme.surface.opacity(0.48)
                             )
-                        )
+
+                        Circle()
+                            .fill(
+                                RadialGradient(
+                                    colors: [
+                                        (isAccent ? GrainTheme.accent : Color.white).opacity(0.42),
+                                        (isAccent ? Color(hex: 0xFFB37C) : Color(hex: 0x8BE8FF)).opacity(0.15),
+                                        Color.clear
+                                    ],
+                                    center: .topLeading,
+                                    startRadius: 1,
+                                    endRadius: size * 0.8
+                                )
+                            )
+                    }
                 }
             }
             .clipShape(Circle())
             .overlay {
                 Circle()
                     .strokeBorder(
-                        LinearGradient(
-                            stops: [
-                                .init(color: (isAccent ? GrainTheme.accent : Color.white).opacity(0.50), location: 0.0),
-                                .init(color: (isAccent ? Color(hex: 0xFFB37C) : Color(hex: 0x8BE8FF)).opacity(0.35), location: 0.22),
-                                .init(color: Color.white.opacity(0.12), location: 0.50),
-                                .init(color: Color.black.opacity(0.28), location: 0.82),
-                                .init(color: Color.white.opacity(0.24), location: 1.0)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.85
+                        isWhite
+                            ? LinearGradient(
+                                colors: [Color.white, Color.white.opacity(0.85)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            : LinearGradient(
+                                stops: [
+                                    .init(color: (isAccent ? GrainTheme.accent : Color.white).opacity(0.50), location: 0.0),
+                                    .init(color: (isAccent ? Color(hex: 0xFFB37C) : Color(hex: 0x8BE8FF)).opacity(0.35), location: 0.22),
+                                    .init(color: Color.white.opacity(0.12), location: 0.50),
+                                    .init(color: Color.black.opacity(0.28), location: 0.82),
+                                    .init(color: Color.white.opacity(0.24), location: 1.0)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                        lineWidth: isWhite ? 0.6 : 0.85
                     )
             }
-            .shadow(color: (isAccent ? GrainTheme.accent.opacity(0.18) : Color.black.opacity(0.16)), radius: 7, x: 0, y: 3.5)
+            .shadow(color: isWhite ? Color.black.opacity(0.16) : (isAccent ? GrainTheme.accent.opacity(0.18) : Color.black.opacity(0.16)), radius: 7, x: 0, y: 3.5)
     }
 }
 
@@ -446,12 +470,69 @@ extension View {
         modifier(LiquidGlassModifier(cornerRadius: cornerRadius, opacity: opacity))
     }
 
-    func liquidGlassCapsule(isAccent: Bool = false) -> some View {
-        modifier(LiquidGlassCapsuleModifier(isAccent: isAccent))
+    func liquidGlassCapsule(isAccent: Bool = false, isWhite: Bool = false) -> some View {
+        modifier(LiquidGlassCapsuleModifier(isAccent: isAccent, isWhite: isWhite))
     }
 
-    func liquidGlassCircle(size: CGFloat = 38, isAccent: Bool = false) -> some View {
-        modifier(LiquidGlassCircleModifier(size: size, isAccent: isAccent))
+    func liquidGlassCircle(size: CGFloat = 38, isAccent: Bool = false, isWhite: Bool = false) -> some View {
+        modifier(LiquidGlassCircleModifier(size: size, isAccent: isAccent, isWhite: isWhite))
+    }
+
+    func applyAppDPIScale() -> some View {
+        modifier(DPIScaleModifier())
+    }
+}
+
+enum AppDPIScale: String, CaseIterable, Identifiable {
+    case compactMore = "compactMore" // 缩小 2 档 (86%)
+    case compact = "compact"         // 缩小 1 档 (93%)
+    case standard = "standard"       // 默认 (100%)
+    case enlarged = "enlarged"       // 放大 (108%)
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .compactMore: "缩小 II 档 (86%)"
+        case .compact: "缩小 I 档 (93%)"
+        case .standard: "默认 (100%)"
+        case .enlarged: "放大 (108%)"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .compactMore: "更小 86%"
+        case .compact: "较小 93%"
+        case .standard: "默认"
+        case .enlarged: "放大 108%"
+        }
+    }
+
+    var scaleFactor: CGFloat {
+        switch self {
+        case .compactMore: 0.86
+        case .compact: 0.93
+        case .standard: 1.0
+        case .enlarged: 1.08
+        }
+    }
+}
+
+struct DPIScaleModifier: ViewModifier {
+    @AppStorage("appDPISetting") private var dpiSetting = AppDPIScale.standard
+
+    func body(content: Content) -> some View {
+        if dpiSetting == .standard {
+            content
+        } else {
+            GeometryReader { proxy in
+                let scale = dpiSetting.scaleFactor
+                content
+                    .frame(width: proxy.size.width / scale, height: proxy.size.height / scale)
+                    .scaleEffect(scale, anchor: .topLeading)
+            }
+        }
     }
 }
 

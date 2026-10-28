@@ -27,6 +27,7 @@ struct RootView: View {
     @State private var libraryImportGeneration = 0
     @State private var editingVideoAsset: PHAsset?
     @State private var targetCameraMode: CameraMode = .photo
+    @State private var isLibrarySelecting = false
 
     private var isCameraActive: Bool {
         showCamera || launchCameraActive
@@ -38,29 +39,31 @@ struct RootView: View {
 
             NavigationStack {
                 VStack(spacing: 0) {
-                    MinimalTopBar(
-                        hasPhoto: false,
-                        onCamera: showCameraButton ? {
-                            withAnimation(.easeInOut(duration: 0.22)) {
-                                showCamera = true
-                            }
-                        } : nil,
-                        onFiles: showFileImportButton ? { showDocumentPicker = true } : nil,
-                        onCollage: showCollageButton ? { showHomeCollage = true } : nil,
-                        onInfo: { showInfoSheet = true },
-                        onSettings: { showSettings = true },
-                        histogramVisible: showHistogram,
-                        onToggleHistogram: nil,
-                        onExport: {},
-                        onDelete: nil
-                    )
-
-                    PhotoLibraryHome(library: photoLibrary) { asset in
+                    PhotoLibraryHome(library: photoLibrary, isSelecting: $isLibrarySelecting) { asset in
                         if asset.mediaType == .video {
                             editingVideoAsset = asset
                         } else {
                             importLibraryAsset(asset)
                         }
+                    }
+
+                    if !isLibrarySelecting {
+                        MinimalTopBar(
+                            hasPhoto: false,
+                            onCamera: showCameraButton ? {
+                                withAnimation(.easeInOut(duration: 0.22)) {
+                                    showCamera = true
+                                }
+                            } : nil,
+                            onFiles: showFileImportButton ? { showDocumentPicker = true } : nil,
+                            onCollage: showCollageButton ? { showHomeCollage = true } : nil,
+                            onInfo: { showInfoSheet = true },
+                            onSettings: { showSettings = true },
+                            histogramVisible: showHistogram,
+                            onToggleHistogram: nil,
+                            onExport: {},
+                            onDelete: nil
+                        )
                     }
                 }
                 .background(Color.clear)
@@ -835,6 +838,31 @@ private struct EditorToolsPager: View {
                     }
                 }
                 .buttonStyle(LiquidGlassButtonStyle())
+
+                // AI 一键调色
+                Button {
+                    editor.applyAiColorGrading()
+                } label: {
+                    HStack(spacing: 3) {
+                        if editor.isAiGrading {
+                            ProgressView()
+                                .controlSize(.mini)
+                                .tint(GrainTheme.accent)
+                        } else {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 10, weight: .bold))
+                        }
+                        Text("AI调色")
+                            .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                    }
+                    .foregroundStyle(GrainTheme.accent)
+                    .padding(.horizontal, 9)
+                    .frame(height: 25)
+                    .liquidGlassCapsule(isAccent: true)
+                }
+                .buttonStyle(LiquidGlassButtonStyle())
+                .disabled(editor.isAiGrading)
+                .accessibilityLabel("AI 一键调色")
 
                 Spacer()
 

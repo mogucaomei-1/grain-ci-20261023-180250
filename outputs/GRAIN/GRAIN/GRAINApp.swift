@@ -42,6 +42,7 @@ struct GRAINApp: App {
                     .preferredColorScheme(appearanceMode.colorScheme)
                 }
             }
+            .applyAppDPIScale()
             .onAppear {
                 GrainHaptics.prepare()
                 #if canImport(WidgetKit)

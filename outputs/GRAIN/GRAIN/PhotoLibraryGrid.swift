@@ -50,7 +50,8 @@ final class PhotoLibraryViewModel: NSObject, ObservableObject, PHPhotoLibraryCha
         }
 
         let options = PHFetchOptions()
-        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+        // 遵循 iOS 17 相册逻辑：按拍摄时间正序加载（从下往上排，最旧在上，最新在下）
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
         let result = PHAsset.fetchAssets(with: options)
         var fetchedAssets: [PHAsset] = []
         fetchedAssets.reserveCapacity(result.count)
@@ -459,11 +460,41 @@ enum LibraryMediaTypeFilter: String, CaseIterable, Identifiable {
 
 struct PhotoLibraryHome: View {
     @ObservedObject var library: PhotoLibraryViewModel
+    @Binding var externalIsSelecting: Bool
     let onSelect: (PHAsset) -> Void
+
+    private let usesExternalSelecting: Bool
+    @State private var localIsSelecting = false
+    private var isSelecting: Bool {
+        get { usesExternalSelecting ? externalIsSelecting : localIsSelecting }
+        nonmutating set {
+            if usesExternalSelecting {
+                externalIsSelecting = newValue
+            } else {
+                localIsSelecting = newValue
+            }
+        }
+    }
+
+    init(
+        library: PhotoLibraryViewModel,
+        isSelecting: Binding<Bool>? = nil,
+        onSelect: @escaping (PHAsset) -> Void
+    ) {
+        self.library = library
+        if let isSelecting {
+            self._externalIsSelecting = isSelecting
+            self.usesExternalSelecting = true
+        } else {
+            self._externalIsSelecting = .constant(false)
+            self.usesExternalSelecting = false
+        }
+        self.onSelect = onSelect
+    }
+
     @EnvironmentObject private var editor: EditorViewModel
     @Environment(\.openURL) private var openURL
     @AppStorage("hapticsEnabled") private var hapticsEnabled = true
-    @State private var isSelecting = false
     @State private var selectedIdentifiers = Set<String>()
     @State private var selectionOrder: [String] = []
     @State private var showDeleteConfirmation = false
@@ -482,6 +513,7 @@ struct PhotoLibraryHome: View {
     @State private var showBatchProgress = false
     @State private var batchNotice: String?
     @State private var batchError: String?
+    @State private var didInitialScrollToBottom = false
 
     // 双指缩放网格列数（类似 iOS 官方相册动态伸缩：1~10 列），偏好持久化
     @AppStorage("libraryGridColumnCount") private var gridColumnCount: Int = 3
@@ -535,27 +567,44 @@ struct PhotoLibraryHome: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if isSelecting {
-                selectionToolbar
-            } else {
-                mediaTypeHeaderBar
-            }
+            mediaTypeHeaderBar
 
             if library.accessDenied {
                 permissionView
             } else {
-                ScrollView {
-                    gridContent
-                        .background(
-                            ScrollViewPinchAttachment { scale, state, recognizer in
-                                handlePinch(scale: scale, state: state, recognizer: recognizer)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        gridContent
+                            .background(
+                                ScrollViewPinchAttachment { scale, state, recognizer in
+                                    handlePinch(scale: scale, state: state, recognizer: recognizer)
+                                }
+                            )
+                    }
+                    .scrollIndicators(.hidden)
+                    .refreshable {
+                        await library.refresh()
+                    }
+                    .onAppear {
+                        if !didInitialScrollToBottom, let lastID = visibleAssets.last?.localIdentifier {
+                            didInitialScrollToBottom = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                                proxy.scrollTo(lastID, anchor: .bottom)
                             }
-                        )
+                        }
+                    }
+                    .onChange(of: library.assets.count) { _, count in
+                        if count > 0, let lastID = visibleAssets.last?.localIdentifier {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                proxy.scrollTo(lastID, anchor: .bottom)
+                            }
+                        }
+                    }
                 }
-                .scrollIndicators(.hidden)
-                .refreshable {
-                    await library.refresh()
-                }
+            }
+
+            if isSelecting {
+                selectionToolbar
             }
         }
         .task {
@@ -668,6 +717,7 @@ struct PhotoLibraryHome: View {
         let grid = LazyVGrid(columns: columns, spacing: gridSpacing) {
             ForEach(visibleAssets, id: \.localIdentifier) { asset in
                 libraryTile(asset)
+                    .id(asset.localIdentifier)
             }
         }
         .padding(.horizontal, 4)
@@ -771,7 +821,10 @@ struct PhotoLibraryHome: View {
 
             Text("已选\(selectedIdentifiers.count)张")
                 .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                .foregroundStyle(GrainTheme.accent)
+                .foregroundStyle(GrainTheme.black)
+                .padding(.horizontal, 9)
+                .frame(height: 27)
+                .liquidGlassCapsule(isWhite: true)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
 
@@ -793,11 +846,11 @@ struct PhotoLibraryHome: View {
                         .lineLimit(1)
                 }
                 .foregroundStyle(
-                    selectedIdentifiers.isEmpty ? GrainTheme.muted : GrainTheme.accent
+                    selectedIdentifiers.isEmpty ? GrainTheme.muted : GrainTheme.black
                 )
                 .padding(.horizontal, 8)
                 .frame(height: 27)
-                .liquidGlassCapsule(isAccent: !selectedIdentifiers.isEmpty)
+                .liquidGlassCapsule(isWhite: !selectedIdentifiers.isEmpty)
                 .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(LiquidGlassButtonStyle())
@@ -815,12 +868,12 @@ struct PhotoLibraryHome: View {
                 }
                 .foregroundStyle(
                     !selectedAssets.isEmpty && selectedAssets.count <= 10
-                        ? GrainTheme.accent
+                        ? GrainTheme.black
                         : GrainTheme.muted
                 )
                 .padding(.horizontal, 8)
                 .frame(height: 27)
-                .liquidGlassCapsule(isAccent: !selectedAssets.isEmpty && selectedAssets.count <= 10)
+                .liquidGlassCapsule(isWhite: !selectedAssets.isEmpty && selectedAssets.count <= 10)
                 .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(LiquidGlassButtonStyle())
@@ -839,12 +892,12 @@ struct PhotoLibraryHome: View {
                 }
                 .foregroundStyle(
                     !selectedIdentifiers.isEmpty
-                        ? GrainTheme.accent
+                        ? GrainTheme.black
                         : GrainTheme.muted
                 )
                 .padding(.horizontal, 8)
                 .frame(height: 27)
-                .liquidGlassCapsule(isAccent: !selectedIdentifiers.isEmpty)
+                .liquidGlassCapsule(isWhite: !selectedIdentifiers.isEmpty)
                 .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(LiquidGlassButtonStyle())
@@ -857,10 +910,10 @@ struct PhotoLibraryHome: View {
                 Image(systemName: "trash")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(
-                        selectedIdentifiers.isEmpty ? GrainTheme.muted : GrainTheme.danger
+                        selectedIdentifiers.isEmpty ? GrainTheme.muted : GrainTheme.black
                     )
                     .frame(width: 27, height: 27)
-                    .liquidGlassCircle(size: 27, isAccent: !selectedIdentifiers.isEmpty)
+                    .liquidGlassCircle(size: 27, isWhite: !selectedIdentifiers.isEmpty)
                     .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(LiquidGlassButtonStyle())
@@ -992,15 +1045,15 @@ struct PhotoLibraryHome: View {
                     .font(.system(size: gridColumnCount >= 7 ? 10 : (gridColumnCount >= 5 ? 13 : 19), weight: .semibold))
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(
-                        selected ? GrainTheme.paper : Color.white.opacity(0.86),
-                        selected ? GrainTheme.accent : Color.black.opacity(0.34)
+                        selected ? GrainTheme.black : Color.white.opacity(0.86),
+                        selected ? Color.white : Color.black.opacity(0.34)
                     )
                     .padding(gridColumnCount >= 7 ? 2 : 4)
 
                 RoundedRectangle(cornerRadius: tileRadius, style: .continuous)
                     .stroke(
-                        selected ? GrainTheme.accent : Color.clear,
-                        lineWidth: gridColumnCount >= 7 ? 1 : 2
+                        selected ? Color.white : Color.clear,
+                        lineWidth: gridColumnCount >= 7 ? 1.2 : 2.2
                     )
             }
         }
