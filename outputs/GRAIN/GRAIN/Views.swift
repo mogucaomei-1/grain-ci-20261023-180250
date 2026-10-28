@@ -69,6 +69,7 @@ struct RootView: View {
                 .background(Color.clear)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .toolbar(.hidden, for: .navigationBar)
+                .ignoresSafeArea(.container, edges: .bottom)
                 .navigationDestination(isPresented: editorPresented) {
                     VStack(spacing: 0) {
                         MinimalTopBar(
@@ -507,7 +508,8 @@ private struct MinimalTopBar: View {
         }
         .foregroundStyle(GrainTheme.paper)
         .padding(.horizontal, 18)
-        .frame(height: 54)
+        .frame(height: hasPhoto ? 54 : 44)
+        .padding(.bottom, hasPhoto ? 0 : 8)
     }
 
     // MARK: 主页入口的顺序

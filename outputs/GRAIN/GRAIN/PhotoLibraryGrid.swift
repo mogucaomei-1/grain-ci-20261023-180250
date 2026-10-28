@@ -976,7 +976,8 @@ struct PhotoLibraryHome: View {
             .accessibilityLabel("分享所选照片")
         }
         .padding(.horizontal, 14)
-        .frame(height: 54)
+        .frame(height: 44)
+        .padding(.bottom, 8)
     }
 
     private var visibleAssets: [PHAsset] {
