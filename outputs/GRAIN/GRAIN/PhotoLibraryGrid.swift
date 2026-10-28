@@ -324,45 +324,36 @@ private struct PhotoTileFramePreferenceKey: PreferenceKey {
     }
 }
 
-enum LibraryFormatFilter: String, CaseIterable, Identifiable {
+enum LibraryMediaTypeFilter: String, CaseIterable, Identifiable {
     case all
-    case video
-    case raw
-    case heif
-    case png
-    case jpeg
-    case tiff
+    case photos
+    case videos
+    case screenshots
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .all: "全部"
-        case .video: "视频"
-        case .raw: "RAW"
-        case .heif: "HEIF"
-        case .png: "PNG"
-        case .jpeg: "JPEG"
-        case .tiff: "TIFF"
+        case .photos: "照片"
+        case .videos: "视频"
+        case .screenshots: "截图"
         }
     }
 
-    func matches(_ label: String?, mediaType: PHAssetMediaType? = nil) -> Bool {
-        guard self != .all else { return true }
-        if self == .video {
-            // “视频”筛选类目必须且只能是视频，绝对不能混入任何照片图片
-            if let mediaType = mediaType {
-                return mediaType == .video
-            }
-            guard let label else { return false }
-            return label == "VIDEO" || label.contains("fps")
-        } else {
-            // 照片格式类目（RAW, HEIF, PNG, JPEG, TIFF）必须严格排除视频资源
-            if let mediaType = mediaType, mediaType == .video {
-                return false
-            }
-            guard let label else { return false }
-            return label == title
+    func matches(_ asset: PHAsset) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .photos:
+            // 照片：标准照片（排除视频与屏幕截图）
+            return asset.mediaType == .image && !asset.mediaSubtypes.contains(.photoScreenshot)
+        case .videos:
+            // 视频：媒体类型必须是视频
+            return asset.mediaType == .video
+        case .screenshots:
+            // 截图：包含屏幕截图子类型
+            return asset.mediaSubtypes.contains(.photoScreenshot)
         }
     }
 }
@@ -386,7 +377,7 @@ struct PhotoLibraryHome: View {
     @State private var deleteError: String?
     @State private var tileFrames: [String: CGRect] = [:]
     @State private var lastSelectionDragPoint: CGPoint?
-    @State private var formatFilter: LibraryFormatFilter = .all
+    @State private var mediaTypeFilter: LibraryMediaTypeFilter = .all
     @State private var sortAscending = false
     @StateObject private var batch = BatchExportViewModel()
     @State private var showBatchProgress = false
@@ -400,7 +391,7 @@ struct PhotoLibraryHome: View {
             if isSelecting {
                 selectionToolbar
             } else {
-                libraryFilterBar
+                mediaTypeHeaderBar
             }
 
             if library.accessDenied {
@@ -533,44 +524,59 @@ struct PhotoLibraryHome: View {
         }
     }
 
-    private var libraryFilterBar: some View {
-        HStack(spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(LibraryFormatFilter.allCases) { filter in
-                        filterChip(filter)
-                    }
-                    sortChip
+    private var mediaTypeHeaderBar: some View {
+        HStack {
+            // 左侧：时间排序与媒体统计
+            HStack(spacing: 8) {
+                sortChip
+                if !library.assets.isEmpty {
+                    Text("\(visibleAssets.count)/\(library.assets.count)")
+                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(GrainTheme.muted)
                 }
             }
 
-            if !library.assets.isEmpty {
-                Text("\(visibleAssets.count)/\(library.assets.count)")
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(GrainTheme.muted)
-                    .fixedSize()
+            Spacer()
+
+            // 右侧最上方：媒体类型分类（照片 / 视频 / 截图 / 全部）
+            Menu {
+                ForEach(LibraryMediaTypeFilter.allCases) { filter in
+                    Button {
+                        withAnimation(.easeOut(duration: 0.16)) {
+                            mediaTypeFilter = filter
+                        }
+                        GrainHaptics.selection(enabled: true)
+                    } label: {
+                        HStack {
+                            Text(filter.title)
+                            if mediaTypeFilter == filter {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(mediaTypeFilter == .all ? "媒体类型" : mediaTypeFilter.title)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8.5, weight: .bold))
+                }
+                .foregroundStyle(mediaTypeFilter == .all ? GrainTheme.paper : GrainTheme.accent)
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(GrainTheme.raised, in: Capsule())
+                .overlay(
+                    Capsule().stroke(
+                        mediaTypeFilter == .all ? GrainTheme.line : GrainTheme.accent.opacity(0.6),
+                        lineWidth: 0.6
+                    )
+                )
             }
         }
         .padding(.horizontal, 12)
-        .padding(.top, 2)
-        .padding(.bottom, 4)
-    }
-
-    private func filterChip(_ filter: LibraryFormatFilter) -> some View {
-        let active = formatFilter == filter
-        return Button {
-            withAnimation(.easeOut(duration: 0.16)) {
-                formatFilter = filter
-            }
-        } label: {
-            Text(filter.title)
-                .font(.system(size: 9.5, weight: .semibold, design: .rounded))
-                .foregroundStyle(active ? GrainTheme.black : GrainTheme.muted)
-                .padding(.horizontal, 9)
-                .frame(height: 24)
-                .background(active ? GrainTheme.paper : GrainTheme.raised, in: Capsule())
-        }
-        .buttonStyle(.plain)
+        .padding(.top, 4)
+        .padding(.bottom, 6)
     }
 
     private var sortChip: some View {
@@ -706,7 +712,7 @@ struct PhotoLibraryHome: View {
 
     private var visibleAssets: [PHAsset] {
         let filtered = library.assets.filter {
-            formatFilter.matches(library.formatLabels[$0.localIdentifier], mediaType: $0.mediaType)
+            mediaTypeFilter.matches($0)
         }
         return sortAscending ? Array(filtered.reversed()) : filtered
     }

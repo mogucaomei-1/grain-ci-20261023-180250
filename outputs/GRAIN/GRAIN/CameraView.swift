@@ -825,8 +825,10 @@ final class CameraController: ObservableObject {
         peakingHint = nil
         if !enabled {
             peakingOverlay.submit(nil)
-        }
-        if enabled && !peakingAttached {
+            sessionQueue.async { [weak self] in
+                self?.detachPeakingOutput()
+            }
+        } else {
             sessionQueue.async { [weak self] in
                 self?.attachPeakingOutput()
             }
@@ -902,7 +904,7 @@ final class CameraController: ObservableObject {
 
     var currentStabilization: VideoStabilization = .standard
 
-    /// 分析图的方向与防抖必须和预览层保持严格一致，确保红色描边与实物像素完全对齐
+    /// 峰值分析图的旋转与镜像同预览层对齐，但视频防抖必须强制为 .off，杜绝多帧缓冲引入的 100~200ms 跟随延迟
     func updatePeakingConnection(stabilization: VideoStabilization? = nil) {
         guard let connection = peakingOutput.connection(with: .video) else { return }
         connection.applyPortraitOrientationSafely()
@@ -911,9 +913,8 @@ final class CameraController: ObservableObject {
             connection.isVideoMirrored = cameraDevice?.position == .front
                 && frontMirrorEnabled
         }
-        let stab = stabilization ?? currentStabilization
         if connection.isVideoStabilizationSupported {
-            applyStabilization(stab, to: connection)
+            connection.preferredVideoStabilizationMode = .off
         }
     }
 
@@ -1401,10 +1402,19 @@ final class CameraController: ObservableObject {
                     self.isLivePhotoArmed = false
                 }
 
-                // 3. 移除与录像输出冲突的峰值/直方图视频数据输出 (AVCaptureVideoDataOutput)
-                if self.peakingAttached {
-                    self.session.removeOutput(self.peakingOutput)
-                    self.peakingAttached = false
+                // 3. 峰值对焦与实时直方图数据输出：若开启峰值，保持挂载并刷新连接；若未开启，安全解挂并清空画面
+                if self.isFocusPeakingEnabled {
+                    if !self.peakingAttached && self.session.canAddOutput(self.peakingOutput) {
+                        self.session.addOutput(self.peakingOutput)
+                        self.peakingAttached = true
+                    }
+                    self.updatePeakingConnection()
+                } else {
+                    if self.peakingAttached {
+                        self.session.removeOutput(self.peakingOutput)
+                        self.peakingAttached = false
+                    }
+                    self.peakingOverlay.submit(nil)
                 }
 
                 // 4. 移除与录像可能冲突的人脸元数据输出 (AVCaptureMetadataOutput)
@@ -1476,10 +1486,19 @@ final class CameraController: ObservableObject {
                 self.movieAttached = false
             }
 
-            // 2. 重新挂载峰值与直方图输出 (AVCaptureVideoDataOutput)
-            if !self.peakingAttached, self.session.canAddOutput(self.peakingOutput) {
-                self.session.addOutput(self.peakingOutput)
-                self.peakingAttached = true
+            // 2. 仅在开启峰值对焦时挂载峰值与直方图输出
+            if self.isFocusPeakingEnabled {
+                if !self.peakingAttached, self.session.canAddOutput(self.peakingOutput) {
+                    self.session.addOutput(self.peakingOutput)
+                    self.peakingAttached = true
+                }
+                self.updatePeakingConnection()
+            } else {
+                if self.peakingAttached {
+                    self.session.removeOutput(self.peakingOutput)
+                    self.peakingAttached = false
+                }
+                self.peakingOverlay.submit(nil)
             }
 
             // 3. 如果需要，重新挂载人脸追焦 (AVCaptureMetadataOutput)
@@ -3700,8 +3719,8 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
 
         guard onMask != nil else { return }
 
-        // 2. 峰值描边（480p 轻量极速渲染，约 40~60fps 实时刷新，彻底消除边缘延迟与拖影）
-        guard now - lastTime >= 0.022 else { return }
+        // 2. 峰值描边（满帧 60fps 极速渲染，消减边缘延迟）
+        guard now - lastTime >= 0.015 else { return }
         lastTime = now
 
         var source = CIImage(cvPixelBuffer: pixelBuffer)
@@ -3726,27 +3745,33 @@ final class FocusPeakingProcessor: NSObject, AVCaptureVideoDataOutputSampleBuffe
         let outputExtent = CGRect(x: 0, y: 0, width: curExtent.width * scale, height: curExtent.height * scale).integral
         guard outputExtent.width > 2, outputExtent.height > 2 else { return }
 
+        // 单通道灰度转换
         let mono = resized.applyingFilter("CIColorControls", parameters: [
             kCIInputSaturationKey: 0.0,
-            kCIInputContrastKey: 1.6
+            kCIInputContrastKey: 1.1
         ])
+
+        // 边缘检测：将 intensity 降低到 1.25，彻底杜绝噪点过密
         let edges = mono.applyingFilter("CIEdges", parameters: [
-            kCIInputIntensityKey: 3.2
-        ]).cropped(to: outputExtent)
-        let punched = edges.applyingFilter("CIColorControls", parameters: [
-            kCIInputContrastKey: 3.2,
-            kCIInputBrightnessKey: -0.15
+            kCIInputIntensityKey: 1.25
         ]).cropped(to: outputExtent)
 
-        let clear = CIImage(
-            color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)
-        ).cropped(to: outputExtent)
-        let tint = CIImage(color: tintColor).cropped(to: outputExtent)
-        let masked = tint.applyingFilter("CIBlendWithRedMask", parameters: [
-            kCIInputBackgroundImageKey: clear,
-            kCIInputMaskImageKey: punched
-        ])
-        guard let image = context.createCGImage(masked, from: outputExtent) else {
+        // 强对比度 + 深度负亮度截断：过滤微弱噪点与虚化背景，仅保留高反差实焦锐利轮廓
+        let punched = edges.applyingFilter("CIColorControls", parameters: [
+            kCIInputContrastKey: 3.8,
+            kCIInputBrightnessKey: -0.42
+        ]).cropped(to: outputExtent)
+
+        // 单通道 CIColorMatrix 直接着色与透明混合，避免多重 CIImage 分配与 CIBlendWithRedMask 瓶颈
+        let colorMatrix = punched.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: tintColor.red, y: 0, z: 0, w: 0),
+            "inputGVector": CIVector(x: tintColor.green, y: 0, z: 0, w: 0),
+            "inputBVector": CIVector(x: tintColor.blue, y: 0, z: 0, w: 0),
+            "inputAVector": CIVector(x: 1.0, y: 0, z: 0, w: 0),
+            "inputBiasVector": CIVector(x: 0, y: 0, z: 0, w: 0)
+        ]).cropped(to: outputExtent)
+
+        guard let image = context.createCGImage(colorMatrix, from: outputExtent) else {
             return
         }
         onMask?(image)
@@ -3832,6 +3857,7 @@ final class PeakingOverlaySink {
     private var latest: CGImage?
     private var applyScheduled = false
     private let lock = NSLock()
+    private var watchdogTimer: Timer?
 
     func attach(_ layer: CALayer) {
         lock.lock()
@@ -3847,6 +3873,10 @@ final class PeakingOverlaySink {
             self.layer = nil
         }
         lock.unlock()
+        DispatchQueue.main.async { [weak self] in
+            self?.watchdogTimer?.invalidate()
+            self?.watchdogTimer = nil
+        }
     }
 
     func submit(_ image: CGImage?) {
@@ -3866,8 +3896,26 @@ final class PeakingOverlaySink {
             let layer = self.layer
             self.applyScheduled = false
             self.lock.unlock()
+
+            self.watchdogTimer?.invalidate()
+            self.watchdogTimer = nil
+
             guard let layer else { return }
             Self.apply(image, to: layer)
+
+            if image != nil {
+                // 看门狗：若 150ms 内未收到任何新峰值帧（镜头切换、对焦失真、相机模式切换），自动清空描边，杜绝边缘卡死留在屏幕上
+                self.watchdogTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: false) { [weak self] _ in
+                    guard let self else { return }
+                    self.lock.lock()
+                    let l = self.layer
+                    self.latest = nil
+                    self.lock.unlock()
+                    if let l {
+                        Self.apply(nil, to: l)
+                    }
+                }
+            }
         }
     }
 
