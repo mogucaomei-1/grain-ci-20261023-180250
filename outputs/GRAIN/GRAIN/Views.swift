@@ -28,6 +28,11 @@ struct RootView: View {
     @State private var editingVideoAsset: PHAsset?
     @State private var targetCameraMode: CameraMode = .photo
     @State private var isLibrarySelecting = false
+    @State private var browsingAsset: PHAsset? = nil
+    @State private var browserShareURL: URL? = nil
+    @State private var showBrowserShareSheet = false
+    @State private var browserInfoAsset: PHAsset? = nil
+    @State private var showBrowserInfoSheet = false
 
     private var isCameraActive: Bool {
         showCamera || launchCameraActive
@@ -40,10 +45,8 @@ struct RootView: View {
             NavigationStack {
                 VStack(spacing: 0) {
                     PhotoLibraryHome(library: photoLibrary, isSelecting: $isLibrarySelecting) { asset in
-                        if asset.mediaType == .video {
-                            editingVideoAsset = asset
-                        } else {
-                            importLibraryAsset(asset)
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            browsingAsset = asset
                         }
                     }
 
@@ -113,6 +116,8 @@ struct RootView: View {
             }
             .environment(\.colorScheme, appearanceMode.resolvedColorScheme(systemScheme: systemColorScheme))
 
+            photoBrowserOverlay
+
             if isCameraActive {
                 CameraView(
                     initialMode: targetCameraMode,
@@ -155,6 +160,22 @@ struct RootView: View {
         .sheet(isPresented: $showInfoSheet) {
             ImageInfoSheet()
                 .environmentObject(editor)
+        }
+        .sheet(isPresented: $showBrowserShareSheet, onDismiss: {
+            if let url = browserShareURL {
+                try? FileManager.default.removeItem(at: url)
+            }
+            browserShareURL = nil
+        }) {
+            if let url = browserShareURL {
+                GrainShareSheet(items: [url])
+            }
+        }
+        .sheet(isPresented: $showBrowserInfoSheet) {
+            if let asset = browserInfoAsset {
+                ImageInfoSheet(asset: asset)
+                    .environmentObject(editor)
+            }
         }
         .sheet(isPresented: $showSettings) {
             AppSettingsView()
@@ -256,6 +277,60 @@ struct RootView: View {
         }
         .onOpenURL { url in
             handleWidgetDeepLink(url)
+        }
+    }
+
+    @ViewBuilder
+    private var photoBrowserOverlay: some View {
+        if let asset = browsingAsset, editor.photo == nil {
+            PhotoDetailBrowserView(
+                initialAsset: asset,
+                allAssets: photoLibrary.assets,
+                library: photoLibrary,
+                onDismiss: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        browsingAsset = nil
+                    }
+                },
+                onEdit: handleBrowserEdit,
+                onShowInfo: handleBrowserShowInfo,
+                onShare: handleBrowserShare,
+                onDelete: handleBrowserDelete
+            )
+            .transition(.asymmetric(
+                insertion: .opacity.combined(with: .scale(scale: 0.96)),
+                removal: .opacity.combined(with: .scale(scale: 0.96))
+            ))
+            .zIndex(2)
+        }
+    }
+
+    private func handleBrowserEdit(_ targetAsset: PHAsset) {
+        if targetAsset.mediaType == .video {
+            editingVideoAsset = targetAsset
+        } else {
+            importLibraryAsset(targetAsset)
+        }
+    }
+
+    private func handleBrowserShowInfo(_ targetAsset: PHAsset) {
+        browserInfoAsset = targetAsset
+        showBrowserInfoSheet = true
+    }
+
+    private func handleBrowserShare(_ targetAsset: PHAsset) {
+        Task { @MainActor in
+            if let url = try? await PhotoLibraryAssetLoader.loadOriginal(asset: targetAsset) {
+                browserShareURL = url
+                showBrowserShareSheet = true
+            }
+        }
+    }
+
+    private func handleBrowserDelete(_ targetAsset: PHAsset) {
+        Task {
+            try? await photoLibrary.deleteAssets(identifiers: [targetAsset.localIdentifier])
+            await photoLibrary.refresh()
         }
     }
 
@@ -509,7 +584,7 @@ private struct MinimalTopBar: View {
         .foregroundStyle(GrainTheme.paper)
         .padding(.horizontal, 18)
         .frame(height: hasPhoto ? 54 : 44)
-        .padding(.bottom, hasPhoto ? 0 : 8)
+        .padding(.bottom, hasPhoto ? 0 : 22)
     }
 
     // MARK: 主页入口的顺序

@@ -1,3 +1,4 @@
+import Photos
 import SwiftUI
 import UIKit
 
@@ -186,6 +187,7 @@ extension PhotoTextFont {
 }
 
 struct ImageInfoSheet: View {
+    var asset: PHAsset? = nil
     @EnvironmentObject private var editor: EditorViewModel
     @Environment(\.dismiss) private var dismiss
     /// 按内容实际高度撑开 sheet，避免信息区下面留出一大片空白
@@ -222,6 +224,18 @@ struct ImageInfoSheet: View {
                         infoRow("镜头", photo.lensModel.isEmpty ? "未记录" : photo.lensModel)
                         infoRow("拍摄时间", formattedDate(photo.capturedAt))
                         infoRow("位置", locationText(photo), isLast: true)
+                    }
+                } else if let asset {
+                    VStack(spacing: 0) {
+                        infoRow("素材类型", asset.mediaType == .video ? "视频" : "照片")
+                        infoRow("分辨率", "\(asset.pixelWidth) × \(asset.pixelHeight)")
+                        infoRow("像素总量", String(format: "%.1f MP", Double(asset.pixelWidth * asset.pixelHeight) / 1_000_000.0))
+                        if asset.mediaType == .video {
+                            let dur = max(0, Int(asset.duration))
+                            infoRow("时长", String(format: "%02d:%02d", dur / 60, dur % 60))
+                        }
+                        infoRow("拍摄时间", formattedDate(asset.creationDate))
+                        infoRow("位置", assetLocationText(asset), isLast: true)
                     }
                 }
             }
@@ -282,6 +296,11 @@ struct ImageInfoSheet: View {
             return "未记录"
         }
         return String(format: "%.6f, %.6f", latitude, longitude)
+    }
+
+    private func assetLocationText(_ asset: PHAsset) -> String {
+        guard let loc = asset.location else { return "未记录" }
+        return String(format: "%.6f, %.6f", loc.coordinate.latitude, loc.coordinate.longitude)
     }
 }
 
@@ -821,9 +840,6 @@ struct AppSettingsView: View {
                     .buttonStyle(LiquidGlassButtonStyle())
                 }
 
-                // AI 智能调色与 API 调节（全新功能）
-                AiApiSettingsCard()
-
                 // 软件整体 DPI 调节（左右拖动进度条）
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 12) {
@@ -1315,6 +1331,9 @@ struct AppSettingsView: View {
                 }
                 .padding(16)
                 .liquidGlass(cornerRadius: 18)
+
+                // AI 智能调色与 API 调节（放在页面最下方）
+                AiApiSettingsCard()
             }
             .padding(20)
             }

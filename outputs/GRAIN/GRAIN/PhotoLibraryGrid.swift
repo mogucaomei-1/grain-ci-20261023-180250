@@ -977,7 +977,7 @@ struct PhotoLibraryHome: View {
         }
         .padding(.horizontal, 14)
         .frame(height: 44)
-        .padding(.bottom, 8)
+        .padding(.bottom, 22)
     }
 
     private var visibleAssets: [PHAsset] {
@@ -1473,7 +1473,7 @@ private enum AssetFormat {
     }
 }
 
-private struct AssetThumbnail: View {
+struct AssetThumbnail: View {
     let asset: PHAsset
     @State private var image: UIImage?
     @State private var requestID: PHImageRequestID?
@@ -1622,6 +1622,335 @@ struct ScrollViewPinchAttachment: UIViewRepresentable {
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
             true
+        }
+    }
+}
+
+// MARK: - 照片浏览 (Photo Detail Browser / iOS 17 风格相册浏览)
+
+struct PhotoDetailBrowserView: View {
+    let initialAsset: PHAsset
+    let allAssets: [PHAsset]
+    let library: PhotoLibraryViewModel
+    let onDismiss: () -> Void
+    let onEdit: (PHAsset) -> Void
+    let onShowInfo: (PHAsset) -> Void
+    let onShare: (PHAsset) -> Void
+    let onDelete: (PHAsset) -> Void
+
+    @State private var currentAssetID: String
+    @State private var showDeleteConfirm = false
+
+    init(
+        initialAsset: PHAsset,
+        allAssets: [PHAsset],
+        library: PhotoLibraryViewModel,
+        onDismiss: @escaping () -> Void,
+        onEdit: @escaping (PHAsset) -> Void,
+        onShowInfo: @escaping (PHAsset) -> Void,
+        onShare: @escaping (PHAsset) -> Void,
+        onDelete: @escaping (PHAsset) -> Void
+    ) {
+        self.initialAsset = initialAsset
+        self.allAssets = allAssets.isEmpty ? [initialAsset] : allAssets
+        self.library = library
+        self.onDismiss = onDismiss
+        self.onEdit = onEdit
+        self.onShowInfo = onShowInfo
+        self.onShare = onShare
+        self.onDelete = onDelete
+        _currentAssetID = State(initialValue: initialAsset.localIdentifier)
+    }
+
+    private var currentAsset: PHAsset? {
+        allAssets.first { $0.localIdentifier == currentAssetID } ?? allAssets.first
+    }
+
+    var body: some View {
+        ZStack {
+            GrainTheme.black.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                topNavigationBar
+
+                Spacer(minLength: 0)
+
+                mainPagingView
+
+                Spacer(minLength: 0)
+
+                thumbnailFilmstrip
+
+                bottomActionBar
+            }
+        }
+        .ignoresSafeArea(.container, edges: .bottom)
+        .confirmationDialog(
+            "确定要删除这张照片吗？",
+            isPresented: $showDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("删除", role: .destructive) {
+                if let asset = currentAsset {
+                    performDelete(asset)
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("该照片将从图库中被移除。")
+        }
+    }
+
+    private var topNavigationBar: some View {
+        HStack {
+            Button {
+                GrainHaptics.selection(enabled: true)
+                onDismiss()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 13, weight: .bold))
+                    Text("相册")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                }
+                .foregroundStyle(GrainTheme.paper)
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .liquidGlassCapsule()
+            }
+            .buttonStyle(LiquidGlassButtonStyle())
+
+            Spacer()
+
+            if let date = currentAsset?.creationDate {
+                VStack(spacing: 1) {
+                    Text(Self.formatDate(date))
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(GrainTheme.paper)
+                    Text(Self.formatTime(date))
+                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(GrainTheme.muted)
+                }
+            }
+
+            Spacer()
+
+            if let asset = currentAsset, let label = library.formatLabels[asset.localIdentifier] {
+                AssetFormatBadge(label: label)
+            } else {
+                Color.clear.frame(width: 44, height: 32)
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 44)
+    }
+
+    private var mainPagingView: some View {
+        TabView(selection: $currentAssetID) {
+            ForEach(allAssets, id: \.localIdentifier) { asset in
+                PhotoBrowserItemView(asset: asset)
+                    .tag(asset.localIdentifier)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+    }
+
+    private var thumbnailFilmstrip: some View {
+        ScrollViewReader { stripProxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 4) {
+                    ForEach(allAssets, id: \.localIdentifier) { asset in
+                        let isSelected = asset.localIdentifier == currentAssetID
+                        AssetThumbnail(asset: asset)
+                            .frame(width: isSelected ? 34 : 26, height: 42)
+                            .clipShape(RoundedRectangle(cornerRadius: 3.5, style: .continuous))
+                            .overlay {
+                                if isSelected {
+                                    RoundedRectangle(cornerRadius: 3.5, style: .continuous)
+                                        .stroke(Color.white, lineWidth: 2)
+                                }
+                            }
+                            .scaleEffect(isSelected ? 1.08 : 1.0)
+                            .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isSelected)
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.18)) {
+                                    currentAssetID = asset.localIdentifier
+                                }
+                                GrainHaptics.selection(enabled: true)
+                            }
+                            .id(asset.localIdentifier)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .frame(height: 48)
+            }
+            .onChange(of: currentAssetID) { _, newID in
+                withAnimation(.easeOut(duration: 0.2)) {
+                    stripProxy.scrollTo(newID, anchor: .center)
+                }
+            }
+            .onAppear {
+                stripProxy.scrollTo(currentAssetID, anchor: .center)
+            }
+        }
+    }
+
+    private var bottomActionBar: some View {
+        HStack {
+            // 分享开关
+            Button {
+                if let asset = currentAsset {
+                    onShare(asset)
+                }
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(GrainTheme.paper)
+                    .liquidGlassCircle(size: 38)
+            }
+            .buttonStyle(LiquidGlassButtonStyle())
+            .accessibilityLabel("分享照片")
+
+            Spacer()
+
+            // 照片信息
+            Button {
+                if let asset = currentAsset {
+                    onShowInfo(asset)
+                }
+            } label: {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(GrainTheme.paper)
+                    .liquidGlassCircle(size: 38)
+            }
+            .buttonStyle(LiquidGlassButtonStyle())
+            .accessibilityLabel("查看照片信息")
+
+            Spacer()
+
+            // 照片编辑开关
+            Button {
+                if let asset = currentAsset {
+                    onEdit(asset)
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "slider.horizontal.2.square.on.square")
+                        .font(.system(size: 13, weight: .bold))
+                    Text("编辑")
+                        .font(.system(size: 13, weight: .bold, design: .rounded))
+                }
+                .foregroundStyle(Color.black)
+                .padding(.horizontal, 14)
+                .frame(height: 38)
+                .background(Color.white, in: Capsule())
+                .shadow(color: Color.black.opacity(0.18), radius: 4, y: 1)
+            }
+            .buttonStyle(LiquidGlassButtonStyle())
+            .accessibilityLabel("进入照片编辑")
+
+            Spacer()
+
+            // 删除开关
+            Button {
+                showDeleteConfirm = true
+            } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(GrainTheme.danger)
+                    .liquidGlassCircle(size: 38)
+            }
+            .buttonStyle(LiquidGlassButtonStyle())
+            .accessibilityLabel("删除照片")
+        }
+        .padding(.horizontal, 24)
+        .frame(height: 44)
+        .padding(.bottom, 22)
+    }
+
+    private func performDelete(_ asset: PHAsset) {
+        guard let index = allAssets.firstIndex(where: { $0.localIdentifier == asset.localIdentifier }) else { return }
+        onDelete(asset)
+        let remaining = allAssets.filter { $0.localIdentifier != asset.localIdentifier }
+        if remaining.isEmpty {
+            onDismiss()
+        } else {
+            let nextIndex = min(index, remaining.count - 1)
+            currentAssetID = remaining[nextIndex].localIdentifier
+        }
+    }
+
+    private static func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日"
+        return formatter.string(from: date)
+    }
+
+    private static func formatTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+}
+
+struct PhotoBrowserItemView: View {
+    let asset: PHAsset
+    @State private var image: UIImage?
+    @State private var requestID: PHImageRequestID?
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                Color.clear
+
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: geo.size.width, maxHeight: geo.size.height)
+                } else {
+                    ProgressView()
+                        .tint(GrainTheme.paper)
+                }
+
+                if asset.mediaType == .video {
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 48, weight: .light))
+                        .foregroundStyle(Color.white.opacity(0.85))
+                        .shadow(color: Color.black.opacity(0.4), radius: 6)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onAppear(perform: loadImage)
+        .onDisappear {
+            if let requestID {
+                PHImageManager.default().cancelImageRequest(requestID)
+            }
+        }
+    }
+
+    private func loadImage() {
+        guard image == nil else { return }
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .opportunistic
+        options.isNetworkAccessAllowed = true
+        let targetSize = CGSize(
+            width: UIScreen.main.bounds.width * UIScreen.main.scale,
+            height: UIScreen.main.bounds.height * UIScreen.main.scale
+        )
+        requestID = PHImageManager.default().requestImage(
+            for: asset,
+            targetSize: targetSize,
+            contentMode: .aspectFit,
+            options: options
+        ) { result, _ in
+            if let result {
+                self.image = result
+            }
         }
     }
 }
