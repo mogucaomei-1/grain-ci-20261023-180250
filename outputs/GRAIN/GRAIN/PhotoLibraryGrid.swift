@@ -384,7 +384,60 @@ struct PhotoLibraryHome: View {
     @State private var batchNotice: String?
     @State private var batchError: String?
 
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 3), count: 3)
+    // 双指缩放网格列数（类似 iOS 官方相册动态伸缩：1/2/3/4/5 列），偏好持久化
+    @AppStorage("libraryGridColumnCount") private var gridColumnCount: Int = 3
+    @State private var baseColumnCount: Int = 3
+    @State private var isPinching: Bool = false
+    @State private var currentPinchScale: CGFloat = 1.0
+
+    private var columns: [GridItem] {
+        let count = max(1, min(5, gridColumnCount))
+        let spacing: CGFloat = count >= 5 ? 1.5 : (count >= 4 ? 2 : 3)
+        return Array(repeating: GridItem(.flexible(), spacing: spacing), count: count)
+    }
+
+    private var gridSpacing: CGFloat {
+        gridColumnCount >= 5 ? 1.5 : (gridColumnCount >= 4 ? 2 : 3)
+    }
+
+    private var pinchGesture: some Gesture {
+        MagnificationGesture()
+            .onChanged { scale in
+                if !isPinching {
+                    isPinching = true
+                    baseColumnCount = gridColumnCount
+                }
+                currentPinchScale = scale
+
+                // 双指放大 (scale > 1.0) -> 列数减少，照片变大
+                // 双指缩小 (scale < 1.0) -> 列数增加，照片变小，同屏展示更多照片
+                let targetCount: Int
+                if scale > 1.80 {
+                    targetCount = max(1, baseColumnCount - 2)
+                } else if scale > 1.25 {
+                    targetCount = max(2, baseColumnCount - 1)
+                } else if scale < 0.58 {
+                    targetCount = min(5, baseColumnCount + 2)
+                } else if scale < 0.80 {
+                    targetCount = min(5, baseColumnCount + 1)
+                } else {
+                    targetCount = baseColumnCount
+                }
+
+                let clamped = max(1, min(5, targetCount))
+                if clamped != gridColumnCount {
+                    GrainHaptics.selection(enabled: hapticsEnabled)
+                    withAnimation(.spring(response: 0.30, dampingFraction: 0.80)) {
+                        gridColumnCount = clamped
+                    }
+                }
+            }
+            .onEnded { _ in
+                isPinching = false
+                currentPinchScale = 1.0
+                baseColumnCount = gridColumnCount
+            }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -398,7 +451,7 @@ struct PhotoLibraryHome: View {
                 permissionView
             } else {
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: 2) {
+                    LazyVGrid(columns: columns, spacing: gridSpacing) {
                         ForEach(visibleAssets, id: \.localIdentifier) { asset in
                             libraryTile(asset)
                         }
@@ -412,6 +465,7 @@ struct PhotoLibraryHome: View {
                     .simultaneousGesture(selectionDragGesture)
                 }
                 .scrollIndicators(.hidden)
+                .simultaneousGesture(pinchGesture)
                 .refreshable {
                     await library.refresh()
                 }
@@ -786,23 +840,27 @@ struct PhotoLibraryHome: View {
                 return library.formatLabels[asset.localIdentifier]
             }()
 
-            AssetFormatBadge(label: badgeLabel)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .padding(5)
+            if gridColumnCount <= 4 {
+                AssetFormatBadge(label: badgeLabel)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(gridColumnCount >= 4 ? 3 : 5)
+            }
 
             if asset.mediaType == .video {
-                HStack(spacing: 3) {
+                HStack(spacing: 2) {
                     Image(systemName: "video.fill")
-                        .font(.system(size: 7.5))
-                    Text(Self.formatDuration(asset.duration))
-                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .font(.system(size: gridColumnCount >= 4 ? 6 : 7.5))
+                    if gridColumnCount <= 4 {
+                        Text(Self.formatDuration(asset.duration))
+                            .font(.system(size: gridColumnCount >= 4 ? 7.5 : 9, weight: .bold, design: .rounded))
+                    }
                 }
                 .foregroundStyle(Color.white)
-                .padding(.horizontal, 4.5)
-                .padding(.vertical, 2.5)
+                .padding(.horizontal, gridColumnCount >= 4 ? 3 : 4.5)
+                .padding(.vertical, gridColumnCount >= 4 ? 1.5 : 2.5)
                 .background(Color.black.opacity(0.68), in: Capsule())
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                .padding(4)
+                .padding(gridColumnCount >= 4 ? 2 : 4)
             }
 
             if isSelecting {
