@@ -448,15 +448,21 @@ private struct MinimalTopBar: View {
                     .accessibilityLabel("取消并返回主页")
                 }
             } else {
-                HStack(spacing: 9) {
-                    Button(action: onSettings) {
-                        AnimatedEditorMark(size: 29)
-                            .frame(width: 38, height: 38)
-                            .contentShape(Rectangle())
+                // 主页底部左侧：相机与工具（相机、文件、编辑工作台）
+                if !visibleHomeTools.isEmpty {
+                    HStack(spacing: 10) {
+                        ForEach(visibleHomeTools) { tool in
+                            homeToolButton(tool)
+                        }
                     }
-                    .buttonStyle(LiquidGlassButtonStyle())
-                    .accessibilityLabel("打开设置")
+                }
+            }
 
+            Spacer()
+
+            if !hasPhoto {
+                // 主页底部右侧：设置（文字 + 标志，移到最右边）
+                HStack(spacing: 8) {
                     Button(action: onSettings) {
                         Text("GRAIN")
                             .font(.system(size: 14, weight: .heavy, design: .rounded))
@@ -477,62 +483,27 @@ private struct MinimalTopBar: View {
                     }
                     .buttonStyle(LiquidGlassButtonStyle())
                     .accessibilityLabel("打开设置")
-                }
-            }
 
-            Spacer()
-
-            if !hasPhoto, !visibleHomeTools.isEmpty {
-                ForEach(visibleHomeTools) { tool in
-                    homeToolButton(tool)
+                    Button(action: onSettings) {
+                        AnimatedEditorMark(size: 29)
+                            .frame(width: 38, height: 38)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(LiquidGlassButtonStyle())
+                    .accessibilityLabel("打开设置")
                 }
             } else {
-                if let onCamera {
-                    Button(action: onCamera) {
-                        Image(systemName: "camera.fill")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(GrainTheme.paper)
-                            .liquidGlassCircle(size: 38)
+                if let onToggleHistogram {
+                    Button(action: onToggleHistogram) {
+                        Image(systemName: "waveform.path.ecg.rectangle")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(histogramVisible ? GrainTheme.accent : GrainTheme.muted)
+                            .liquidGlassCircle(size: 38, isAccent: histogramVisible)
                     }
                     .buttonStyle(LiquidGlassButtonStyle())
-                    .accessibilityLabel("打开相机")
+                    .accessibilityLabel(histogramVisible ? "隐藏直方图" : "显示直方图")
                 }
 
-                if let onFiles {
-                    Button(action: onFiles) {
-                        Image(systemName: "folder")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(GrainTheme.paper)
-                            .liquidGlassCircle(size: 38)
-                    }
-                    .buttonStyle(LiquidGlassButtonStyle())
-                    .accessibilityLabel("从文件导入")
-                }
-
-                if let onCollage {
-                    Button(action: onCollage) {
-                        Image(systemName: "slider.horizontal.2.square.on.square")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(GrainTheme.paper)
-                            .liquidGlassCircle(size: 38)
-                    }
-                    .buttonStyle(LiquidGlassButtonStyle())
-                    .accessibilityLabel("编辑工作台")
-                }
-            }
-
-            if let onToggleHistogram {
-                Button(action: onToggleHistogram) {
-                    Image(systemName: "waveform.path.ecg.rectangle")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(histogramVisible ? GrainTheme.accent : GrainTheme.muted)
-                        .liquidGlassCircle(size: 38, isAccent: histogramVisible)
-                }
-                .buttonStyle(LiquidGlassButtonStyle())
-                .accessibilityLabel(histogramVisible ? "隐藏直方图" : "显示直方图")
-            }
-
-            if hasPhoto {
                 if let onDelete {
                     Button(action: onDelete) {
                         Image(systemName: "trash")
@@ -557,7 +528,7 @@ private struct MinimalTopBar: View {
                     Image(systemName: "square.and.arrow.up")
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(GrainTheme.paper)
-                        .liquidGlassCircle(size: 38, isAccent: true)
+                        .liquidGlassCircle(size: 38)
                 }
                 .buttonStyle(LiquidGlassButtonStyle())
                 .accessibilityLabel("导出或分享")
@@ -839,7 +810,7 @@ private struct EditorToolsPager: View {
                 }
                 .buttonStyle(LiquidGlassButtonStyle())
 
-                // AI 一键调色
+                // AI 一键调色（默认白底灰字，开启白底橙字，带明确状态反馈）
                 Button {
                     editor.applyAiColorGrading()
                 } label: {
@@ -849,20 +820,30 @@ private struct EditorToolsPager: View {
                                 .controlSize(.mini)
                                 .tint(GrainTheme.accent)
                         } else {
-                            Image(systemName: "sparkles")
+                            Image(systemName: editor.isAiGradingApplied ? "sparkles" : "sparkle")
                                 .font(.system(size: 10, weight: .bold))
                         }
-                        Text("AI调色")
+                        Text(editor.isAiGrading ? "计算中" : "AI调色")
                             .font(.system(size: 10.5, weight: .bold, design: .rounded))
                     }
-                    .foregroundStyle(GrainTheme.accent)
+                    .foregroundStyle(editor.isAiGradingApplied ? GrainTheme.accent : Color(hex: 0x8E8E93))
                     .padding(.horizontal, 9)
                     .frame(height: 25)
-                    .liquidGlassCapsule(isAccent: true)
+                    .background(Color.white, in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(
+                                editor.isAiGradingApplied ? GrainTheme.accent.opacity(0.40) : Color.black.opacity(0.08),
+                                lineWidth: 0.8
+                            )
+                    )
+                    .shadow(color: Color.black.opacity(0.12), radius: 3, x: 0, y: 1.5)
+                    .scaleEffect(editor.isAiGradingApplied ? 1.02 : 1.0)
+                    .animation(.spring(response: 0.28, dampingFraction: 0.78), value: editor.isAiGradingApplied)
                 }
                 .buttonStyle(LiquidGlassButtonStyle())
                 .disabled(editor.isAiGrading)
-                .accessibilityLabel("AI 一键调色")
+                .accessibilityLabel(editor.isAiGradingApplied ? "关闭 AI 算法调色" : "开启 AI 算法调色")
 
                 Spacer()
 

@@ -40,6 +40,7 @@ final class EditorViewModel: ObservableObject {
     @Published private(set) var isPreparing = false
     @Published private(set) var isRecommending = false
     @Published private(set) var isAiGrading = false
+    @Published private(set) var isAiGradingApplied = false
     @Published private(set) var isRecommendationApplied = false
     @Published private(set) var isAdjustmentRecommendationApplied = false
     @Published private(set) var canUndo = false
@@ -79,6 +80,7 @@ final class EditorViewModel: ObservableObject {
     private var undoStack: [EditorSnapshot] = []
     private var recommendationBaseline: EditorSnapshot?
     private var adjustmentRecommendationBaseline: AdjustmentRecommendationBaseline?
+    private var preAiSettings: FilmSettings?
 
     var canExport: Bool {
         photo != nil && !isPreparing && !isExporting
@@ -161,12 +163,14 @@ final class EditorViewModel: ObservableObject {
         recordUndoSnapshot()
         recommendationBaseline = nil
         adjustmentRecommendationBaseline = nil
+        preAiSettings = nil
         withAnimation(.snappy(duration: 0.25)) {
             selectedProfile = profile
             settings = profile.factorySettings
             intensity = profile == .neutral ? 1 : 0.82
             isRecommendationApplied = false
             isAdjustmentRecommendationApplied = false
+            isAiGradingApplied = false
         }
         schedulePreview()
     }
@@ -206,6 +210,8 @@ final class EditorViewModel: ObservableObject {
         isExporting = false
         isRecommendationApplied = false
         isAdjustmentRecommendationApplied = false
+        isAiGradingApplied = false
+        preAiSettings = nil
         undoStack.removeAll()
         recommendationBaseline = nil
         adjustmentRecommendationBaseline = nil
@@ -338,61 +344,85 @@ final class EditorViewModel: ObservableObject {
         }
     }
 
-    /// AI 一键调色：结合设置中的大模型 API 调色配置（Base URL、Model、Style Prompt 等）与图像统计进行一键色彩风格重构
+    /// AI 一键调色：纯基于图像计算视觉算法（与所选胶片预设解耦，绝不改动用户所选胶片 Profile）
     func applyAiColorGrading() {
         guard let originalPreview, !isAiGrading else { return }
+
+        // 若已开启，点击可快速切换并还原初始色彩
+        if isAiGradingApplied {
+            recordUndoSnapshot()
+            withAnimation(.snappy(duration: 0.24)) {
+                if let previous = preAiSettings {
+                    self.settings = previous
+                }
+                self.isAiGradingApplied = false
+                self.preAiSettings = nil
+                self.noticeMessage = "已关闭 AI 算法调色"
+            }
+            schedulePreview()
+            GrainHaptics.selection(enabled: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                if self?.noticeMessage == "已关闭 AI 算法调色" {
+                    self?.noticeMessage = nil
+                }
+            }
+            return
+        }
+
         recordUndoSnapshot()
+        preAiSettings = self.settings
         isAiGrading = true
+        GrainHaptics.lightImpact(enabled: true)
 
         let defaults = UserDefaults.standard
-        let apiModel = defaults.string(forKey: "aiApiModel") ?? "deepseek-chat"
         let prompt = defaults.string(forKey: "aiApiStylePrompt") ?? "胶片质感, 高动态范围, 柔和高光, 细致颗粒"
 
         Task {
-            // 结合原始图像的色彩平衡与高光阴影基准分析
+            // 纯基于原始图像色彩、动态范围与高光阴影的计算视觉特征分析
             let baseline = await Task.detached(priority: .userInitiated) {
                 LocalLookAdvisor.recommend(from: originalPreview)
             }.value
 
-            var targetSettings = baseline.settings
-            let lowerPrompt = prompt.lowercased()
+            var targetSettings = self.settings
+            let recSettings = baseline.settings
+            let refSettings = FilmProfile.portra.factorySettings
 
-            if lowerPrompt.contains("胶片") || lowerPrompt.contains("复古") {
-                targetSettings.contrast = (targetSettings.contrast + 6).clamped(to: -100...100)
-                targetSettings.grain = 22
-                targetSettings.fade = 12
-                targetSettings.temperature = (targetSettings.temperature + 180).clamped(to: 3500...9000)
-                targetSettings.highlights = (targetSettings.highlights - 14).clamped(to: -100...100)
-                targetSettings.shadows = (targetSettings.shadows + 18).clamped(to: -100...100)
+            // 计算算法对高光、阴影、对比度、清晰度、饱和度、色温的纯算法增益
+            let deltaHighlights = recSettings.highlights - refSettings.highlights
+            let deltaShadows = recSettings.shadows - refSettings.shadows
+            let deltaContrast = recSettings.contrast - refSettings.contrast
+            let deltaVibrance = recSettings.vibrance - refSettings.vibrance
+            let deltaClarity = recSettings.clarity - refSettings.clarity
+
+            targetSettings.highlights = (targetSettings.highlights + deltaHighlights - 12).clamped(to: -100...100)
+            targetSettings.shadows = (targetSettings.shadows + deltaShadows + 14).clamped(to: -100...100)
+            targetSettings.contrast = (targetSettings.contrast + deltaContrast + 4).clamped(to: -100...100)
+            targetSettings.vibrance = (targetSettings.vibrance + deltaVibrance + 8).clamped(to: -100...100)
+            targetSettings.clarity = (targetSettings.clarity + deltaClarity + 10).clamped(to: -100...100)
+
+            let lowerPrompt = prompt.lowercased()
+            if lowerPrompt.contains("暖") || lowerPrompt.contains("复古") {
+                targetSettings.temperature = (targetSettings.temperature + 160).clamped(to: 3500...9000)
             } else if lowerPrompt.contains("冷") || lowerPrompt.contains("青") || lowerPrompt.contains("日系") {
-                targetSettings.temperature = (targetSettings.temperature - 220).clamped(to: 3500...9000)
-                targetSettings.tint = (targetSettings.tint - 8).clamped(to: -100...100)
-                targetSettings.shadows = (targetSettings.shadows + 12).clamped(to: -100...100)
-                targetSettings.vibrance = (targetSettings.vibrance + 10).clamped(to: -100...100)
-            } else {
-                targetSettings.highlights = (targetSettings.highlights - 18).clamped(to: -100...100)
-                targetSettings.shadows = (targetSettings.shadows + 20).clamped(to: -100...100)
-                targetSettings.contrast = (targetSettings.contrast + 4).clamped(to: -100...100)
-                targetSettings.vibrance = (targetSettings.vibrance + 8).clamped(to: -100...100)
-                targetSettings.clarity = (targetSettings.clarity + 10).clamped(to: -100...100)
+                targetSettings.temperature = (targetSettings.temperature - 180).clamped(to: 3500...9000)
+                targetSettings.tint = (targetSettings.tint - 6).clamped(to: -100...100)
             }
 
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(nanoseconds: 200_000_000)
 
             await MainActor.run {
                 withAnimation(.snappy(duration: 0.28)) {
-                    self.selectedProfile = baseline.profile
+                    // 核心要求：绝不改动 selectedProfile，与胶片预设解耦，仅计算并套用视觉算法参数
                     self.settings = targetSettings
-                    self.intensity = 0.88
-                    self.isRecommendationApplied = true
-                    self.noticeMessage = "✨ AI 智能调色已套用（\(apiModel)）"
+                    self.isAiGradingApplied = true
+                    self.noticeMessage = "✨ AI 算法调色已生效"
                 }
                 self.schedulePreview()
                 self.isAiGrading = false
                 GrainHaptics.success(enabled: true)
 
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-                    if self?.noticeMessage?.contains("AI 智能调色") == true {
+                    if self?.noticeMessage?.contains("AI 算法调色") == true {
                         self?.noticeMessage = nil
                     }
                 }

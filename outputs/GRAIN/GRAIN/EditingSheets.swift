@@ -824,40 +824,82 @@ struct AppSettingsView: View {
                 // AI 智能调色与 API 调节（全新功能）
                 AiApiSettingsCard()
 
-                // 软件整体 DPI 调节（缩小两档、默认、放大）
-                HStack(spacing: 12) {
-                    Image(systemName: "viewfinder.circle")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(GrainTheme.accent)
-                        .frame(width: 28)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("整体 DPI 调节")
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .foregroundStyle(GrainTheme.paper)
-                        Text("缩小两档、默认或放大全软件界面比例")
-                            .font(.system(size: 9, design: .rounded))
-                            .foregroundStyle(GrainTheme.muted)
-                    }
-                    Spacer()
-                    HStack(spacing: 4) {
-                        ForEach(AppDPIScale.allCases) { option in
-                            let isSelected = (dpiSetting == option)
-                            Button {
-                                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                                    dpiSetting = option
-                                }
-                                GrainHaptics.selection()
-                            } label: {
-                                Text(option.shortTitle)
-                                    .font(.system(size: 10, weight: isSelected ? .bold : .medium, design: .rounded))
-                                    .foregroundStyle(isSelected ? GrainTheme.black : GrainTheme.muted)
-                                    .padding(.horizontal, 7)
-                                    .frame(height: 26)
-                                    .background(isSelected ? GrainTheme.paper : GrainTheme.raised, in: Capsule())
-                            }
-                            .buttonStyle(.plain)
+                // 软件整体 DPI 调节（左右拖动进度条）
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "viewfinder.circle")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(GrainTheme.accent)
+                            .frame(width: 28)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("整体 DPI 调节")
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .foregroundStyle(GrainTheme.paper)
+                            Text("左右拖动调节全软件界面比例")
+                                .font(.system(size: 9, design: .rounded))
+                                .foregroundStyle(GrainTheme.muted)
                         }
+                        Spacer()
+                        Text(dpiSetting.title)
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .foregroundStyle(GrainTheme.accent)
+                            .padding(.horizontal, 9)
+                            .frame(height: 24)
+                            .background(GrainTheme.raised, in: Capsule())
                     }
+
+                    // 左右拖动进度条
+                    Slider(
+                        value: Binding(
+                            get: {
+                                switch dpiSetting {
+                                case .compactMore: return 0.0
+                                case .compact: return 1.0
+                                case .standard: return 2.0
+                                case .enlarged: return 3.0
+                                }
+                            },
+                            set: { newValue in
+                                let rounded = Int(newValue.rounded())
+                                let newSetting: AppDPIScale
+                                switch rounded {
+                                case 0: newSetting = .compactMore
+                                case 1: newSetting = .compact
+                                case 2: newSetting = .standard
+                                default: newSetting = .enlarged
+                                }
+                                if newSetting != dpiSetting {
+                                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                        dpiSetting = newSetting
+                                    }
+                                    GrainHaptics.selection(enabled: true)
+                                }
+                            }
+                        ),
+                        in: 0.0...3.0,
+                        step: 1.0
+                    )
+                    .tint(GrainTheme.accent)
+
+                    // 档位刻度指示
+                    HStack {
+                        Text("缩小 II")
+                            .font(.system(size: 9, weight: dpiSetting == .compactMore ? .bold : .regular, design: .rounded))
+                            .foregroundStyle(dpiSetting == .compactMore ? GrainTheme.accent : GrainTheme.muted)
+                        Spacer()
+                        Text("缩小 I")
+                            .font(.system(size: 9, weight: dpiSetting == .compact ? .bold : .regular, design: .rounded))
+                            .foregroundStyle(dpiSetting == .compact ? GrainTheme.accent : GrainTheme.muted)
+                        Spacer()
+                        Text("默认")
+                            .font(.system(size: 9, weight: dpiSetting == .standard ? .bold : .regular, design: .rounded))
+                            .foregroundStyle(dpiSetting == .standard ? GrainTheme.accent : GrainTheme.muted)
+                        Spacer()
+                        Text("放大")
+                            .font(.system(size: 9, weight: dpiSetting == .enlarged ? .bold : .regular, design: .rounded))
+                            .foregroundStyle(dpiSetting == .enlarged ? GrainTheme.accent : GrainTheme.muted)
+                    }
+                    .padding(.horizontal, 2)
                 }
                 .padding(16)
                 .liquidGlass(cornerRadius: 18)

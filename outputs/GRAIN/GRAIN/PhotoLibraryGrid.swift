@@ -736,22 +736,22 @@ struct PhotoLibraryHome: View {
 
     private var mediaTypeHeaderBar: some View {
         HStack {
-            // 左侧：时间排序与媒体统计
+            // 左侧：时间排序与媒体统计（黑字白底）
             HStack(spacing: 8) {
                 sortChip
                 if !library.assets.isEmpty {
                     Text("\(visibleAssets.count)/\(library.assets.count)")
                         .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(GrainTheme.muted)
+                        .foregroundStyle(Color.black)
                         .padding(.horizontal, 8)
                         .frame(height: 22)
-                        .liquidGlassCapsule()
+                        .liquidGlassCapsule(isWhite: true)
                 }
             }
 
             Spacer()
 
-            // 右侧最上方：媒体类型分类（照片 / 视频 / 截图 / 全部）
+            // 右侧最上方：媒体类型分类（照片 / 视频 / 截图 / 全部，选择后去橙色改为黑字白底）
             Menu {
                 ForEach(LibraryMediaTypeFilter.allCases) { filter in
                     Button {
@@ -775,10 +775,10 @@ struct PhotoLibraryHome: View {
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.system(size: 8.5, weight: .bold))
                 }
-                .foregroundStyle(mediaTypeFilter == .all ? GrainTheme.paper : GrainTheme.accent)
+                .foregroundStyle(mediaTypeFilter == .all ? GrainTheme.paper : Color.black)
                 .padding(.horizontal, 11)
                 .frame(height: 29)
-                .liquidGlassCapsule(isAccent: mediaTypeFilter != .all)
+                .liquidGlassCapsule(isWhite: mediaTypeFilter != .all)
             }
             .buttonStyle(LiquidGlassButtonStyle())
         }
@@ -797,10 +797,10 @@ struct PhotoLibraryHome: View {
                 Text("时间")
                     .font(.system(size: 9.5, weight: .semibold, design: .rounded))
             }
-            .foregroundStyle(GrainTheme.muted)
+            .foregroundStyle(Color.black)
             .padding(.horizontal, 10)
             .frame(height: 25)
-            .liquidGlassCapsule()
+            .liquidGlassCapsule(isWhite: true)
         }
         .buttonStyle(LiquidGlassButtonStyle())
     }
@@ -821,7 +821,7 @@ struct PhotoLibraryHome: View {
 
             Text("已选\(selectedIdentifiers.count)张")
                 .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                .foregroundStyle(GrainTheme.black)
+                .foregroundStyle(Color.black)
                 .padding(.horizontal, 9)
                 .frame(height: 27)
                 .liquidGlassCapsule(isWhite: true)
@@ -846,11 +846,11 @@ struct PhotoLibraryHome: View {
                         .lineLimit(1)
                 }
                 .foregroundStyle(
-                    selectedIdentifiers.isEmpty ? GrainTheme.muted : GrainTheme.black
+                    selectedIdentifiers.isEmpty ? Color.black.opacity(0.35) : Color.black
                 )
                 .padding(.horizontal, 8)
                 .frame(height: 27)
-                .liquidGlassCapsule(isWhite: !selectedIdentifiers.isEmpty)
+                .liquidGlassCapsule(isWhite: true)
                 .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(LiquidGlassButtonStyle())
@@ -868,12 +868,12 @@ struct PhotoLibraryHome: View {
                 }
                 .foregroundStyle(
                     !selectedAssets.isEmpty && selectedAssets.count <= 10
-                        ? GrainTheme.black
-                        : GrainTheme.muted
+                        ? Color.black
+                        : Color.black.opacity(0.35)
                 )
                 .padding(.horizontal, 8)
                 .frame(height: 27)
-                .liquidGlassCapsule(isWhite: !selectedAssets.isEmpty && selectedAssets.count <= 10)
+                .liquidGlassCapsule(isWhite: true)
                 .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(LiquidGlassButtonStyle())
@@ -892,12 +892,12 @@ struct PhotoLibraryHome: View {
                 }
                 .foregroundStyle(
                     !selectedIdentifiers.isEmpty
-                        ? GrainTheme.black
-                        : GrainTheme.muted
+                        ? Color.black
+                        : Color.black.opacity(0.35)
                 )
                 .padding(.horizontal, 8)
                 .frame(height: 27)
-                .liquidGlassCapsule(isWhite: !selectedIdentifiers.isEmpty)
+                .liquidGlassCapsule(isWhite: true)
                 .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(LiquidGlassButtonStyle())
@@ -910,10 +910,10 @@ struct PhotoLibraryHome: View {
                 Image(systemName: "trash")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(
-                        selectedIdentifiers.isEmpty ? GrainTheme.muted : GrainTheme.black
+                        selectedIdentifiers.isEmpty ? Color.black.opacity(0.35) : Color.black
                     )
                     .frame(width: 27, height: 27)
-                    .liquidGlassCircle(size: 27, isWhite: !selectedIdentifiers.isEmpty)
+                    .liquidGlassCircle(size: 27, isWhite: true)
                     .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(LiquidGlassButtonStyle())
