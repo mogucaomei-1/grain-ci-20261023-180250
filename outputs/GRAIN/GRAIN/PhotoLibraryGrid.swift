@@ -1669,7 +1669,7 @@ struct FilmstripThumbnailView: View {
         .overlay {
             if isSelected {
                 RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-                    .stroke(Color.white, lineWidth: 2)
+                    .stroke(GrainTheme.paper, lineWidth: 2)
             }
         }
         .onAppear(perform: loadMiniThumbnail)
@@ -2218,7 +2218,7 @@ struct PhotoDetailBrowserView: View {
             }()
 
             ZStack {
-                GrainTheme.black
+                GrainBackground()
                     .opacity(bgOpacity)
                     .ignoresSafeArea()
 

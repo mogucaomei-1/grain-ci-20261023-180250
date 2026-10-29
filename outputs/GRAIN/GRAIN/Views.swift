@@ -148,7 +148,7 @@ struct RootView: View {
                 .zIndex(10)
             }
         }
-        .preferredColorScheme((isCameraActive || isBrowserActive) ? .dark : appearanceMode.colorScheme)
+        .preferredColorScheme(isCameraActive ? cameraAppearanceMode.colorScheme : appearanceMode.colorScheme)
         .sheet(isPresented: $showDocumentPicker) {
             DocumentRawImporter { url in
                 showDocumentPicker = false
@@ -307,6 +307,7 @@ struct RootView: View {
                 onShare: handleBrowserShare,
                 onDelete: handleBrowserDelete
             )
+            .environment(\.colorScheme, appearanceMode.resolvedColorScheme(systemScheme: systemColorScheme))
             .ignoresSafeArea()
             .zIndex(2)
         }
