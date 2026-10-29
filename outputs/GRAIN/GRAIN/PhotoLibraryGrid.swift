@@ -2111,49 +2111,87 @@ struct PhotoDetailBrowserView: View {
         return allAssets[currentIndex]
     }
 
-    private func computeGeometry(screenSize: CGSize) -> (offset: CGSize, scale: CGFloat, cornerRadius: CGFloat) {
+    private struct BrowserGeometry {
+        let offset: CGSize
+        let scale: CGFloat
+        let cornerRadius: CGFloat
+        let opacity: Double
+    }
+
+    private func computeGeometry(screenSize: CGSize) -> BrowserGeometry {
         let screenCenter = CGPoint(x: screenSize.width / 2, y: screenSize.height / 2)
         let currentTileRect = (currentAsset != nil ? tileFrames[currentAsset!.localIdentifier] : nil) ?? sourceRect
 
         if isClosing {
-            if let rect = currentTileRect {
+            if let rect = currentTileRect, rect.width > 20 && rect.height > 20 {
                 let targetX = rect.midX - screenCenter.x
                 let targetY = rect.midY - screenCenter.y
                 let targetScale = rect.width / screenSize.width
-                return (CGSize(width: targetX, height: targetY), targetScale, 3.5)
+                return BrowserGeometry(
+                    offset: CGSize(width: targetX, height: targetY),
+                    scale: targetScale,
+                    cornerRadius: 3.5,
+                    opacity: 0.0
+                )
             } else {
-                return (CGSize(width: 0, height: screenSize.height * 0.7), 0.5, 24.0)
+                return BrowserGeometry(
+                    offset: CGSize(width: 0, height: screenSize.height * 0.35),
+                    scale: 0.82,
+                    cornerRadius: 24.0,
+                    opacity: 0.0
+                )
             }
         }
 
         if !isPresented {
-            if let rect = sourceRect {
+            if let rect = sourceRect, rect.width > 20 && rect.height > 20 {
                 let initialX = rect.midX - screenCenter.x
                 let initialY = rect.midY - screenCenter.y
                 let initialScale = rect.width / screenSize.width
-                return (CGSize(width: initialX, height: initialY), initialScale, 3.5)
+                return BrowserGeometry(
+                    offset: CGSize(width: initialX, height: initialY),
+                    scale: initialScale,
+                    cornerRadius: 3.5,
+                    opacity: 1.0
+                )
             } else {
-                return (CGSize(width: 0, height: 60), 0.88, 20.0)
+                return BrowserGeometry(
+                    offset: CGSize(width: 0, height: 40),
+                    scale: 0.90,
+                    cornerRadius: 20.0,
+                    opacity: 0.0
+                )
             }
         }
 
         if isDraggingDown {
             let dy = max(0, dragTranslation.height)
-            let dx = dragTranslation.width * 0.4
-            let progress = min(1.0, dy / 350.0)
-            let scale = max(0.55, 1.0 - progress * 0.42)
+            let dx = dragTranslation.width * 0.35
+            let progress = min(1.0, dy / 320.0)
+            let scale = max(0.65, 1.0 - progress * 0.35)
             let radius = min(28.0, progress * 28.0)
-            return (CGSize(width: dx, height: dy), scale, radius)
+            let opacity = max(0.35, 1.0 - progress * 0.45)
+            return BrowserGeometry(
+                offset: CGSize(width: dx, height: dy),
+                scale: scale,
+                cornerRadius: radius,
+                opacity: opacity
+            )
         }
 
-        return (.zero, 1.0, 0.0)
+        return BrowserGeometry(
+            offset: .zero,
+            scale: 1.0,
+            cornerRadius: 0.0,
+            opacity: 1.0
+        )
     }
 
     var body: some View {
         GeometryReader { geo in
             let screenSize = geo.size
             let geom = computeGeometry(screenSize: screenSize)
-            let dragProgress = min(1.0, max(0.0, dragTranslation.height / 350.0))
+            let dragProgress = min(1.0, max(0.0, dragTranslation.height / 320.0))
             let bgOpacity: Double = {
                 if !isPresented || isClosing { return 0.0 }
                 if isDraggingDown { return max(0.0, 1.0 - Double(dragProgress) * 0.95) }
@@ -2177,8 +2215,9 @@ struct PhotoDetailBrowserView: View {
                 .offset(geom.offset)
                 .scaleEffect(geom.scale)
                 .clipShape(RoundedRectangle(cornerRadius: geom.cornerRadius, style: .continuous))
+                .opacity(geom.opacity)
                 .shadow(
-                    color: Color.black.opacity(geom.cornerRadius > 2 ? 0.35 : 0),
+                    color: Color.black.opacity(geom.cornerRadius > 2 ? 0.35 * geom.opacity : 0),
                     radius: 16,
                     y: 8
                 )
@@ -2215,7 +2254,7 @@ struct PhotoDetailBrowserView: View {
             .ignoresSafeArea()
             .onAppear {
                 DispatchQueue.main.async {
-                    withAnimation(.spring(response: 0.38, dampingFraction: 0.82)) {
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.84)) {
                         isPresented = true
                     }
                 }
@@ -2255,10 +2294,10 @@ struct PhotoDetailBrowserView: View {
             .onEnded { value in
                 if isDraggingDown {
                     let velocityY = value.predictedEndTranslation.height - value.translation.height
-                    if value.translation.height > 80 || velocityY > 160 {
+                    if value.translation.height > 70 || velocityY > 140 {
                         closeBrowser()
                     } else {
-                        withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.84)) {
                             dragTranslation = .zero
                             isDraggingDown = false
                         }
@@ -2269,13 +2308,13 @@ struct PhotoDetailBrowserView: View {
 
     private func closeBrowser() {
         guard !isClosing else { return }
-        isClosing = true
         GrainHaptics.selection(enabled: true)
-        withAnimation(.spring(response: 0.35, dampingFraction: 0.84)) {
+        withAnimation(.spring(response: 0.30, dampingFraction: 0.86)) {
+            isClosing = true
             isPresented = false
             isDraggingDown = false
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
             onDismiss()
         }
     }
