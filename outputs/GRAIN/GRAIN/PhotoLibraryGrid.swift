@@ -1907,6 +1907,7 @@ struct BrowserBottomBarView: View {
 struct PhotoPagingViewControllerRepresentable: UIViewControllerRepresentable {
     let allAssets: [PHAsset]
     @Binding var currentIndex: Int
+    var onTap: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -1921,6 +1922,12 @@ struct PhotoPagingViewControllerRepresentable: UIViewControllerRepresentable {
         pvc.dataSource = context.coordinator
         pvc.delegate = context.coordinator
         pvc.view.backgroundColor = .clear
+
+        let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
+        tapGesture.numberOfTapsRequired = 1
+        tapGesture.numberOfTouchesRequired = 1
+        tapGesture.cancelsTouchesInView = false
+        pvc.view.addGestureRecognizer(tapGesture)
 
         if currentIndex >= 0 && currentIndex < allAssets.count {
             let initialVC = PhotoSinglePageVC(asset: allAssets[currentIndex], index: currentIndex)
@@ -1944,6 +1951,11 @@ struct PhotoPagingViewControllerRepresentable: UIViewControllerRepresentable {
 
         init(_ parent: PhotoPagingViewControllerRepresentable) {
             self.parent = parent
+        }
+
+        @objc func handleTap(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended else { return }
+            parent.onTap?()
         }
 
         func pageViewController(_ pageViewController: UIPageViewController, viewControllerBefore viewController: UIViewController) -> UIViewController? {
@@ -2078,6 +2090,7 @@ struct PhotoDetailBrowserView: View {
     @State private var isClosing = false
     @State private var isDraggingDown = false
     @State private var dragTranslation: CGSize = .zero
+    @State private var isChromeHidden = false
 
     init(
         initialAsset: PHAsset,
@@ -2212,19 +2225,25 @@ struct PhotoDetailBrowserView: View {
                 return 1.0
             }()
             let controlsOpacity: Double = {
-                if !isPresented || isClosing { return 0.0 }
+                if !isPresented || isClosing || isChromeHidden { return 0.0 }
                 if isDraggingDown { return max(0.0, 1.0 - Double(dragProgress) * 2.8) }
                 return 1.0
             }()
 
             ZStack {
-                GrainBackground()
+                Color(uiColor: .systemBackground)
                     .opacity(bgOpacity)
                     .ignoresSafeArea()
 
                 PhotoPagingViewControllerRepresentable(
                     allAssets: allAssets,
-                    currentIndex: $currentIndex
+                    currentIndex: $currentIndex,
+                    onTap: {
+                        guard !isClosing && isPresented && !isDraggingDown else { return }
+                        withAnimation(.easeInOut(duration: 0.22)) {
+                            isChromeHidden.toggle()
+                        }
+                    }
                 )
                 .offset(geom.offset)
                 .scaleEffect(geom.scale)
@@ -2245,25 +2264,28 @@ struct PhotoDetailBrowserView: View {
                         onDismiss: closeBrowser
                     )
                     .padding(.top, max(geo.safeAreaInsets.top, windowSafeAreaTop) + 4)
+                    .offset(y: isChromeHidden ? -60 : 0)
 
                     Spacer(minLength: 0)
 
-                    FilmstripBarView(
-                        allAssets: allAssets,
-                        currentIndex: $currentIndex
-                    )
-                    .padding(.bottom, 6)
+                    VStack(spacing: 6) {
+                        FilmstripBarView(
+                            allAssets: allAssets,
+                            currentIndex: $currentIndex
+                        )
 
-                    BrowserBottomBarView(
-                        onDelete: { showDeleteConfirm = true },
-                        onShare: { if let a = currentAsset { onShare(a) } },
-                        onShowInfo: { if let a = currentAsset { onShowInfo(a) } },
-                        onEdit: { if let a = currentAsset { onEdit(a) } }
-                    )
-                    .padding(.bottom, max(0, max(geo.safeAreaInsets.bottom, windowSafeAreaBottom) - 22))
+                        BrowserBottomBarView(
+                            onDelete: { showDeleteConfirm = true },
+                            onShare: { if let a = currentAsset { onShare(a) } },
+                            onShowInfo: { if let a = currentAsset { onShowInfo(a) } },
+                            onEdit: { if let a = currentAsset { onEdit(a) } }
+                        )
+                        .padding(.bottom, max(0, max(geo.safeAreaInsets.bottom, windowSafeAreaBottom) - 22))
+                    }
+                    .offset(y: isChromeHidden ? 90 : 0)
                 }
                 .opacity(controlsOpacity)
-                .allowsHitTesting(controlsOpacity > 0.5)
+                .allowsHitTesting(!isChromeHidden && controlsOpacity > 0.5)
             }
             .ignoresSafeArea()
             .onAppear {
@@ -2274,6 +2296,7 @@ struct PhotoDetailBrowserView: View {
                 }
             }
         }
+        .statusBarHidden(isChromeHidden)
         .confirmationDialog(
             "确定要删除这张照片吗？",
             isPresented: $showDeleteConfirm,
@@ -2327,6 +2350,7 @@ struct PhotoDetailBrowserView: View {
             isClosing = true
             isPresented = false
             isDraggingDown = false
+            isChromeHidden = false
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
             onDismiss()
