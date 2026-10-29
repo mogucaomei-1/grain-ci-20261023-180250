@@ -41,6 +41,10 @@ struct RootView: View {
         showCamera || launchCameraActive
     }
 
+    private var isBrowserActive: Bool {
+        browsingAsset != nil && editor.photo == nil
+    }
+
     var body: some View {
         ZStack {
             GrainBackground()
@@ -144,7 +148,7 @@ struct RootView: View {
                 .zIndex(10)
             }
         }
-        .preferredColorScheme(isCameraActive ? cameraAppearanceMode.colorScheme : appearanceMode.colorScheme)
+        .preferredColorScheme((isCameraActive || isBrowserActive) ? .dark : appearanceMode.colorScheme)
         .sheet(isPresented: $showDocumentPicker) {
             DocumentRawImporter { url in
                 showDocumentPicker = false

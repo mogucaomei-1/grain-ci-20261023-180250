@@ -2187,6 +2187,20 @@ struct PhotoDetailBrowserView: View {
         )
     }
 
+    private var windowSafeAreaTop: CGFloat {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let window = scenes.flatMap(\.windows).first(where: \.isKeyWindow) ?? scenes.flatMap(\.windows).first
+        let top = window?.safeAreaInsets.top ?? 0
+        return top > 0 ? top : 54
+    }
+
+    private var windowSafeAreaBottom: CGFloat {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let window = scenes.flatMap(\.windows).first(where: \.isKeyWindow) ?? scenes.flatMap(\.windows).first
+        let bottom = window?.safeAreaInsets.bottom ?? 0
+        return bottom > 0 ? bottom : 34
+    }
+
     var body: some View {
         GeometryReader { geo in
             let screenSize = geo.size
@@ -2230,7 +2244,7 @@ struct PhotoDetailBrowserView: View {
                         formatLabel: currentAsset.flatMap { library.formatLabels[$0.localIdentifier] },
                         onDismiss: closeBrowser
                     )
-                    .padding(.top, max(geo.safeAreaInsets.top, 12))
+                    .padding(.top, max(geo.safeAreaInsets.top, windowSafeAreaTop) + 4)
 
                     Spacer(minLength: 0)
 
@@ -2246,7 +2260,7 @@ struct PhotoDetailBrowserView: View {
                         onShowInfo: { if let a = currentAsset { onShowInfo(a) } },
                         onEdit: { if let a = currentAsset { onEdit(a) } }
                     )
-                    .padding(.bottom, max(0, geo.safeAreaInsets.bottom - 10))
+                    .padding(.bottom, max(0, max(geo.safeAreaInsets.bottom, windowSafeAreaBottom) - 22))
                 }
                 .opacity(controlsOpacity)
                 .allowsHitTesting(controlsOpacity > 0.5)
